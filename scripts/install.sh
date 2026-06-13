@@ -33,7 +33,7 @@ hr()   { printf '\033[1m== %s ==\033[0m\n' "$*"; }
 [ -d "$WS" ] || fail "Workspace not found: $WS  (pass --workspace DIR)"
 
 # Check dinomem is installed
-[ -f "$WS/procedures/session_reset.py" ] || fail "dinomem base not found in $WS. Install dinomem first: https://github.com/dinotlgrm/dinomem"
+[ -f "$WS/procedures/session_reset.py" ] || fail "dinomem base not found in $WS. Install dinomem first: https://github.com/02-dino/dinomem"
 
 if [ -z "$AGENT_ID" ]; then
   AGENT_ID="$(basename "$WS")"

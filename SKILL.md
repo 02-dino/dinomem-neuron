@@ -15,7 +15,7 @@ triggers:
   - "advanced memory layer"
   - "memory graph synthesis"
   - "topic index memory"
-author: dinotlgrm
+author: dino
 license: Commercial
 ---
 
@@ -23,7 +23,7 @@ license: Commercial
 
 Advanced memory layer that extends dinomem with emergent pattern detection, graph linking, synthesis, and promotion pipelines.
 
-**Requires [dinomem](https://github.com/dinotlgrm/dinomem) installed first.**
+**Requires [dinomem](https://github.com/02-dino/dinomem) installed first.**
 
 ## Layers
 
@@ -39,11 +39,11 @@ Advanced memory layer that extends dinomem with emergent pattern detection, grap
 
 ```bash
 # Install dinomem first
-git clone https://github.com/dinotlgrm/dinomem
+git clone https://github.com/02-dino/dinomem
 bash dinomem/scripts/install.sh --workspace ~/.openclaw/workspace-myagent --agent-id myagent
 
 # Then install dinomem-neuron
-git clone https://github.com/dinotlgrm/dinomem-neuron
+git clone https://github.com/02-dino/dinomem-neuron
 bash dinomem-neuron/scripts/install.sh --workspace ~/.openclaw/workspace-myagent --agent-id myagent
 ```
 

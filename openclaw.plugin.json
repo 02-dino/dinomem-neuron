@@ -3,8 +3,8 @@
   "displayName": "dinomem-neuron — Dino Agent Memory (Neuron Layer)",
   "version": "0.1.0",
   "description": "Advanced memory layer for dinomem. Adds L2 graph linking, L3 synthesis, L4 promotion, contradiction detection, and topic indexing. Requires dinomem base.",
-  "author": "dinotlgrm",
-  "homepage": "https://github.com/dinotlgrm/dinomem-neuron",
+  "author": "dino",
+  "homepage": "https://github.com/02-dino/dinomem-neuron",
   "license": "Commercial",
   "keywords": ["memory", "neuron", "graph", "synthesis", "openclaw"],
   "requires": {
