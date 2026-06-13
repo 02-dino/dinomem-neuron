@@ -124,10 +124,18 @@ def create_event(
 
     # Reminders
     if reminders:
-        event_body["reminders"] = {
-            "useDefault": False,
-            "overrides": reminders,  # [{"method": "popup"|"email", "minutes": int}]
-        }
+        # Always include 30 min popup as baseline + user-requested reminders
+        baseline = {"method": "popup", "minutes": 30}
+        overrides = [baseline] + [r for r in reminders if r != baseline]
+        # Deduplicate
+        seen = set()
+        deduped = []
+        for r in overrides:
+            key = (r["method"], r["minutes"])
+            if key not in seen:
+                seen.add(key)
+                deduped.append(r)
+        event_body["reminders"] = {"useDefault": False, "overrides": deduped}
     else:
         event_body["reminders"] = {"useDefault": True}
 
