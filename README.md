@@ -302,8 +302,13 @@ bash dinomem-neuron/scripts/update.sh --workspace ~/.openclaw/workspace-myagent
 
 ```bash
 bash dinomem-neuron/scripts/uninstall.sh --workspace ~/.openclaw/workspace-myagent
-# Add --purge to also remove scripts (kb/, topics/, docs/ data preserved)
 ```
+
+This removes neuron cron jobs only. dinomem base config is untouched.
+
+Optional flags:
+- `--purge` — also remove installed scripts
+- `--purge-data` — also delete `kb/memory_neuron/`, `topics/`, `kb/vector_db_docs/` (asks for confirmation, `docs/` preserved)
 
 ---
 
