@@ -74,6 +74,8 @@ def create_event(
     time: Optional[str] = None,         # HH:MM (24h), None = all-day
     description: Optional[str] = None,
     note_file: Optional[str] = None,    # _note_*.md filename linked to this event
+    reminders: Optional[List[Dict]] = None,  # [{"method": "popup"|"email", "minutes": int}]
+    attendees: Optional[List[str]] = None,   # list of email addresses
 ) -> Dict:
     """
     Create a Google Calendar event.
@@ -84,6 +86,11 @@ def create_event(
         time:        Optional time HH:MM (24h). None = all-day event.
         description: Optional event description
         note_file:   Optional _note_*.md filename to link (stored in event description)
+        reminders:   Optional list of reminders, e.g. [{"method": "popup", "minutes": 30}]
+                     method: "popup" (notification) or "email"
+                     minutes: how many minutes before the event
+                     Note: sound/vibration are device-level settings, not controllable via API.
+        attendees:   Optional list of email addresses to invite
 
     Returns:
         dict with event_id, title, date, html_link
@@ -115,7 +122,24 @@ def create_event(
             "end":   {"date": date},
         }
 
-    result = service.events().insert(calendarId=cal_id, body=event_body).execute()
+    # Reminders
+    if reminders:
+        event_body["reminders"] = {
+            "useDefault": False,
+            "overrides": reminders,  # [{"method": "popup"|"email", "minutes": int}]
+        }
+    else:
+        event_body["reminders"] = {"useDefault": True}
+
+    # Attendees
+    if attendees:
+        event_body["attendees"] = [{"email": email} for email in attendees]
+
+    result = service.events().insert(
+        calendarId=cal_id,
+        body=event_body,
+        sendUpdates="all" if attendees else "none",  # send invite emails if attendees
+    ).execute()
     return {
         "event_id": result["id"],
         "title": result["summary"],
@@ -225,6 +249,10 @@ def main():
     p_create.add_argument("--time", default=None, help="Time HH:MM (24h), omit for all-day")
     p_create.add_argument("--desc", default=None, help="Event description")
     p_create.add_argument("--note", default=None, help="_note_*.md filename to link")
+    p_create.add_argument("--reminder", action="append", metavar="METHOD:MINUTES",
+                          help="Reminder e.g. popup:30 or email:60. Repeat for multiple.")
+    p_create.add_argument("--attendee", action="append", metavar="EMAIL",
+                          help="Invite attendee by email. Repeat for multiple.")
 
     # list
     p_list = sub.add_parser("list", help="List upcoming events")
@@ -237,7 +265,15 @@ def main():
     args = parser.parse_args()
 
     if args.cmd == "create":
-        result = create_event(args.title, args.date, args.time, args.desc, args.note)
+        # Parse reminders: "popup:30" -> {"method": "popup", "minutes": 30}
+        reminders = None
+        if args.reminder:
+            reminders = []
+            for r in args.reminder:
+                method, _, mins = r.partition(":")
+                reminders.append({"method": method.strip(), "minutes": int(mins.strip())})
+        result = create_event(args.title, args.date, args.time, args.desc, args.note,
+                              reminders=reminders, attendees=args.attendee)
         print(f"Created: {result['title']} on {result['date']}")
         print(f"Event ID: {result['event_id']}")
         print(f"Link: {result['html_link']}")

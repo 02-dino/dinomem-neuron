@@ -114,9 +114,17 @@ python3 ~/.openclaw/workspace-myagent/scripts/calendar_oauth_setup.py
 python3 ~/.openclaw/workspace-myagent/tools/calendar_tool.py create \
   "Doctor appointment" --date 2026-06-25 --time 14:00 --note _note_doctor.md
 
+# With reminder (popup 30 min before) and attendee
+python3 ~/.openclaw/workspace-myagent/tools/calendar_tool.py create \
+  "Team meeting" --date 2026-06-25 --time 10:00 \
+  --reminder popup:30 --reminder email:60 \
+  --attendee colleague@example.com
+
 # List upcoming events
 python3 ~/.openclaw/workspace-myagent/tools/calendar_tool.py list --upcoming 7
 ```
+
+> **Note:** Sound and vibration are device-level settings — not controllable via the Google Calendar API. Those are set on your phone/browser.
 
 Or just tell your agent:
 > "Remember to call the dentist before Friday"
