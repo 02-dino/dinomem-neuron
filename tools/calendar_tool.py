@@ -123,21 +123,28 @@ def create_event(
         }
 
     # Reminders
+    # Always useDefault: False — 30 min popup is hardcoded baseline regardless of user input.
+    # If user specifies custom time X: add popup:X + any other methods (email, etc) at X.
+    baseline = {"method": "popup", "minutes": 30}
     if reminders:
-        # Always include 30 min popup as baseline + user-requested reminders
-        baseline = {"method": "popup", "minutes": 30}
-        overrides = [baseline] + [r for r in reminders if r != baseline]
-        # Deduplicate
-        seen = set()
-        deduped = []
-        for r in overrides:
-            key = (r["method"], r["minutes"])
-            if key not in seen:
-                seen.add(key)
-                deduped.append(r)
-        event_body["reminders"] = {"useDefault": False, "overrides": deduped}
+        extra = []
+        for r in reminders:
+            extra.append(r)  # user-specified (e.g. email:60)
+            # Also add popup at same time if not already popup
+            if r["method"] != "popup":
+                extra.append({"method": "popup", "minutes": r["minutes"]})
+        overrides = [baseline] + extra
     else:
-        event_body["reminders"] = {"useDefault": True}
+        overrides = [baseline]
+    # Deduplicate
+    seen = set()
+    deduped = []
+    for r in overrides:
+        key = (r["method"], r["minutes"])
+        if key not in seen:
+            seen.add(key)
+            deduped.append(r)
+    event_body["reminders"] = {"useDefault": False, "overrides": deduped}
 
     # Attendees
     if attendees:
