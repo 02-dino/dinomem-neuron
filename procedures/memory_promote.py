@@ -60,7 +60,20 @@ BEHAVIOR_FILE = TOPICS_DIR / "PERSISTENT_AUTO.md"
 
 # ── Rails (tunable) ──
 TTL_DAYS = 14               # provisional expires if not reinforced within this
-TRUSTED_TTL_DAYS = 45       # trusted decays/demotes if not reinforced within this
+TRUSTED_TTL_DAYS = 45       # trusted decays/demotes if not reinforced within this (default)
+
+# Category-based TTL overrides for trusted insights.
+# Tags that are inherently long-lived get more time before decay.
+# Provisional TTL is always TTL_DAYS regardless of category.
+CATEGORY_TTL = {
+    "preference": 180,   # user preferences rarely change
+    "decision":   120,   # past decisions stay relevant long-term
+    "lesson":     120,   # lessons learned don't expire quickly
+    "pattern":     60,   # behavioral patterns, medium-lived
+    "prediction":  21,   # time-sensitive, decay fast
+    "uncertain":   30,   # unverified, decay moderately fast
+    "factual":     90,   # facts, medium-lived
+}
 GRADUATE_REINFORCE = 3      # distinct reinforcing runs needed to graduate
 MAX_GRADUATIONS_PER_RUN = 2 # rate limit: behavior memory can't be flooded
 MAX_PERSISTENT_RULES = 12   # hard cap on injected rules — keep MEMORY.md lean
@@ -135,6 +148,11 @@ def find_match(state, pattern):
         return best_k, state[best_k]
     return None, None
 
+
+def get_ttl(entry, default_ttl):
+    """Return TTL for a trusted entry based on its category tag, or default_ttl."""
+    tag = entry.get("tag", "").lower().strip("[]")
+    return CATEGORY_TTL.get(tag, default_ttl)
 
 def expired(entry, ttl_days):
     last = entry.get("last_reinforced") or entry.get("first_promoted")
@@ -222,11 +240,13 @@ def run(dry_run=False):
             if not dry_run:
                 log_action("expired", e, {"reason": f"no reinforcement in {TTL_DAYS}d"})
                 del state[k]
-        elif e.get("status") == "trusted" and expired(e, TRUSTED_TTL_DAYS):
-            actions["demoted"] += 1
-            if not dry_run:
-                log_action("demoted", e, {"reason": f"trusted but stale {TRUSTED_TTL_DAYS}d"})
-                del state[k]
+        elif e.get("status") == "trusted":
+            ttl = get_ttl(e, TRUSTED_TTL_DAYS)
+            if expired(e, ttl):
+                actions["demoted"] += 1
+                if not dry_run:
+                    log_action("demoted", e, {"reason": f"trusted but stale {ttl}d (category: {e.get('tag', 'default')})"})
+                    del state[k]
 
     # ── Reinforcement / intake pass (only on a not-yet-consumed handoff) ──
     graduations_this_run = 0
@@ -278,6 +298,7 @@ def run(dry_run=False):
                 "last_reinforced": now_iso(),
                 "sources": c.get("sources", []),
                 "rule_line": c.get("rule_line", ""),
+                "tag": c.get("tag", ""),
             }
             state[key_for(pat)] = entry
             actions["new"] += 1
