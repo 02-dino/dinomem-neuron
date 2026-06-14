@@ -88,5 +88,17 @@ if [ "$PURGE_DATA" = 1 ]; then
   fi
 fi
 
+# ── AGENTS.md block ───────────────────────────────────────────────────────────
+hr "AGENTS.md"
+AGENTS="$WS/AGENTS.md"
+BEGIN="<!-- BEGIN:dinomem-neuron (managed) -->"
+END="<!-- END:dinomem-neuron -->"
+if [ -f "$AGENTS" ] && grep -qF "$BEGIN" "$AGENTS"; then
+  awk -v b="$BEGIN" -v e="$END" '$0==b{skip=1} $0==e{skip=0; next} !skip{print}' "$AGENTS" > "$AGENTS.tmp" && mv "$AGENTS.tmp" "$AGENTS"
+  ok "AGENTS.md neuron block removed"
+else
+  skip "AGENTS.md neuron block not found"
+fi
+
 echo; hr "done"
 echo "  dinomem base remains installed. Run 'openclaw gateway restart' if needed."
