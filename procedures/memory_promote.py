@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-memory_promote.py — Layer 4 "promotion" for agent memory (zero-human pipeline).
+memory_promote.py — Layer 4 "promotion" for analyst memory (zero-human pipeline).
 
 Consumes the Stage-3 gate output (l3_synthesis/current_insights.json) and decides
 which insights graduate into the live memory pool — the step that actually lets the
@@ -36,11 +36,12 @@ Usage:
 import argparse
 import json
 import hashlib
+import re
 from datetime import datetime, timedelta
 from difflib import SequenceMatcher
 from pathlib import Path
 
-BASE = Path("DINOMEM_WORKSPACE_PLACEHOLDER")
+BASE = Path("/root/.openclaw/workspace-analyst")
 L3_DIR = BASE / "kb/memory_neuron/l3_synthesis"
 L4_DIR = BASE / "kb/memory_neuron/l4_promoted"
 TOPICS_DIR = BASE / "topics"
@@ -205,9 +206,17 @@ def run(dry_run=False):
             pass
     new_handoff = bool(handoff_sig) and handoff_sig != last_consumed
 
+    # ── Load pinned slugs (insights with a _pin_ file are immortal — skip decay) ──
+    MEMORY_DIR = Path(str(WORKSPACE_ROOT)) / "memory"
+    pinned_slugs = {f.stem.replace("_pin_", "") for f in MEMORY_DIR.glob("_pin_*.md")} if MEMORY_DIR.exists() else set()
+
     # ── Decay pass (before reinforcement, so this run's reinforcement can rescue) ──
     for k in list(state.keys()):
         e = state[k]
+        # Skip decay if insight has a corresponding _pin_ file
+        insight_slug = re.sub(r'[^a-z0-9]+', '-', e.get('pattern', k).lower())[:30].strip('-')
+        if any(insight_slug.startswith(slug) or slug.startswith(insight_slug) for slug in pinned_slugs):
+            continue
         if e.get("status") == "provisional" and expired(e, TTL_DAYS):
             actions["expired"] += 1
             if not dry_run:
