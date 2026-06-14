@@ -68,6 +68,13 @@ if [ -d "$WS/kb/vector_db_docs" ] && [ "$(ls -A "$WS/kb/vector_db_docs" 2>/dev/n
 else
   ok "kb/vector_db_docs/ clear"
 fi
+# Existing MEMORY.md
+if [ -f "$WS/MEMORY.md" ] && [ -s "$WS/MEMORY.md" ]; then
+  warn "MEMORY.md already exists and has content."
+  warn "dinomem-neuron's generate_topic_index.py will REWRITE it on first weekly run (Sunday 4:00 UTC)."
+  warn "Your existing index will be replaced with neuron-curated content. Raw memory/*.md files are untouched."
+fi
+
 # Existing AGENTS.md neuron block
 if [ -f "$WS/AGENTS.md" ] && grep -qF "rag_long_docs" "$WS/AGENTS.md" 2>/dev/null; then
   warn "AGENTS.md already has a rag_long_docs section — neuron block will be appended. Check for duplicates after install."
