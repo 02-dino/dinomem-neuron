@@ -171,6 +171,41 @@ if [ "$DO_CRON" = 1 ]; then
   fi
 fi
 
+# ── Wire AGENTS.md ───────────────────────────────────────────────────────────
+hr "AGENTS.md"
+AGENTS="$WS/AGENTS.md"
+BEGIN="<!-- BEGIN:dinomem-neuron (managed) -->"
+END="<!-- END:dinomem-neuron -->"
+BLOCK="$BEGIN
+## rag_long_docs
+  when:
+    - user shares or pastes a long document (contract, book, legal text, manual, article)
+    - user says 'save this doc', 'remember this document', 'add this to knowledge base'
+    - content is too long for memory (>1 page / >2000 chars)
+  action:
+    1. Save content to docs/<slug>.md in workspace
+    2. Run: python3 procedures/docs_ingest.py --file docs/<slug>.md
+    3. Confirm: 'Saved and indexed to knowledge base. Searchable via docs_search.'
+  note: docs/ is auto-re-ingested daily at 4:00 UTC for any new/changed files
+  never: save long docs to memory/ — large files pollute LLM context
+
+## contradiction_alerts
+  when: contradiction_check.py flags a conflict (check logs/contradiction_check.log)
+  action:
+    - surface conflict to user on next relevant turn
+    - ask user to resolve: which version is correct?
+    - do NOT auto-resolve — requires human judgment
+  note: contradiction_check runs automatically daily at 3:30 UTC after synthesis
+$END"
+
+touch "$AGENTS"
+if grep -qF "$BEGIN" "$AGENTS" 2>/dev/null; then
+  skip "AGENTS.md already wired (use --force to refresh)"
+else
+  printf '\n%s\n' "$BLOCK" >> "$AGENTS"
+  ok "AGENTS.md wired"
+fi
+
 echo
 hr "done"
 echo "  dinomem-neuron installed for agent: $AGENT_ID"
