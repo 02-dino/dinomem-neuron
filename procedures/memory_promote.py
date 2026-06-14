@@ -37,9 +37,18 @@ import argparse
 import json
 import hashlib
 import re
+import sys
 from datetime import datetime, timedelta
 from difflib import SequenceMatcher
 from pathlib import Path
+
+# LLM caller — reuse from extract_memory if available
+try:
+    sys.path.insert(0, str(Path(__file__).parent))
+    from extract_memory import call_llm as _call_llm
+    HAS_LLM = True
+except ImportError:
+    HAS_LLM = False
 
 BASE = Path("/root/.openclaw/workspace-analyst")
 L3_DIR = BASE / "kb/memory_neuron/l3_synthesis"
@@ -74,6 +83,20 @@ CATEGORY_TTL = {
     "uncertain":   30,   # unverified, decay moderately fast
     "factual":     90,   # facts, medium-lived
 }
+
+# Reinforce multiplier — historical strength extends TTL.
+# reinforce_count is cumulative and independent of time.
+REINFORCE_MULTIPLIER = [
+    (10, 2.0),  # reinforced 10+ times → 2x TTL
+    (5,  1.5),  # reinforced 5+ times  → 1.5x TTL
+    (3,  1.2),  # reinforced 3+ times  → 1.2x TTL
+    (0,  1.0),  # baseline
+]
+
+# LLM review rescue — every N days, LLM judges if insight is still relevant.
+# If valid → reset last_reinforced (rescue from decay).
+# If invalidated → delete immediately.
+LLM_REVIEW_INTERVAL_DAYS = 60
 GRADUATE_REINFORCE = 3      # distinct reinforcing runs needed to graduate
 MAX_GRADUATIONS_PER_RUN = 2 # rate limit: behavior memory can't be flooded
 MAX_PERSISTENT_RULES = 12   # hard cap on injected rules — keep MEMORY.md lean
@@ -149,10 +172,62 @@ def find_match(state, pattern):
     return None, None
 
 
+def llm_review_insight(entry):
+    """Ask LLM if insight is still relevant. Returns 'valid', 'invalidated', or 'skip'.
+    Only called when insight is approaching TTL and hasn't been LLM-reviewed in LLM_REVIEW_INTERVAL_DAYS.
+    """
+    if not HAS_LLM:
+        return "skip"
+
+    last_review = entry.get("last_llm_review")
+    if last_review:
+        try:
+            days_since = (datetime.now() - datetime.fromisoformat(last_review)).days
+            if days_since < LLM_REVIEW_INTERVAL_DAYS:
+                return "skip"  # reviewed recently, skip
+        except Exception:
+            pass
+
+    pattern = entry.get("pattern", "")
+    tag = entry.get("tag", "unknown")
+    first_seen = entry.get("first_promoted", "unknown")
+    reinforce_count = entry.get("reinforce_count", 0)
+
+    prompt = f"""You are reviewing a long-term memory insight for an AI agent.
+
+Insight: {pattern}
+Category: {tag}
+First observed: {first_seen}
+Reinforced {reinforce_count} times across sessions.
+
+Is this insight still likely to be relevant and accurate today?
+Answer with exactly one word: valid OR invalidated
+- valid: still accurate, still useful for the agent to remember
+- invalidated: outdated, proven wrong, or no longer applicable"""
+
+    ok, result = _call_llm(prompt, max_tokens=10)
+    if not ok:
+        return "skip"
+    answer = result.strip().lower()
+    if "invalid" in answer:
+        return "invalidated"
+    if "valid" in answer:
+        return "valid"
+    return "skip"
+
+def get_reinforce_multiplier(entry):
+    """Return TTL multiplier based on cumulative reinforce_count (historical strength)."""
+    count = entry.get("reinforce_count", 0)
+    for threshold, multiplier in REINFORCE_MULTIPLIER:
+        if count >= threshold:
+            return multiplier
+    return 1.0
+
 def get_ttl(entry, default_ttl):
-    """Return TTL for a trusted entry based on its category tag, or default_ttl."""
+    """Return effective TTL: category_TTL × reinforce_multiplier."""
     tag = entry.get("tag", "").lower().strip("[]")
-    return CATEGORY_TTL.get(tag, default_ttl)
+    base = CATEGORY_TTL.get(tag, default_ttl)
+    return int(base * get_reinforce_multiplier(entry))
 
 def expired(entry, ttl_days):
     last = entry.get("last_reinforced") or entry.get("first_promoted")
@@ -243,10 +318,43 @@ def run(dry_run=False):
         elif e.get("status") == "trusted":
             ttl = get_ttl(e, TRUSTED_TTL_DAYS)
             if expired(e, ttl):
-                actions["demoted"] += 1
-                if not dry_run:
-                    log_action("demoted", e, {"reason": f"trusted but stale {ttl}d (category: {e.get('tag', 'default')})"})
-                    del state[k]
+                # Before expiring: try LLM review rescue
+                verdict = llm_review_insight(e)
+                if verdict == "valid":
+                    # Rescue: reset clock, mark reviewed
+                    e["last_reinforced"] = now_iso()
+                    e["last_llm_review"] = now_iso()
+                    log_action("llm_rescued", e, {"reason": "LLM review: still valid"})
+                elif verdict == "invalidated":
+                    actions["demoted"] += 1
+                    if not dry_run:
+                        log_action("demoted", e, {"reason": "LLM review: invalidated"})
+                        del state[k]
+                else:
+                    # LLM unavailable or skip — fall back to time-based decay
+                    actions["demoted"] += 1
+                    if not dry_run:
+                        log_action("demoted", e, {"reason": f"trusted but stale {ttl}d (category: {e.get('tag', 'default')})"})
+                        del state[k]
+            else:
+                # Not expired yet — check if approaching TTL (>75%) for early LLM review
+                last = e.get("last_reinforced") or e.get("first_promoted")
+                if last:
+                    try:
+                        days_elapsed = (datetime.now() - datetime.fromisoformat(last)).days
+                        if days_elapsed > ttl * 0.75:
+                            verdict = llm_review_insight(e)
+                            if verdict == "valid":
+                                e["last_reinforced"] = now_iso()
+                                e["last_llm_review"] = now_iso()
+                                log_action("llm_rescued", e, {"reason": "LLM early review: still valid"})
+                            elif verdict == "invalidated":
+                                actions["demoted"] += 1
+                                if not dry_run:
+                                    log_action("demoted", e, {"reason": "LLM early review: invalidated"})
+                                    del state[k]
+                    except Exception:
+                        pass
 
     # ── Reinforcement / intake pass (only on a not-yet-consumed handoff) ──
     graduations_this_run = 0
