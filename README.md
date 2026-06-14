@@ -1,8 +1,12 @@
 # 🧠 dinomem-neuron — Dino Agent Memory (Neuron Layer)
 
-> Your agent doesn't just remember — it starts to *think* about what it remembers.
+> dinomem remembers what you tell it. dinomem-neuron figures out things you never said.
 
-dinomem gives your agent memory. dinomem-neuron makes that memory intelligent: it finds hidden connections between memories, synthesizes emergent insights, detects contradictions, and promotes durable patterns into permanent knowledge — all automatically, overnight.
+dinomem gives your agent memory. dinomem-neuron gives it the ability to learn from that memory.
+
+Every night, it builds a graph of how your memories relate, clusters them, and runs synthesis — an LLM pass that finds patterns across everything you've ever told your agent. Insights that survive multiple synthesis cycles get promoted to permanent knowledge. Your agent's behavior changes over time — not because you updated a config, but because it learned.
+
+The result: an agent that connects a decision you made in January to a pattern from November. That notices you've been contradicting yourself. That builds a structured knowledge base from your sessions — without you writing a single line of it.
 
 **Requires [dinomem](https://github.com/02-dino/dinomem) installed first.**
 
