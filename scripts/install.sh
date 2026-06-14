@@ -47,6 +47,32 @@ SQLITE_PATH="$OPENCLAW_MEMORY_DIR/$AGENT_ID.sqlite"
 echo
 hr "dinomem-neuron -> $WS (agent: $AGENT_ID)"
 
+# ── Pre-flight compatibility checks ─────────────────────────────────────────
+hr "Pre-flight checks"
+# dinomem base must be installed
+if [ ! -f "$WS/procedures/extract_memory.py" ]; then
+  warn "dinomem base not detected (extract_memory.py missing) — install dinomem first."
+  warn "  bash dinomem/scripts/install.sh --workspace $WS --agent-id $AGENT_ID"
+else
+  ok "dinomem base detected"
+fi
+# Existing neuron data
+if [ -d "$WS/kb/memory_neuron" ] && [ "$(ls -A "$WS/kb/memory_neuron" 2>/dev/null)" ]; then
+  warn "kb/memory_neuron/ already exists — existing neuron data will be preserved (not overwritten)"
+else
+  ok "kb/memory_neuron/ clear"
+fi
+# Existing RAG vector DB
+if [ -d "$WS/kb/vector_db_docs" ] && [ "$(ls -A "$WS/kb/vector_db_docs" 2>/dev/null)" ]; then
+  warn "kb/vector_db_docs/ already exists — dinomem-neuron RAG will write to this path. Back up if needed."
+else
+  ok "kb/vector_db_docs/ clear"
+fi
+# Existing AGENTS.md neuron block
+if [ -f "$WS/AGENTS.md" ] && grep -qF "rag_long_docs" "$WS/AGENTS.md" 2>/dev/null; then
+  warn "AGENTS.md already has a rag_long_docs section — neuron block will be appended. Check for duplicates after install."
+fi
+
 # ── 0) Python dependencies ───────────────────────────────────────────────────
 hr "Python dependencies"
 python3 -c "import langchain_chroma" 2>/dev/null && skip "langchain-chroma (installed)" || (

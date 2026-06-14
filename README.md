@@ -180,6 +180,17 @@ Session → Archive → extract_memory.py → memory/*.md + MEMORY.md + vector D
 
 ---
 
+## Compatibility
+
+| Potential clash | What happens | How to avoid |
+|----------------|-------------|-------------|
+| dinomem base not installed | install.sh warns and continues | Install dinomem first |
+| Existing `kb/memory_neuron/` | Preserved — not overwritten | Nothing, safe |
+| Existing `kb/vector_db_docs/` | Neuron RAG will write to this path | Back up first if it belongs to another system |
+| Existing `rag_long_docs` in AGENTS.md | Block appended — potential duplicate | Remove duplicate manually after install |
+
+---
+
 ## Install options
 
 | Flag | Default | Description |
