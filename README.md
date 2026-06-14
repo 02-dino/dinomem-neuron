@@ -287,7 +287,7 @@ L2 graph: next morning. L3 synthesis: a few days (needs memory clusters to form)
 No. L2/L3/L4 write to `kb/memory_neuron/` only. `memory_promote.py` appends to `_permanent.md` and `PERSISTENT_AUTO.md`. `generate_topic_index.py` overwrites `MEMORY.md` and `topics/INDEX.md` — both are auto-generated, not your raw memory files.
 
 **What happens if synthesis finds a contradiction?**
-Logged to `contradiction_log.jsonl`, queued in `contradiction_queue.jsonl`. The agent can surface these on request. Not auto-resolved — requires human judgment.
+Blocking contradictions → insight blocked, queued in `contradiction_queue.jsonl`. Warnings → promoted but flagged. Both logged to `contradiction_log.jsonl`. Blocked insights are re-evaluated automatically when old insights decay. You can also trigger manually: `python3 procedures/contradiction_check.py --re-evaluate`.
 
 **Can I use RAG or calendar without L2/L3/L4?**
 Yes — both are fully independent. RAG: just run `docs_ingest.py` + `docs_search.py`. Calendar: just run `calendar_oauth_setup.py` once, then use `calendar_tool.py`.
