@@ -240,7 +240,9 @@ def _fallback_topic_extraction(documents_summary: str) -> str:
                 filename = parts[1].strip().split()[0]
                 name = filename.replace('memory_', '').replace('.md', '')
                 try:
-                    file_date = datetime.strptime(name, '%Y-%m-%d')
+                    # Support both YYYY-MM-DD.md and YYYY-MM-DD_type_slug.md
+                    date_prefix = name.split("_")[0]
+                    file_date = datetime.strptime(date_prefix, "%Y-%m-%d")
                     days_ago = (datetime.now() - file_date).days
                     age = f"{days_ago}d"
                 except ValueError:
@@ -373,13 +375,13 @@ def build_documents_summary() -> str:
                 file_date = None
                 age_days = 999
                 try:
-                    # Extract YYYY-MM-DD from filename
-                    name_part = md_file.stem  # e.g. "2026-05-29"
-                    file_date = datetime.strptime(name_part, '%Y-%m-%d')
+                    # Support both YYYY-MM-DD.md and YYYY-MM-DD_type_slug.md
+                    name_part = md_file.stem
+                    date_prefix = name_part.split("_")[0]
+                    file_date = datetime.strptime(date_prefix, "%Y-%m-%d")
                     age_days = (datetime.now() - file_date).days
                 except (ValueError, TypeError):
                     pass
-
                 # Recency-weighted preview: newer files get more signal
                 if age_days <= 30:
                     preview_chars = 800
