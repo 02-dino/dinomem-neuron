@@ -82,6 +82,7 @@ if [ "$PURGE_DATA" = 1 ]; then
     [ -d "$WS/kb/memory_neuron" ] && rm -rf "$WS/kb/memory_neuron" && ok "removed kb/memory_neuron/"
     [ -d "$WS/topics" ]           && rm -rf "$WS/topics"           && ok "removed topics/"
     [ -d "$WS/kb/vector_db_docs" ] && rm -rf "$WS/kb/vector_db_docs" && ok "removed kb/vector_db_docs/"
+    [ -f "$WS/memory/_permanent.md" ] && rm "$WS/memory/_permanent.md" && ok "removed memory/_permanent.md"
     [ -d "$WS/docs" ]             && warn "docs/ preserved — delete manually if needed"
   else
     skip "purge-data cancelled"
