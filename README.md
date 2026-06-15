@@ -1,10 +1,8 @@
 # 🧠 dinomem-neuron — Dino Agent Memory (Neuron Layer)
 
-> dinomem remembers what you tell it. dinomem-neuron figures out things you never said.
-
 > Requires [dinomem](https://github.com/02-dino/dinomem) installed first.
 
-dinomem gives your agent memory. dinomem-neuron gives it the ability to learn from that memory.
+The learning layer on top of dinomem.
 
 Every night, it builds a graph of how your memories relate, clusters them, and runs synthesis — an LLM pass that finds patterns across everything you've ever told your agent. Insights are rigorously evaluated before being promoted to permanent knowledge. Your agent's behavior changes over time — not because you updated a config, but because it learned.
 
@@ -133,6 +131,12 @@ Session → Archive → extract_memory.py → memory/*.md + MEMORY.md + vector D
         ▼
 [L4: generate_topic_index.py]
   Builds topics/INDEX.md → writes MEMORY.md (enriched, structured)
+
+  Unlike the flat append in dinomem base, this index is LLM-curated:
+  entries are selected by transferability (reusable lessons rank above
+  one-off datapoints), not just recency. It also embeds promoted behavioral
+  rules at the top — so MEMORY.md serves two roles: search navigation aid
+  AND always-present knowledge injected every turn.
         │
         ▼
 [Root context injection — every turn]
