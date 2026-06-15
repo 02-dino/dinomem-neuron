@@ -88,12 +88,36 @@ def _cached_search(cache_key: str, query: str, fetch_k: int):
     ]
 
 # ── Search ────────────────────────────────────────────────────────────────────
+def _hyde_expand(query: str) -> str:
+    """Generate a hypothetical document passage for HyDE query expansion.
+    Falls back to original query if LLM unavailable."""
+    try:
+        import subprocess, shutil
+        openclaw_bin = shutil.which('openclaw') or '/home/linuxbrew/.linuxbrew/bin/openclaw'
+        prompt = (
+            f'Write a short factual passage (2-3 sentences) that would directly answer '
+            f'this question, as if from a formal document or legal text: {query}'
+        )
+        result = subprocess.run(
+            [openclaw_bin, 'capability', 'model', 'run', '--prompt', prompt, '--gateway', '--json'],
+            capture_output=True, text=True, timeout=15
+        )
+        if result.returncode == 0:
+            data = json.loads(result.stdout)
+            if data.get('ok') and data.get('outputs'):
+                return data['outputs'][0].get('text', query).strip() or query
+    except Exception:
+        pass
+    return query
+
+
 def docs_search(
     query: str,
     k: int = 5,
     doc_filter: Optional[str] = None,
     section_filter: Optional[str] = None,
     max_chars: Optional[int] = None,
+    hyde: bool = True,
 ) -> List[Dict]:
     """
     Semantic search over indexed long-form documents.
@@ -113,8 +137,10 @@ def docs_search(
         docs_search("force majeure", k=5)
         docs_search("pasal 1", doc_filter="uu-cipta-kerja", k=3)
     """
-    ck = _cache_key(query, k, doc_filter, section_filter)
-    raw = _cached_search(ck, query, k * 4)
+    # HyDE: expand query with hypothetical document passage for better recall
+    search_query = _hyde_expand(query) if hyde else query
+    ck = _cache_key(query, k, doc_filter, section_filter)  # cache key uses original query
+    raw = _cached_search(ck, search_query, k * 4)
 
     results = []
     for item in raw:
