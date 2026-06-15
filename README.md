@@ -4,7 +4,7 @@
 
 dinomem gives your agent memory. dinomem-neuron gives it the ability to learn from that memory.
 
-Every night, it builds a graph of how your memories relate, clusters them, and runs synthesis — an LLM pass that finds patterns across everything you've ever told your agent. Insights that survive multiple synthesis cycles get promoted to permanent knowledge. Your agent's behavior changes over time — not because you updated a config, but because it learned.
+Every night, it builds a graph of how your memories relate, clusters them, and runs synthesis — an LLM pass that finds patterns across everything you've ever told your agent. Insights that pass a multi-signal evaluation — confidence, reinforcement strength, contradiction checks, and time-based decay — get promoted to permanent knowledge. Your agent's behavior changes over time — not because you updated a config, but because it learned.
 
 The result: an agent that connects a decision you made in January to a pattern from November. That notices you've been contradicting yourself. That builds a structured knowledge base from your sessions — without you writing a single line of it.
 
@@ -17,8 +17,8 @@ Neuron does not fine-tune model weights.
 Instead it learns by:
 
 1. Observing experiences (memory files from sessions)
-2. Identifying recurring patterns (synthesis across memory clusters)
-3. Validating those patterns over time (multiple synthesis cycles)
+2. Identifying patterns across memory clusters (synthesis)
+3. Evaluating those patterns across multiple signals — confidence, reinforcement, contradiction checks, decay
 4. Promoting stable patterns into long-term knowledge (permanent files)
 5. Changing future behavior based on that knowledge (injected every turn)
 
@@ -50,7 +50,7 @@ March:    "User dislikes broad diversification."
 "User consistently prefers concentrated portfolios."
 ```
 
-**After surviving multiple synthesis cycles — promoted:**
+**After passing multi-signal evaluation — promoted:**
 ```
 topics/PERSISTENT_AUTO.md:
 "User prefers concentrated investing."
@@ -71,7 +71,7 @@ This insight is now injected every turn. Future investing discussions automatica
 | 🔗 | **Relationship Discovery** (L2) | Finds which memories are related — even across different conversations |
 | 💡 | **Pattern Synthesis** (L3) | Clusters related memories → LLM synthesizes emergent insights you never explicitly stated |
 | ⚠️ | **Contradiction detection** (L3) | Flags when new insights conflict with existing ones |
-| 📌 | **Knowledge Promotion** (L4) | Insights that survive multiple synthesis cycles → written into always-injected context → behavior change |
+| 📌 | **Knowledge Promotion** (L4) | Insights that pass multi-signal evaluation (confidence, reinforcement, contradiction, decay) → written into always-injected context → behavior change |
 | 📚 | **RAG for long docs** | Semantic search over contracts, books, legal text — stored separately, never pollutes memory |
 | 📅 | **Calendar integration** | Links `_note_` reminders to Google Calendar — auto-deleted when the event passes |
 
@@ -229,11 +229,11 @@ Session → Archive → extract_memory.py → memory/*.md + MEMORY.md + vector D
   Promoted insights present on every turn — no recall needed
 ```
 
-### Why multiple cycles?
+### Why multi-signal evaluation?
 
-A single observation can be noise. Neuron only promotes insights that continue appearing across multiple synthesis passes. This prevents temporary behaviors from becoming permanent knowledge.
+A single observation can be noise. Neuron evaluates each insight across multiple dimensions before promotion: how often it reappears (reinforcement), how confident the synthesis is, whether it contradicts existing knowledge, and whether it decays without re-observation.
 
-Repeated observations become durable knowledge. One-off signals stay in synthesis — never promoted.
+All signals must align. One-off or low-confidence insights stay in synthesis — never promoted.
 
 ---
 
@@ -363,7 +363,7 @@ bash dinomem-neuron/scripts/install.sh --workspace <workspace> --agent-id <id>
 ## FAQ
 
 **How long until I see results?**
-L2 graph: next morning. L3 synthesis: a few days (needs memory clusters to form). L4 promotion: 1–2 weeks (insights must survive multiple cycles). Calendar: immediate after OAuth setup.
+L2 graph: next morning. L3 synthesis: a few days (needs memory clusters to form). L4 promotion: 1–2 weeks (insights must pass multi-signal evaluation across synthesis runs). Calendar: immediate after OAuth setup.
 
 **Does it modify my existing memory files?**
 No. L2/L3/L4 write to `kb/memory_neuron/` only. `memory_promote.py` appends to `_permanent.md` and `PERSISTENT_AUTO.md`. `generate_topic_index.py` overwrites `MEMORY.md` and `topics/INDEX.md` — both are auto-generated, not your raw memory files.
