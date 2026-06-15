@@ -103,90 +103,6 @@ openclaw gateway restart
 
 ---
 
-## How do I know it's working?
-
-```bash
-# Run first graph build manually
-python3 ~/.openclaw/workspace-myagent/procedures/memory_graph.py
-# → Wrote kb/memory_neuron/l2_graph/memory_graph.json
-
-# Run first synthesis
-python3 ~/.openclaw/workspace-myagent/procedures/memory_synthesis.py
-# → Wrote SYNTHESIS.md + insight_history.jsonl
-
-# Check crons are registered
-crontab -l | grep memory_graph
-crontab -l | grep memory_synthesis
-crontab -l | grep memory_promote
-```
-
-After the first full week, check `topics/PERSISTENT_AUTO.md` — promoted insights will appear there.
-
----
-
-## Using dinomem-neuron
-
-### RAG for long documents
-
-Store and search long documents — contracts, books, legal text, manuals — without polluting memory.
-
-```bash
-# Add a document
-cp my-contract.md ~/.openclaw/workspace-myagent/docs/
-
-# Ingest it (or wait for daily cron at 4:00 UTC)
-python3 ~/.openclaw/workspace-myagent/procedures/docs_ingest.py --file docs/my-contract.md
-
-# Search it
-python3 ~/.openclaw/workspace-myagent/tools/docs_search.py "force majeure clause" --k 5
-
-# List all indexed documents
-python3 ~/.openclaw/workspace-myagent/tools/docs_search.py --list
-```
-
-Documents are chunked by heading structure — one section = one chunk. Legal clauses and book chapters stay intact, not split mid-sentence.
-
-The agent uses `docs_search.py` automatically when you ask about content from an indexed document.
-
-### Calendar integration
-
-Link `_note_` reminders to Google Calendar. When the event date passes, the note is automatically deleted.
-
-**One-time setup:**
-```bash
-# 1. Create OAuth2 credentials at https://console.cloud.google.com/
-#    APIs & Services → Credentials → Create → OAuth client ID → Desktop app
-#    Download as client_secret.json → place in <workspace>/
-
-# 2. Authorize
-python3 ~/.openclaw/workspace-myagent/scripts/calendar_oauth_setup.py
-```
-
-**Usage:**
-```bash
-# Create a calendar event linked to a note
-python3 ~/.openclaw/workspace-myagent/tools/calendar_tool.py create \
-  "Doctor appointment" --date 2026-06-25 --time 14:00 --note _note_doctor.md
-
-# With reminder (popup 30 min before) and attendee
-python3 ~/.openclaw/workspace-myagent/tools/calendar_tool.py create \
-  "Team meeting" --date 2026-06-25 --time 10:00 \
-  --reminder popup:30 --reminder email:60 \
-  --attendee colleague@example.com
-
-# List upcoming events
-python3 ~/.openclaw/workspace-myagent/tools/calendar_tool.py list --upcoming 7
-```
-
-> **Note:** Sound and vibration are device-level settings — not controllable via the Google Calendar API. Those are set on your phone/browser.
-
-Or just tell your agent:
-> "Remember to call the dentist before Friday"
-
-The agent detects the date, saves `_note_dentist.md`, and creates the calendar event automatically. When Friday passes, `calendar_sync.py` deletes the note.
-
----
-
 ## How it all works
 
 ```
@@ -226,6 +142,51 @@ Session → Archive → extract_memory.py → memory/*.md + MEMORY.md + vector D
 [Behavior change]
   Promoted insights present on every turn — no recall needed
 ```
+
+---
+
+## How do I know it's working?
+
+```bash
+# Run first graph build manually
+python3 ~/.openclaw/workspace-myagent/procedures/memory_graph.py
+# → Wrote kb/memory_neuron/l2_graph/memory_graph.json
+
+# Run first synthesis
+python3 ~/.openclaw/workspace-myagent/procedures/memory_synthesis.py
+# → Wrote SYNTHESIS.md + insight_history.jsonl
+
+# Check crons are registered
+crontab -l | grep memory_graph
+crontab -l | grep memory_synthesis
+crontab -l | grep memory_promote
+```
+
+After the first full week, check `topics/PERSISTENT_AUTO.md` — promoted insights will appear there.
+
+---
+
+## Calendar setup
+
+Calendar integration requires a one-time OAuth setup. Everything else — L2/L3/L4, RAG, contradiction detection — runs automatically after install.
+
+```bash
+# 1. Create OAuth2 credentials at https://console.cloud.google.com/
+#    APIs & Services → Credentials → Create → OAuth client ID → Desktop app
+#    Download as client_secret.json → place in <workspace>/
+
+# 2. Authorize
+python3 ~/.openclaw/workspace-myagent/scripts/calendar_oauth_setup.py
+```
+
+Once set up, just tell your agent:
+> "Remember to call the dentist before Friday"
+
+The agent detects the date, saves `_note_dentist.md`, and creates the calendar event automatically. When Friday passes, `calendar_sync.py` deletes the note.
+
+> Sound and vibration are device-level settings — not controllable via the Google Calendar API.
+
+---
 
 ### Why multi-signal evaluation?
 
@@ -370,7 +331,12 @@ No. L2/L3/L4 write to `kb/memory_neuron/` only. `memory_promote.py` appends to `
 Blocking contradictions → insight blocked, queued in `contradiction_queue.jsonl`. Warnings → promoted but flagged. Both logged to `contradiction_log.jsonl`. Blocked insights are re-evaluated automatically when old insights decay. You can also trigger manually: `python3 procedures/contradiction_check.py --re-evaluate`.
 
 **Can I use RAG or calendar without L2/L3/L4?**
-Yes — both are fully independent. RAG: just run `docs_ingest.py` + `docs_search.py`. Calendar: just run `calendar_oauth_setup.py` once, then use `calendar_tool.py`.
+Yes — both are fully independent. Calendar: just run `calendar_oauth_setup.py` once. RAG: just drop files into `docs/` and they're auto-ingested daily. To ingest immediately or search manually:
+```bash
+python3 <workspace>/procedures/docs_ingest.py --file docs/my-doc.md
+python3 <workspace>/tools/docs_search.py "search query" --k 5
+python3 <workspace>/tools/docs_search.py --list  # list all indexed docs
+```
 
 **How much extra disk space?**
 Graph JSON: small. Synthesis files: minimal text. Docs vector DB: ~1–2MB per 1000 chunks.
