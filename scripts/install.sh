@@ -212,23 +212,23 @@ END="<!-- END:dinomem-neuron -->"
 BLOCK="$BEGIN
 ## rag_long_docs
   when:
-    - user shares or pastes a long document (contract, book, legal text, manual, article)
-    - user says 'save this doc', 'remember this document', 'add this to knowledge base'
-    - content is too long for memory (>1 page / >2000 chars)
+    - user shares a long document
+    - user says save/remember this document / add to knowledge base
+    - content too long for memory (>2000 chars)
   action:
-    1. Save content to docs/<slug>.md in workspace
+    1. Save to docs/<slug>.md
     2. Run: python3 procedures/docs_ingest.py --file docs/<slug>.md
-    3. Confirm: 'Saved and indexed to knowledge base. Searchable via docs_search.'
-  note: docs/ is auto-re-ingested daily at 4:00 UTC for any new/changed files
-  never: save long docs to memory/ — large files pollute LLM context
+    3. Confirm to user
+  note: docs/ auto-re-ingested daily 4:00 UTC
+  never: save long docs to memory/
 
 ## contradiction_alerts
-  when: contradiction_check.py flags a conflict (check logs/contradiction_check.log)
+  when: contradiction_check.py flags a conflict
   action:
     - surface conflict to user on next relevant turn
-    - ask user to resolve: which version is correct?
-    - do NOT auto-resolve — requires human judgment
-  note: contradiction_check runs automatically daily at 3:30 UTC after synthesis
+    - ask user to resolve
+    - do NOT auto-resolve
+  note: contradiction_check runs daily 3:30 UTC
 $END"
 
 touch "$AGENTS"
