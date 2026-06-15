@@ -18,7 +18,7 @@ Instead it learns by:
 
 1. Observing experiences (memory files from sessions)
 2. Identifying patterns across memory clusters (synthesis)
-3. Evaluating those patterns across multiple signals — confidence, reinforcement strength, contradiction checks, insight lifecycle
+3. Evaluating those patterns across multiple signals — confidence, reinforcement strength (recurrence across synthesis runs), contradiction checks, insight lifecycle
 4. Promoting stable patterns into long-term knowledge (permanent files)
 5. Changing future behavior based on that knowledge (injected every turn)
 
@@ -50,7 +50,7 @@ March:    "User dislikes broad diversification."
 "User consistently prefers concentrated portfolios."
 ```
 
-**After passing multi-signal evaluation (confidence, reinforcement, contradiction, lifecycle) — promoted:
+**After passing multi-signal evaluation (confidence, reinforcement/recurrence, contradiction, lifecycle) — promoted:
 ```
 topics/PERSISTENT_AUTO.md:
 "User prefers concentrated investing."
@@ -71,7 +71,7 @@ This insight is now injected every turn. Future investing discussions automatica
 | 🔗 | **Relationship Discovery** (L2) | Finds which memories are related — even across different conversations |
 | 💡 | **Pattern Synthesis** (L3) | Clusters related memories → LLM synthesizes emergent insights you never explicitly stated |
 | ⚠️ | **Contradiction detection** (L3) | Flags when new insights conflict with existing ones |
-| 📌 | **Knowledge Promotion** (L4) | Insights that pass multi-signal evaluation (confidence, reinforcement, contradiction, insight lifecycle) → written into always-injected context → behavior change |
+| 📌 | **Knowledge Promotion** (L4) | Insights that pass multi-signal evaluation (confidence, reinforcement/recurrence, contradiction, insight lifecycle) → written into always-injected context → behavior change |
 | 📚 | **RAG for long docs** | Semantic search over contracts, books, legal text — stored separately, never pollutes memory |
 | 📅 | **Calendar integration** | Links `_note_` reminders to Google Calendar — auto-deleted when the event passes |
 
@@ -231,7 +231,7 @@ Session → Archive → extract_memory.py → memory/*.md + MEMORY.md + vector D
 
 ### Why multi-signal evaluation?
 
-A single observation can be noise. Neuron evaluates each insight across multiple dimensions before promotion: how confident the synthesis is, how strongly it reinforces over time, whether it contradicts existing knowledge, and how it behaves across its full lifecycle — including decay, recovery, and exceptions.
+A single observation can be noise. Neuron evaluates each insight across multiple dimensions before promotion: how confident the synthesis is, how often it recurs across synthesis runs, whether it contradicts existing knowledge, and how it behaves across its full lifecycle — including decay, recovery, and exceptions.
 
 All signals must align. One-off or low-confidence insights stay in synthesis — never promoted.
 
