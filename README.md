@@ -30,9 +30,9 @@ Experiences → Patterns → Promotion → Behavior Change
 
 ## How behavior changes
 
-Promoted insights are written into `topics/PERSISTENT_AUTO.md` and `memory/_permanent.md` — files that are part of the agent's always-injected root context.
+Promoted insights are written into `topics/PERSISTENT_AUTO.md` and `memory/_permanent.md`. These feed into `MEMORY.md` — the root file that OpenClaw injects into the agent's context on every turn.
 
-Unlike ordinary memories (recalled on demand), promoted insights are **present on every turn**. Recurring patterns discovered from experience become part of the agent's baseline behavior — without you writing a single config line.
+Unlike ordinary memories (recalled on demand via `memory_search`), promoted insights are **present on every turn** via `MEMORY.md`. Patterns discovered from experience become part of the agent's baseline behavior — without you writing a single config line.
 
 ---
 
