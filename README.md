@@ -2,6 +2,8 @@
 
 > dinomem remembers what you tell it. dinomem-neuron figures out things you never said.
 
+> Requires [dinomem](https://github.com/02-dino/dinomem) installed first.
+
 dinomem gives your agent memory. dinomem-neuron gives it the ability to learn from that memory.
 
 Every night, it builds a graph of how your memories relate, clusters them, and runs synthesis — an LLM pass that finds patterns across everything you've ever told your agent. Insights are rigorously evaluated before being promoted to permanent knowledge. Your agent's behavior changes over time — not because you updated a config, but because it learned.
@@ -57,10 +59,6 @@ topics/PERSISTENT_AUTO.md:
 ```
 
 This insight is now injected every turn. Future investing discussions automatically reflect this preference — without recall, without prompting.
-
----
-
-**Requires [dinomem](https://github.com/02-dino/dinomem) installed first.**
 
 ---
 
