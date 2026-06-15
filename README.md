@@ -249,7 +249,7 @@ All signals must align. One-off or low-confidence insights stay in synthesis —
 │   ├── docs_ingest.py          # RAG — ingest long docs
 │   └── calendar_sync.py        # Calendar — auto-resolve past _note_ files
 ├── tools/
-│   ├── docs_search.py          # RAG — semantic search over long docs
+│   ├── docs_search.py          # RAG — semantic search over long docs (HyDE query expansion enabled by default)
 │   ├── cache_utils.py          # Shared cache utility
 │   └── calendar_tool.py        # Calendar — create/list/delete events
 ├── scripts/
