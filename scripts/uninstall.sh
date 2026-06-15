@@ -5,20 +5,23 @@
 #
 # Usage:
 #   bash scripts/uninstall.sh --workspace DIR
-#   bash scripts/uninstall.sh --workspace DIR --purge         # also remove scripts
-#   bash scripts/uninstall.sh --workspace DIR --purge-data    # also remove kb/, topics/, docs/
+#   bash scripts/uninstall.sh --workspace DIR --purge          # also remove scripts
+#   bash scripts/uninstall.sh --workspace DIR --purge-data     # remove kb/, topics/ (NOT memory)
+#   bash scripts/uninstall.sh --workspace DIR --purge-memory   # ⚠️  WIPES memory/_permanent.md — irreversible
 set -euo pipefail
 
 WS="${OPENCLAW_WORKSPACE:-$HOME/.openclaw/workspace}"
 PURGE=0
 PURGE_DATA=0
+PURGE_MEMORY=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --workspace)   WS="$2"; shift 2 ;;
-    --agent-id)    shift 2 ;;  # accepted, not needed
-    --purge)       PURGE=1; shift ;;
-    --purge-data)  PURGE_DATA=1; shift ;;
+    --workspace)     WS="$2"; shift 2 ;;
+    --agent-id)      shift 2 ;;  # accepted, not needed
+    --purge)         PURGE=1; shift ;;
+    --purge-data)    PURGE_DATA=1; shift ;;
+    --purge-memory)  PURGE_MEMORY=1; shift ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
 done
@@ -79,13 +82,27 @@ if [ "$PURGE_DATA" = 1 ]; then
   warn "This will permanently delete neuron knowledge data."
   read -r -p "  Type 'yes' to confirm: " confirm
   if [ "$confirm" = "yes" ]; then
-    [ -d "$WS/kb/memory_neuron" ] && rm -rf "$WS/kb/memory_neuron" && ok "removed kb/memory_neuron/"
-    [ -d "$WS/topics" ]           && rm -rf "$WS/topics"           && ok "removed topics/"
+    [ -d "$WS/kb/memory_neuron" ]  && rm -rf "$WS/kb/memory_neuron"  && ok "removed kb/memory_neuron/"
+    [ -d "$WS/topics" ]            && rm -rf "$WS/topics"            && ok "removed topics/"
     [ -d "$WS/kb/vector_db_docs" ] && rm -rf "$WS/kb/vector_db_docs" && ok "removed kb/vector_db_docs/"
-    [ -f "$WS/memory/_permanent.md" ] && rm "$WS/memory/_permanent.md" && ok "removed memory/_permanent.md"
-    [ -d "$WS/docs" ]             && warn "docs/ preserved — delete manually if needed"
+    [ -d "$WS/docs" ]              && warn "docs/ preserved — delete manually if needed"
+    warn "memory/_permanent.md preserved — use --purge-memory to wipe it"
   else
     skip "purge-data cancelled"
+  fi
+fi
+
+# ── Purge memory (explicit, irreversible) ───────────────────────────────────
+if [ "$PURGE_MEMORY" = 1 ]; then
+  hr "Purge memory"
+  printf '  \033[31m[warn]\033[0m ⚠️  This will PERMANENTLY DELETE promoted memory:\n'
+  printf '         memory/_permanent.md\n'
+  printf '         This cannot be undone.\n'
+  read -r -p "  Type 'wipe memory' to confirm: " confirm
+  if [ "$confirm" = "wipe memory" ]; then
+    [ -f "$WS/memory/_permanent.md" ] && rm "$WS/memory/_permanent.md" && ok "removed memory/_permanent.md" || skip "memory/_permanent.md not found"
+  else
+    skip "purge-memory cancelled"
   fi
 fi
 

@@ -398,7 +398,8 @@ This removes neuron cron jobs only. dinomem base config is untouched.
 
 Optional flags:
 - `--purge` — also remove installed scripts
-- `--purge-data` — also delete `kb/memory_neuron/`, `topics/`, `kb/vector_db_docs/` (asks for confirmation, `docs/` preserved)
+- `--purge-data` — delete `kb/memory_neuron/`, `topics/`, `kb/vector_db_docs/` (memory is preserved)
+- `--purge-memory` — ⚠️ permanently delete `memory/_permanent.md` (requires typing `wipe memory` to confirm)
 
 ---
 
