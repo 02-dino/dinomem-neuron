@@ -8,6 +8,58 @@ Every night, it builds a graph of how your memories relate, clusters them, and r
 
 The result: an agent that connects a decision you made in January to a pattern from November. That notices you've been contradicting yourself. That builds a structured knowledge base from your sessions — without you writing a single line of it.
 
+---
+
+## What we mean by learning
+
+Neuron does not fine-tune model weights.
+
+Instead it learns by:
+
+1. Observing experiences (memory files from sessions)
+2. Identifying recurring patterns (synthesis across memory clusters)
+3. Validating those patterns over time (multiple synthesis cycles)
+4. Promoting stable patterns into long-term knowledge (permanent files)
+5. Changing future behavior based on that knowledge (injected every turn)
+
+```
+Experiences → Patterns → Promotion → Behavior Change
+```
+
+---
+
+## How behavior changes
+
+Promoted insights are written into `topics/PERSISTENT_AUTO.md` and `memory/_permanent.md` — files that are part of the agent's always-injected root context.
+
+Unlike ordinary memories (recalled on demand), promoted insights are **present on every turn**. Recurring patterns discovered from experience become part of the agent's baseline behavior — without you writing a single config line.
+
+---
+
+## Example
+
+**Raw memories (extracted over months):**
+```
+January:  "User prefers concentrated positions."
+February: "User only holds 5 stocks max."
+March:    "User dislikes broad diversification."
+```
+
+**L3 synthesis finds the pattern:**
+```
+"User consistently prefers concentrated portfolios."
+```
+
+**After surviving multiple synthesis cycles — promoted:**
+```
+topics/PERSISTENT_AUTO.md:
+"User prefers concentrated investing."
+```
+
+This insight is now injected every turn. Future investing discussions automatically reflect this preference — without recall, without prompting.
+
+---
+
 **Requires [dinomem](https://github.com/02-dino/dinomem) installed first.**
 
 ---
@@ -16,10 +68,10 @@ The result: an agent that connects a decision you made in January to a pattern f
 
 | | Feature | What it does |
 |-|---------|-------------|
-| 🔗 | **Memory graph** (L2) | Finds which memories are related — even across different conversations |
-| 💡 | **Synthesis** (L3) | Clusters related memories → LLM synthesizes emergent insights you never explicitly stated |
+| 🔗 | **Relationship Discovery** (L2) | Finds which memories are related — even across different conversations |
+| 💡 | **Pattern Synthesis** (L3) | Clusters related memories → LLM synthesizes emergent insights you never explicitly stated |
 | ⚠️ | **Contradiction detection** (L3) | Flags when new insights conflict with existing ones |
-| 📌 | **Promotion** (L4) | Insights that survive multiple synthesis cycles → promoted to permanent memory |
+| 📌 | **Knowledge Promotion** (L4) | Insights that survive multiple synthesis cycles → written into always-injected context → behavior change |
 | 📚 | **RAG for long docs** | Semantic search over contracts, books, legal text — stored separately, never pollutes memory |
 | 📅 | **Calendar integration** | Links `_note_` reminders to Google Calendar — auto-deleted when the event passes |
 
@@ -145,29 +197,43 @@ Session → Archive → extract_memory.py → memory/*.md + MEMORY.md + vector D
         │
         │  daily 3:00 UTC
         ▼
-[L2: memory_graph.py]
+[L2: Relationship Discovery — memory_graph.py]
   Reads embeddings → builds similarity graph
   Output: kb/memory_neuron/l2_graph/memory_graph.json
         │
         │  daily 3:30 UTC
         ▼
-[L3: memory_synthesis.py]
+[L3: Pattern Synthesis — memory_synthesis.py]
   Clusters connected nodes → LLM synthesizes emergent insights
   Output: kb/memory_neuron/l3_synthesis/SYNTHESIS.md
         │
         ▼
-[L3: contradiction_check.py]
+[L3: Contradiction detection — contradiction_check.py]
   Checks new insights against existing → flags contradictions
         │
         │  weekly Sunday 4:00 UTC
         ▼
-[L4: memory_promote.py]
+[L4: Knowledge Promotion — memory_promote.py]
   Durable insights → topics/PERSISTENT_AUTO.md + memory/_permanent.md
         │
         ▼
 [L4: generate_topic_index.py]
   Builds topics/INDEX.md → writes MEMORY.md (enriched, structured)
+        │
+        ▼
+[Root context injection — every turn]
+  topics/PERSISTENT_AUTO.md + memory/_permanent.md injected into agent context
+        │
+        ▼
+[Behavior change]
+  Promoted insights present on every turn — no recall needed
 ```
+
+### Why multiple cycles?
+
+A single observation can be noise. Neuron only promotes insights that continue appearing across multiple synthesis passes. This prevents temporary behaviors from becoming permanent knowledge.
+
+Repeated observations become durable knowledge. One-off signals stay in synthesis — never promoted.
 
 ---
 
@@ -176,11 +242,11 @@ Session → Archive → extract_memory.py → memory/*.md + MEMORY.md + vector D
 | Time | Script | What runs |
 |------|--------|-----------|
 | Every 15 min | `auto_session_reset.py` | (dinomem base) session archive + extraction |
-| Daily 3:00 UTC | `memory_graph.py` | L2 graph rebuild |
-| Daily 3:30 UTC | `memory_synthesis.py` + `contradiction_check.py` | L3 synthesis + contradiction check |
+| Daily 3:00 UTC | `memory_graph.py` | L2 — Relationship Discovery (graph rebuild) |
+| Daily 3:30 UTC | `memory_synthesis.py` + `contradiction_check.py` | L3 — Pattern Synthesis + contradiction check |
 | Daily 4:00 UTC | `docs_ingest.py` | Re-ingest new/changed docs |
 | Daily 7:00 UTC | `calendar_sync.py` | Auto-delete `_note_` files linked to past events |
-| Weekly Sun 4:00 UTC | `memory_promote.py` + `generate_topic_index.py` | L4 promotion + MEMORY.md enrichment |
+| Weekly Sun 4:00 UTC | `memory_promote.py` + `generate_topic_index.py` | L4 — Knowledge Promotion + MEMORY.md enrichment |
 
 ---
 
