@@ -331,12 +331,7 @@ No. L2/L3/L4 write to `kb/memory_neuron/` only. `memory_promote.py` appends to `
 Blocking contradictions → insight blocked, queued in `contradiction_queue.jsonl`. Warnings → promoted but flagged. Both logged to `contradiction_log.jsonl`. Blocked insights are re-evaluated automatically when old insights decay. You can also trigger manually: `python3 procedures/contradiction_check.py --re-evaluate`.
 
 **Can I use RAG or calendar without L2/L3/L4?**
-Yes — both are fully independent. Calendar: just run `calendar_oauth_setup.py` once. RAG: just drop files into `docs/` and they're auto-ingested daily. To ingest immediately or search manually:
-```bash
-python3 <workspace>/procedures/docs_ingest.py --file docs/my-doc.md
-python3 <workspace>/tools/docs_search.py "search query" --k 5
-python3 <workspace>/tools/docs_search.py --list  # list all indexed docs
-```
+Yes — both are fully independent. Just tell your agent — it handles ingestion and search automatically. Calendar requires one-time OAuth setup via `calendar_oauth_setup.py`.
 
 **How much extra disk space?**
 Graph JSON: small. Synthesis files: minimal text. Docs vector DB: ~1–2MB per 1000 chunks.
