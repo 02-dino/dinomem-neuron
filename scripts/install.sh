@@ -229,6 +229,21 @@ BLOCK="$BEGIN
     - ask user to resolve
     - do NOT auto-resolve
   note: contradiction_check runs daily 3:30 UTC
+
+## calendar_integration
+  trigger_signals:
+    - explicit date/time
+    - deadline language
+    - appointment language
+  workflow:
+    1. Save _note_<slug>.md
+    2. Extract date/time from user message
+    3. Ask if not specified: reminder type, attendees
+    4. Run: python3 tools/calendar_tool.py create "<title>" --date <YYYY-MM-DD> [--time HH:MM] --note _note_<slug>.md [--reminder popup:30] [--attendee email]
+    5. Confirm to user
+  when_NOT_to_create_event:
+    - No date/time implied
+    - User explicitly says no calendar
 $END"
 
 touch "$AGENTS"
