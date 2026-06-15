@@ -445,6 +445,7 @@ def show_status():
 
 
 def main():
+    import fcntl, os
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry-run", action="store_true", help="show decisions, write nothing")
     ap.add_argument("--status", action="store_true", help="print current state and exit")
@@ -452,7 +453,30 @@ def main():
     if args.status:
         show_status()
         return
-    run(dry_run=args.dry_run)
+    # Concurrency lock — skip if another instance is running
+    lock_path = Path("/tmp/dinomem_promote.lock")
+    lock_fh = open(lock_path, 'w')
+    try:
+        fcntl.flock(lock_fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        lock_fh.write(str(os.getpid()))
+        lock_fh.flush()
+    except BlockingIOError:
+        lock_fh.close()
+        try:
+            pid = lock_path.read_text().strip()
+            print(f"[skip] another memory_promote instance running (PID {pid})")
+        except Exception:
+            print("[skip] another memory_promote instance running")
+        return
+    try:
+        run(dry_run=args.dry_run)
+    finally:
+        try:
+            fcntl.flock(lock_fh, fcntl.LOCK_UN)
+            lock_fh.close()
+            lock_path.unlink(missing_ok=True)
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":
