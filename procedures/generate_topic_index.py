@@ -43,6 +43,11 @@ ARCHIVE_MAX_AGE_DAYS = 30
 ACTIVE_CUTOFF_DAYS = 60
 LLM_MAX_TOKENS = 4000
 
+# Sessions dir for recency section
+OPENCLAW_ROOT = WORKSPACE_ROOT.parent
+AGENT_ID = WORKSPACE_ROOT.name.replace('workspace-', '')
+SESSIONS_DIR = OPENCLAW_ROOT / 'agents' / AGENT_ID / 'sessions'
+
 
 def log(message):
     """Write to log file with timestamp"""
@@ -97,7 +102,7 @@ def call_llm_gateway(prompt, max_tokens=2000):
 
     try:
         result = subprocess.run(
-            [__import__('shutil').which("openclaw") or "/home/linuxbrew/.linuxbrew/bin/openclaw", "capability", "model", "run",
+            ["/home/linuxbrew/.linuxbrew/bin/openclaw", "capability", "model", "run",
              "--prompt", prompt,
              "--gateway",
              "--json"],
@@ -240,9 +245,7 @@ def _fallback_topic_extraction(documents_summary: str) -> str:
                 filename = parts[1].strip().split()[0]
                 name = filename.replace('memory_', '').replace('.md', '')
                 try:
-                    # Support both YYYY-MM-DD.md and YYYY-MM-DD_type_slug.md
-                    date_prefix = name.split("_")[0]
-                    file_date = datetime.strptime(date_prefix, "%Y-%m-%d")
+                    file_date = datetime.strptime(name, '%Y-%m-%d')
                     days_ago = (datetime.now() - file_date).days
                     age = f"{days_ago}d"
                 except ValueError:
@@ -375,13 +378,13 @@ def build_documents_summary() -> str:
                 file_date = None
                 age_days = 999
                 try:
-                    # Support both YYYY-MM-DD.md and YYYY-MM-DD_type_slug.md
-                    name_part = md_file.stem
-                    date_prefix = name_part.split("_")[0]
-                    file_date = datetime.strptime(date_prefix, "%Y-%m-%d")
+                    # Extract YYYY-MM-DD from filename
+                    name_part = md_file.stem  # e.g. "2026-05-29"
+                    file_date = datetime.strptime(name_part, '%Y-%m-%d')
                     age_days = (datetime.now() - file_date).days
                 except (ValueError, TypeError):
                     pass
+
                 # Recency-weighted preview: newer files get more signal
                 if age_days <= 30:
                     preview_chars = 800
@@ -500,7 +503,9 @@ def generate_index(dry_run=False) -> bool:
         log("No documents found in memory/")
         # Still write index with just persistent topics
         persistent = load_persistent_topics()
-        index_content = f"{persistent}\n\n## Searchable — Active (retrieved via memory_search / memory_get)\n_No documents in memory._\n\n## Archived — Deleted from memory (not searchable)\n_None._\n"
+        recency_section = get_previous_session_topics()
+        recency_block = f'\n{recency_section}\n' if recency_section else ''
+        index_content = f"{persistent}\n{recency_block}\n## Searchable — Active (retrieved via memory_search / memory_get)\n_No documents in memory._\n\n## Archived — Deleted from memory (not searchable)\n_None._\n"
         if not dry_run:
             INDEX_FILE.write_text(index_content, encoding='utf-8')
             memory_content = f"MEMORY.md\n\n{index_content}"
@@ -516,9 +521,13 @@ def generate_index(dry_run=False) -> bool:
     # Load persistent topics
     persistent = load_persistent_topics()
 
+    # Get previous session recency hint
+    recency_section = get_previous_session_topics()
+    recency_block = f'\n{recency_section}\n' if recency_section else ''
+
     # Assemble final index
     index_content = f"""{persistent}
-
+{recency_block}
 ## Searchable — Active (retrieved via memory_search / memory_get)
 {topics_text}
 
@@ -546,6 +555,129 @@ _Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')} | Source: memory/*.md_
 
     return True
 
+
+def get_previous_session_topics() -> Optional[str]:
+    """
+    Find the most recently archived session JSONL and extract a topic hint.
+    Returns a formatted section string, or None if nothing found.
+    """
+    if not SESSIONS_DIR.exists():
+        return None
+
+    try:
+        # Find all archived reset files, sorted by mtime descending
+        archived = sorted(
+            SESSIONS_DIR.glob('*.archived.reset.*.jsonl'),
+            key=lambda f: f.stat().st_mtime,
+            reverse=True
+        )
+        if not archived:
+            return None
+
+        latest = archived[0]
+        # Extract date from filename timestamp (format: stem.archived.reset.YYYY-MM-DDTHH-MM-SS.jsonl)
+        session_date = None
+        try:
+            ts_part = latest.stem.split('.archived.reset.')[-1]  # e.g. 2026-06-16T06-30-01
+            session_date = ts_part[:10]  # YYYY-MM-DD
+        except Exception:
+            session_date = datetime.fromtimestamp(latest.stat().st_mtime).strftime('%Y-%m-%d')
+
+        # Extract topics from memory files that were generated from this session
+        # Strategy: read memory/*.md files dated same day as archived session
+        # and pull their slug/title as topic hints
+        topics = []
+
+        # Also scan the archived JSONL itself for user message keywords
+        # Read first 200 user messages, extract meaningful nouns/topics
+        user_messages = []
+        try:
+            with open(latest, 'r', encoding='utf-8', errors='replace') as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        entry = json.loads(line)
+                        # Support both flat (role at top) and nested (message.role) schemas
+                        msg = entry.get('message', entry)
+                        role = msg.get('role') or entry.get('role')
+                        if role == 'user':
+                            content = ''
+                            raw = msg.get('content', '')
+                            if isinstance(raw, str):
+                                content = raw
+                            elif isinstance(raw, list):
+                                for block in raw:
+                                    if isinstance(block, dict) and block.get('type') == 'text':
+                                        content += block.get('text', '')
+                            if content and len(content) > 10:
+                                user_messages.append(content[:200])
+                            if len(user_messages) >= 30:
+                                break
+                    except (json.JSONDecodeError, Exception):
+                        continue
+        except Exception as e:
+            log(f'⚠️  Could not read archived JSONL for recency: {e}')
+
+        # Also pull slugs from memory files dated on session_date
+        if MEMORY_DIR.exists() and session_date:
+            for md_file in MEMORY_DIR.glob('*.md'):
+                if md_file.name.startswith('_') or md_file.name == 'MEMORY.md':
+                    continue
+                if session_date in md_file.name:
+                    # Extract slug from filename: YYYY-MM-DD_type_slug.md
+                    parts = md_file.stem.split('_', 2)
+                    if len(parts) >= 3:
+                        slug = parts[2].replace('-', ' ')
+                        if slug not in topics:
+                            topics.append(slug)
+
+        # If no memory files matched, derive topics from user messages
+        if not topics and user_messages:
+            # Try LLM first for better quality
+            combined = ' | '.join(user_messages[:20])
+            prompt = (
+                f'Extract 5-8 short topic keywords (2-3 words max each) from these user messages. '
+                f'Output ONLY a comma-separated list, no explanation:\n{combined[:1500]}'
+            )
+            success, result = call_llm_gateway(prompt, max_tokens=100)
+            if success and result.strip():
+                topics = [t.strip() for t in result.split(',') if t.strip()][:8]
+            else:
+                # Fallback: extract meaningful words from user messages directly
+                import re
+                stopwords = {'the','a','an','is','are','was','were','be','been','being',
+                             'have','has','had','do','does','did','will','would','could',
+                             'should','may','might','shall','can','need','dare','ought',
+                             'to','of','in','for','on','with','at','by','from','up','about',
+                             'into','through','during','before','after','above','below',
+                             'this','that','these','those','i','you','he','she','it','we',
+                             'they','what','which','who','whom','how','why','when','where',
+                             'and','or','but','if','then','than','so','yet','both','either',
+                             'not','no','nor','just','very','also','too','only','even',
+                             'already','still','now','here','there','any','all','each',
+                             'kita','yang','di','ke','dari','dan','atau','ini','itu','ya',
+                             'ga','gak','aja','juga','bisa','ada','mau','udah','kalau'}
+                word_freq = {}
+                for msg in user_messages:
+                    words = re.findall(r'[a-zA-Z][a-zA-Z0-9_]{2,}', msg.lower())
+                    for w in words:
+                        if w not in stopwords and len(w) > 3:
+                            word_freq[w] = word_freq.get(w, 0) + 1
+                # Take top 8 by frequency
+                top_words = sorted(word_freq.items(), key=lambda x: x[1], reverse=True)[:8]
+                topics = [w for w, _ in top_words]
+
+        if not topics:
+            return None
+
+        topics_str = ', '.join(topics)
+        return f'## Previous Session ({session_date}) — search if relevant\n{topics_str}'
+
+    except Exception as e:
+        log(f'⚠️  get_previous_session_topics error: {e}')
+        return None
 
 def track_removed_topics(before_files: set, after_files: set):
     """Track topics that were removed from memory/ for archive section."""
