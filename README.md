@@ -4,9 +4,9 @@
 
 The learning layer on top of dinomem.
 
-Every night, it builds a graph of how your memories relate, clusters them, and runs synthesis — an LLM pass that finds patterns across everything you've ever told your agent. Insights are rigorously evaluated before being promoted to permanent knowledge. Your agent's behavior changes over time — not because you updated a config, but because it learned.
+Every night, it builds a graph of how your memories relate, clusters them, and runs synthesis — an LLM pass that finds patterns across everything you've ever told your agent. Insights are rigorously evaluated before being promoted to permanent knowledge. And it's injected every turn, so those insights actually influence behavior.
 
-The result: an agent that connects a decision you made in January to a pattern from November. That notices you've been contradicting yourself. That builds a structured knowledge base from your sessions — without you writing a single line of it.
+The result: an agent that connects a decision you made in January to a pattern from November. That notices you've been contradicting yourself. That builds a structured knowledge base from your sessions. It changes behavior based on all of that—without you writing a single line of code.
 
 ---
 

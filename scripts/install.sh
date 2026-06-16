@@ -202,39 +202,19 @@ BEGIN="<!-- BEGIN:dinomem-neuron (managed) -->"
 END="<!-- END:dinomem-neuron -->"
 BLOCK="$BEGIN
 ## rag_long_docs
-  when:
-    - user shares a long document
-    - user says save/remember this document / add to knowledge base
-    - content too long for memory (>2000 chars)
-  action:
-    1. Save to docs/<slug>.md
-    2. Run: python3 procedures/docs_ingest.py --file docs/<slug>.md
-    3. Confirm to user
-  note: docs/ auto-re-ingested daily 4:00 UTC
-  never: save long docs to memory/
+  when: long doc shared | save/remember doc | content >2000 chars
+  action: save docs/<slug>.md → python3 procedures/docs_ingest.py --file docs/<slug>.md → confirm
+  note: auto-re-ingested daily 4:00 UTC; never save long docs to memory/
 
 ## contradiction_alerts
-  when: contradiction_check.py flags a conflict
-  action:
-    - surface conflict to user on next relevant turn
-    - ask user to resolve
-    - do NOT auto-resolve
-  note: contradiction_check runs daily 3:30 UTC
+  when: contradiction_check.py flags conflict
+  action: surface to user on next relevant turn → ask user to resolve
+  never: auto-resolve
 
 ## calendar_integration
-  trigger_signals:
-    - explicit date/time
-    - deadline language
-    - appointment language
-  workflow:
-    1. Save _note_<slug>.md
-    2. Extract date/time from user message
-    3. Ask if not specified: reminder type, attendees
-    4. Run: python3 tools/calendar_tool.py create "<title>" --date <YYYY-MM-DD> [--time HH:MM] --note _note_<slug>.md [--reminder popup:30] [--attendee email]
-    5. Confirm to user
-  when_NOT_to_create_event:
-    - No date/time implied
-    - User explicitly says no calendar
+  trigger: explicit date/time | deadline | appointment
+  workflow: save _note_<slug>.md → extract date/time → ask if missing → python3 tools/calendar_tool.py create "<title>" --date <YYYY-MM-DD> [--time HH:MM] --note _note_<slug>.md [--reminder popup:30] [--attendee email] → confirm
+  skip_if: no date/time implied | user says no calendar
 $END"
 
 touch "$AGENTS"
