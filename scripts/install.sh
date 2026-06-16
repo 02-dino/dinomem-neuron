@@ -155,53 +155,44 @@ for f in procedures/memory_graph.py procedures/memory_synthesis.py procedures/me
 done
 
 # ── 3) Register cron jobs ─────────────────────────────────────────────────────
+# upsert_cron: add or update a cron entry by script keyword
+upsert_cron() {
+  local keyword="$1" comment="$2" cron_line="$3" label="$4"
+  local existing
+  existing=$(crontab -l 2>/dev/null | grep "$keyword" || true)
+  if [ "$existing" = "$cron_line" ]; then
+    skip "$label (exists, up to date)"
+  elif [ -n "$existing" ]; then
+    { crontab -l 2>/dev/null | grep -v "$keyword"; echo "# $comment"; echo "$cron_line"; } | crontab -
+    ok "$label (updated)"
+  else
+    { crontab -l 2>/dev/null; echo "# $comment"; echo "$cron_line"; } | crontab -
+    ok "$label (registered)"
+  fi
+}
+
 if [ "$DO_CRON" = 1 ]; then
   hr "Cron jobs"
 
   # memory_graph — daily at 3:00 UTC (L2)
   GRAPH_CRON="0 3 * * * cd $WS && python3 procedures/memory_graph.py >> logs/memory_graph.log 2>&1"
-  if crontab -l 2>/dev/null | grep -qF "memory_graph.py"; then
-    skip "memory_graph cron (exists)"
-  else
-    (crontab -l 2>/dev/null; echo "# dinomem-neuron: L2 graph linking"; echo "$GRAPH_CRON") | crontab -
-    ok "memory_graph cron (daily 3:00 UTC)"
-  fi
+  upsert_cron "memory_graph.py" "dinomem-neuron: L2 graph linking" "$GRAPH_CRON" "memory_graph cron (daily 3:00 UTC)"
 
   # memory_synthesis + contradiction_check — daily at 3:30 UTC (L3)
   SYNTH_CRON="30 3 * * * cd $WS && python3 procedures/memory_synthesis.py >> logs/memory_synthesis.log 2>&1 && python3 procedures/contradiction_check.py >> logs/contradiction_check.log 2>&1"
-  if crontab -l 2>/dev/null | grep -qF "memory_synthesis.py"; then
-    skip "memory_synthesis cron (exists)"
-  else
-    (crontab -l 2>/dev/null; echo "# dinomem-neuron: L3 synthesis + contradiction check"; echo "$SYNTH_CRON") | crontab -
-    ok "memory_synthesis + contradiction_check cron (daily 3:30 UTC)"
-  fi
+  upsert_cron "memory_synthesis.py" "dinomem-neuron: L3 synthesis + contradiction check" "$SYNTH_CRON" "memory_synthesis + contradiction_check cron (daily 3:30 UTC)"
 
   # memory_promote + generate_topic_index — weekly Sunday at 4:00 UTC (L4)
   PROMOTE_CRON="0 4 * * 0 cd $WS && python3 procedures/memory_promote.py >> logs/memory_promote.log 2>&1 && python3 procedures/generate_topic_index.py >> logs/topic_index.log 2>&1"
-  if crontab -l 2>/dev/null | grep -qF "memory_promote.py"; then
-    skip "memory_promote cron (exists)"
-  else
-    (crontab -l 2>/dev/null; echo "# dinomem-neuron: L4 promotion + topic index (weekly)"; echo "$PROMOTE_CRON") | crontab -
-    ok "memory_promote + generate_topic_index cron (weekly Sunday 4:00 UTC)"
-  fi
+  upsert_cron "memory_promote.py" "dinomem-neuron: L4 promotion + topic index (weekly)" "$PROMOTE_CRON" "memory_promote + generate_topic_index cron (weekly Sunday 4:00 UTC)"
 
   # docs_ingest — daily at 4:00 UTC (RAG long docs)
   DOCS_CRON="0 4 * * * cd $WS && python3 procedures/docs_ingest.py >> logs/docs_ingest.log 2>&1"
-  if crontab -l 2>/dev/null | grep -qF "docs_ingest.py"; then
-    skip "docs_ingest cron (exists)"
-  else
-    (crontab -l 2>/dev/null; echo "# dinomem-neuron: RAG docs re-ingest (daily)"; echo "$DOCS_CRON") | crontab -
-    ok "docs_ingest cron (daily 4:00 UTC)"
-  fi
+  upsert_cron "docs_ingest.py" "dinomem-neuron: RAG docs re-ingest (daily)" "$DOCS_CRON" "docs_ingest cron (daily 4:00 UTC)"
 
   # calendar_sync — daily at 7:00 UTC (auto-resolve _note_ from past calendar events)
   CAL_CRON="0 7 * * * cd $WS && python3 procedures/calendar_sync.py >> logs/calendar_sync.log 2>&1"
-  if crontab -l 2>/dev/null | grep -qF "calendar_sync.py"; then
-    skip "calendar_sync cron (exists)"
-  else
-    (crontab -l 2>/dev/null; echo "# dinomem-neuron: calendar sync auto-resolve _note_ (daily)"; echo "$CAL_CRON") | crontab -
-    ok "calendar_sync cron (daily 7:00 UTC)"
-  fi
+  upsert_cron "calendar_sync.py" "dinomem-neuron: calendar sync auto-resolve _note_ (daily)" "$CAL_CRON" "calendar_sync cron (daily 7:00 UTC)"
 fi
 
 # ── Wire AGENTS.md ───────────────────────────────────────────────────────────

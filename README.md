@@ -68,6 +68,7 @@ This insight is now injected every turn. Future investing discussions automatica
 | 💡 | **Pattern Synthesis** (L3) | Clusters related memories → LLM synthesizes emergent insights you never explicitly stated |
 | ⚠️ | **Contradiction detection** (L3) | Flags when new insights conflict with existing ones |
 | 📌 | **Knowledge Promotion** (L4) | Insights that pass multi-signal evaluation (confidence, reinforcement/recurrence, contradiction, insight lifecycle) → written into always-injected context → behavior change |
+| 🗺️ | **Enriched navigation index** | `MEMORY.md` serves dual roles: search navigation aid (like dinomem base) + always-present behavior layer. Promoted insights live here — active every turn without recall. |
 | 📚 | **RAG for long docs** | Semantic search over contracts, books, legal text — stored separately, never pollutes memory |
 | 📅 | **Calendar integration** | Links `_note_` reminders to Google Calendar — auto-deleted when the event passes |
 
