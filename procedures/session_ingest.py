@@ -40,9 +40,11 @@ WINDOW_SIZE     = 5   # exchanges per chunk
 STEP            = 3   # step between windows
 # overlap = WINDOW_SIZE - STEP = 2
 
-LOCAL_MODEL_PATH = (
-    "DINOMEM_HF_CACHE_PLACEHOLDER/hub/models--sentence-transformers--all-MiniLM-L6-v2"
-    "/snapshots/8b3219a92973c328a8e22fadcfa821b5dc75636a"
+import pathlib
+_cache_dir = pathlib.Path.home() / ".cache/huggingface/hub"
+LOCAL_MODEL_PATH = str(
+    _cache_dir / "models--sentence-transformers--all-MiniLM-L6-v2"
+    / "snapshots/8b3219a92973c328a8e22fadcfa821b5dc75636a"
 )
 
 os.environ['HF_HUB_OFFLINE'] = '1'

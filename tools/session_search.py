@@ -46,9 +46,11 @@ from langchain_huggingface import HuggingFaceEmbeddings
 WORKSPACE = Path(__file__).parent.parent
 DB_PATH = str(WORKSPACE / "kb/vector_db_sessions")
 
-LOCAL_MODEL_PATH = (
-    "DINOMEM_HF_CACHE_PLACEHOLDER/hub/models--sentence-transformers--all-MiniLM-L6-v2"
-    "/snapshots/8b3219a92973c328a8e22fadcfa821b5dc75636a"
+import pathlib
+_cache_dir = pathlib.Path.home() / ".cache/huggingface/hub"
+LOCAL_MODEL_PATH = str(
+    _cache_dir / "models--sentence-transformers--all-MiniLM-L6-v2"
+    / "snapshots/8b3219a92973c328a8e22fadcfa821b5dc75636a"
 )
 
 # ── Lazy init ─────────────────────────────────────────────────────────────────
