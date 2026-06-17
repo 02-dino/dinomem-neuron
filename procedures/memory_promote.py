@@ -239,15 +239,39 @@ def expired(entry, ttl_days):
         return False
 
 
+# Half-life for recency weighting in injection ranking.
+# An insight last reinforced RECENCY_HALF_LIFE_DAYS ago scores 0.5× its reinforce_count.
+# This prevents old high-count insights from permanently outranking fresher ones.
+RECENCY_HALF_LIFE_DAYS = 180
+
+def injection_score(entry):
+    """Composite injection ranking score: reinforce_count × recency_weight.
+    recency_weight = 0.5 ^ (days_since_last_reinforced / RECENCY_HALF_LIFE_DAYS)
+    Recent insights with moderate reinforcement can outrank stale high-count ones.
+    """
+    import math
+    reinforce = entry.get("reinforce_count", 1)
+    last = entry.get("last_reinforced") or entry.get("graduated_on") or entry.get("first_promoted")
+    if last:
+        try:
+            days_since = (datetime.now() - datetime.fromisoformat(last)).days
+            recency_weight = 0.5 ** (days_since / RECENCY_HALF_LIFE_DAYS)
+        except Exception:
+            recency_weight = 1.0
+    else:
+        recency_weight = 1.0
+    return reinforce * recency_weight
+
 def render_behavior(state):
     """Rewrite the behavior file from the trusted set (idempotent — demotions
     disappear automatically). Emits ONE compact rule line per trusted insight that
-    has an actionable rule_line, capped + sorted by reinforcement strength, so the
-    Persistent section of MEMORY.md stays lean. generate_topic_index folds this in."""
+    has an actionable rule_line, capped + sorted by reinforcement × recency score,
+    so the Persistent section of MEMORY.md stays lean and fresh.
+    generate_topic_index folds this in."""
     trusted = [e for e in state.values()
                if e.get("status") == "trusted" and (e.get("rule_line") or "").strip()]
-    # Strongest first (most reinforced), then cap.
-    trusted.sort(key=lambda e: e.get("reinforce_count", 0), reverse=True)
+    # Highest injection_score first (reinforcement × recency), then cap.
+    trusted.sort(key=injection_score, reverse=True)
     trusted = trusted[:MAX_PERSISTENT_RULES]
 
     lines = ["## Persistent — Machine-Promoted (auto, L4)"]
@@ -266,11 +290,12 @@ def render_behavior(state):
     if not trusted:
         mirror.append("_(none currently trusted with an actionable rule)_")
     for i, e in enumerate(trusted, 1):
+        score = injection_score(e)
         mirror += [
             f"## {i}. {e['rule_line'].strip()}",
             f"- pattern: {e.get('pattern','')}",
-            f"- confidence: {e.get('confidence')} · reinforced ×{e.get('reinforce_count')}",
-            f"- graduated: {e.get('graduated_on')} · first seen: {e.get('first_promoted')}",
+            f"- confidence: {e.get('confidence')} · reinforced ×{e.get('reinforce_count')} · injection_score: {score:.3f}",
+            f"- graduated: {e.get('graduated_on')} · first seen: {e.get('first_promoted')} · last_reinforced: {e.get('last_reinforced', 'n/a')}",
             "",
         ]
     TRUSTED_MIRROR.write_text("\n".join(mirror) + "\n", encoding="utf-8")
