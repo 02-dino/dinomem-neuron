@@ -221,8 +221,8 @@ BLOCK="$BEGIN
 ## session_deep_recall
   trigger: memory_search score < 0.6 AND source session < 7 days old
   action: python3 tools/session_search.py "<query>" --k 5
-  note: fallback only — agent decides when to trigger, user never needs to ask. after 7 days, memory/*.md summary is sufficient.
-  never: call session_search on every turn — only when memory_search result is thin
+  skip: do not call session_search every turn — only when memory_search result is thin
+  fallback: after 7 days, memory/*.md summary is sufficient; skip session_search
 $END"
 
 touch "$AGENTS"
