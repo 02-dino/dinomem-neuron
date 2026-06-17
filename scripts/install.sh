@@ -222,7 +222,6 @@ BLOCK="$BEGIN
   trigger: memory_search score < 0.6 AND source session < 7 days old
   action: python3 tools/session_search.py "<query>" --k 5
   skip: do not call session_search every turn — only when memory_search result is thin
-  fallback: after 7 days, memory/*.md summary is sufficient; skip session_search
 $END"
 
 touch "$AGENTS"
