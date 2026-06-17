@@ -219,7 +219,7 @@ BLOCK="$BEGIN
   skip_if: no date/time implied | user says no calendar
 
 ## session_deep_recall
-  trigger: memory_search returns thin/uncertain result (few hits, [uncertain] tag, or low confidence) AND memory file date < 7 days old
+  trigger: memory_search returns thin/uncertain result (few hits, [uncertain] tag, or low confidence) AND memory file date < 7 days old AND user intent requires detail
   action: python3 tools/session_search.py "<query>" --k 5
   skip: do not call session_search every turn — only when memory_search result is clearly insufficient
 $END"
