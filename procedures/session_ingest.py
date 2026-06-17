@@ -82,12 +82,14 @@ def parse_turns(jsonl_path: Path) -> list[dict]:
                 except json.JSONDecodeError:
                     continue
 
-                role = entry.get('role', '')
+                # OpenClaw jsonl wraps message under entry.message
+                msg = entry.get('message', entry)
+                role = msg.get('role', '')
                 if role not in ('user', 'assistant'):
                     continue
 
                 # Extract text content
-                content = entry.get('content', '')
+                content = msg.get('content', '')
                 if isinstance(content, list):
                     # Handle content blocks
                     text_parts = []
