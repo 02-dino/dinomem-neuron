@@ -4,7 +4,7 @@
 # Requires dinomem base installed first.
 #
 # Usage:
-#   bash scripts/install.sh [--workspace DIR] [--agent-id ID] [--no-cron] [--force]
+#   bash scripts/install.sh [--workspace DIR] [--agent-id ID] [--no-cron] [--force] [--agree]
 set -euo pipefail
 
 SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -19,10 +19,31 @@ while [ $# -gt 0 ]; do
     --agent-id)  AGENT_ID="$2"; shift 2 ;;
     --no-cron)   DO_CRON=0; shift ;;
     --force)     FORCE=1; shift ;;
+    --agree)     LICENSE_AGREED=1; shift ;;
     -h|--help)   grep -E '^#( |$)' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
 done
+
+LICENSE_AGREED="${LICENSE_AGREED:-0}"
+
+# ── License agreement ───────────────────────────────────────────────────────────────
+if [ "$LICENSE_AGREED" != "1" ]; then
+  echo ""
+  echo "  ────────────────────────────────────────────────────────────"
+  echo "  LICENSE — dinomem-neuron"
+  echo "  ────────────────────────────────────────────────────────────"
+  echo ""
+  cat "$SKILL_DIR/LICENSE"
+  echo ""
+  echo "  ────────────────────────────────────────────────────────────"
+  read -p "  Type 'agree' to accept the license and continue: " USER_AGREE
+  if [ "$USER_AGREE" != "agree" ]; then
+    echo "  License not accepted. Exiting."
+    echo "  To skip this prompt (e.g. for AI agent installs): bash install.sh --agree --workspace ..."
+    exit 1
+  fi
+fi
 
 ok()   { printf '  \033[32m[ok]\033[0m   %s\n' "$*"; }
 skip() { printf '  \033[33m[skip]\033[0m %s\n' "$*"; }
@@ -49,12 +70,34 @@ hr "dinomem-neuron -> $WS (agent: $AGENT_ID)"
 
 # ── Pre-flight compatibility checks ─────────────────────────────────────────
 hr "Pre-flight checks"
-# dinomem base must be installed
+# dinomem base must be installed + version check
+DINOMEM_MIN_VERSION="1.0.0"
 if [ ! -f "$WS/procedures/extract_memory.py" ]; then
   warn "dinomem base not detected (extract_memory.py missing) — install dinomem first."
   warn "  bash dinomem/scripts/install.sh --workspace $WS --agent-id $AGENT_ID"
 else
   ok "dinomem base detected"
+  # Check VERSION file
+  DINOMEM_VERSION_FILE="$(dirname "$WS")/dinomem/VERSION"
+  if [ ! -f "$DINOMEM_VERSION_FILE" ]; then
+    # Try SKILL_DIR sibling
+    DINOMEM_VERSION_FILE="$(dirname "$SKILL_DIR")/dinomem/VERSION"
+  fi
+  if [ -f "$DINOMEM_VERSION_FILE" ]; then
+    DINOMEM_VERSION=$(cat "$DINOMEM_VERSION_FILE" | tr -d '[:space:]')
+    # Simple semver compare (major.minor.patch)
+    version_gte() {
+      printf '%s\n%s' "$1" "$2" | sort -V -C
+    }
+    if version_gte "$DINOMEM_VERSION" "$DINOMEM_MIN_VERSION"; then
+      ok "dinomem version $DINOMEM_VERSION (>= $DINOMEM_MIN_VERSION required)"
+    else
+      warn "dinomem version $DINOMEM_VERSION is below minimum required $DINOMEM_MIN_VERSION — update dinomem first."
+      warn "  bash dinomem/scripts/update.sh --workspace $WS --agent-id $AGENT_ID"
+    fi
+  else
+    warn "dinomem VERSION file not found — cannot verify version. Ensure dinomem >= $DINOMEM_MIN_VERSION is installed."
+  fi
 fi
 # Existing neuron data
 if [ -d "$WS/kb/memory_neuron" ] && [ "$(ls -A "$WS/kb/memory_neuron" 2>/dev/null)" ]; then
@@ -189,8 +232,8 @@ if [ "$DO_CRON" = 1 ]; then
   # docs_ingest — daily at 4:00 UTC (RAG long docs)
   DOCS_CRON="0 4 * * * cd $WS && python3 procedures/docs_ingest.py >> logs/docs_ingest.log 2>&1"
   upsert_cron "docs_ingest.py" "dinomem-neuron: RAG docs re-ingest (daily)" "$DOCS_CRON" "docs_ingest cron (daily 4:00 UTC)"
-  SESSION_CRON="30 5 * * * cd $WS && python3 procedures/session_ingest.py >> logs/session_ingest.log 2>&1"
-  upsert_cron "session_ingest.py" "dinomem-neuron: session RAG ingest + cleanup (daily)" "$SESSION_CRON" "session_ingest cron (daily 5:30 UTC)"
+  # session_ingest is triggered automatically by auto_session_reset.py (every 15 min)
+  # No separate cron needed.
 
   # calendar_sync — daily at 7:00 UTC (auto-resolve _note_ from past calendar events)
   CAL_CRON="0 7 * * * cd $WS && python3 procedures/calendar_sync.py >> logs/calendar_sync.log 2>&1"
@@ -200,6 +243,12 @@ fi
 # ── Wire AGENTS.md ───────────────────────────────────────────────────────────
 hr "AGENTS.md"
 AGENTS="$WS/AGENTS.md"
+if [ -f "$AGENTS" ]; then
+  bash "$SKILL_DIR/scripts/file-backup.sh" "$AGENTS" >/dev/null 2>&1 && ok "AGENTS.md backed up" || warn "AGENTS.md backup failed — continuing"
+fi
+if [ -f "$WS/MEMORY.md" ]; then
+  bash "$SKILL_DIR/scripts/file-backup.sh" "$WS/MEMORY.md" >/dev/null 2>&1 && ok "MEMORY.md backed up" || warn "MEMORY.md backup failed — continuing"
+fi
 BEGIN="<!-- BEGIN:dinomem-neuron (managed) -->"
 END="<!-- END:dinomem-neuron -->"
 BLOCK="$BEGIN
@@ -242,4 +291,17 @@ echo "  1. Restart OpenClaw:       openclaw gateway restart"
 echo "  2. Run first graph build:  python3 $WS/procedures/memory_graph.py"
 echo "  3. Run first synthesis:    python3 $WS/procedures/memory_synthesis.py"
 echo ""
+echo "  ⚠️  Minimum memory requirement"
+echo "  Neuron needs at least a few memory/*.md files to be meaningful."
+echo "  If you just installed dinomem, run a few sessions first before expecting synthesis results."
+echo ""
+echo "  ⚠️  First run takes time"
+echo "  memory_graph.py and memory_synthesis.py can take several minutes on first run"
+echo "  depending on how many memory files exist. This is normal."
+echo ""
+echo "  ⚠️  Calendar integration (optional)"
+echo "  To link _note_ reminders to Google Calendar, OAuth setup is required."
+echo "  Guide: see '## Calendar setup' in README"
+echo ""
+echo "  License: Proprietary — unauthorized redistribution prohibited. https://t.me/dinotlgrm"
 echo "  Undo: bash $SKILL_DIR/scripts/uninstall.sh --workspace $WS --agent-id $AGENT_ID"

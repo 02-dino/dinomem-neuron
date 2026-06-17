@@ -71,6 +71,68 @@ This insight is now injected every turn. Future investing discussions automatica
 | 🗺️ | **Enriched navigation index** | `MEMORY.md` serves dual roles: search navigation aid (like dinomem base) + always-present behavior layer. Promoted insights live here — active every turn without recall. |
 | 📚 | **RAG for long docs** | Semantic search over contracts, books, legal text — stored separately, never pollutes memory |
 | 📅 | **Calendar integration** | Links `_note_` reminders to Google Calendar — auto-deleted when the event passes |
+| 🔍 | **Session deep recall** | When memory summary is thin, searches raw archived sessions (7-day window) for the exact exchange — sharper, more detailed recall for recent context |
+
+---
+
+## Quick Start
+
+You have access to this repo. Here's how to get neuron running.
+
+**Step 1 — dinomem must be installed first**
+```bash
+git clone https://github.com/02-dino/dinomem
+bash dinomem/scripts/install.sh \
+  --workspace ~/.openclaw/workspace-myagent \
+  --agent-id myagent
+openclaw gateway restart
+```
+Verify: `memory/*.md` files exist in your workspace.
+
+**Step 2 — install dinomem-neuron**
+
+If you have repo access:
+```bash
+git clone https://github.com/02-dino/dinomem-neuron
+bash dinomem-neuron/scripts/install.sh \
+  --workspace ~/.openclaw/workspace-myagent \
+  --agent-id myagent \
+  --agree
+openclaw gateway restart
+```
+
+If you received a zip file:
+```bash
+unzip dinomem-neuron.zip
+bash dinomem-neuron/scripts/install.sh \
+  --workspace ~/.openclaw/workspace-myagent \
+  --agent-id myagent \
+  --agree
+openclaw gateway restart
+```
+
+> `--agree` accepts the license non-interactively. Required when installing via AI agent or automation.
+
+**Step 3 — verify**
+```bash
+# TEI embedding server running
+curl http://localhost:8080/health
+# → {"status":"ok"}
+
+# Neuron crons registered
+crontab -l | grep memory_graph
+crontab -l | grep memory_synthesis
+```
+
+**Step 4 — run first graph build manually** (optional, won't wait until tonight's cron)
+```bash
+python3 ~/.openclaw/workspace-myagent/procedures/memory_graph.py
+python3 ~/.openclaw/workspace-myagent/procedures/memory_synthesis.py
+```
+
+> Don't know your agent ID? Run `openclaw agents list` — it shows all agents and their workspace paths.
+
+That's it. Crons handle everything from here.
 
 ---
 
@@ -85,63 +147,60 @@ This insight is now injected every turn. Future investing discussions automatica
 
 ---
 
-## Install
-
-```bash
-# Step 1: dinomem must be installed first
-git clone https://github.com/02-dino/dinomem
-bash dinomem/scripts/install.sh --workspace ~/.openclaw/workspace-myagent --agent-id myagent
-
-# Step 2: install dinomem-neuron (private repo — access granted after onboarding)
-git clone https://github.com/02-dino/dinomem-neuron
-bash dinomem-neuron/scripts/install.sh --workspace ~/.openclaw/workspace-myagent --agent-id myagent
-
-# Step 3: restart OpenClaw
-openclaw gateway restart
-```
-
----
-
 ## How it all works
 
 ```
 [dinomem base — every 15 min]
 Session → Archive → extract_memory.py → memory/*.md + MEMORY.md + vector DB
         │
-        │  daily 3:00 UTC
+        │  daily
         ▼
 [L2: Relationship Discovery — memory_graph.py]
-  Reads embeddings → builds similarity graph
-  Output: kb/memory_neuron/l2_graph/memory_graph.json
+  Reads embeddings from local vector DB
+  Builds a graph: nodes = memory entries, edges = similarity above threshold
+  Edge weight = composite neural_score: cosine sim × rank strength × recurrence weight × L3 confidence boost
+  Edges that persist across multiple graph rebuilds are stronger (Hebbian principle)
+  Feedback-loop firewall: skips L4-promoted chunks so synthesis never reads its own conclusions back
         │
-        │  daily 3:30 UTC
+        │  daily
         ▼
 [L3: Pattern Synthesis — memory_synthesis.py]
-  Clusters connected nodes → LLM synthesizes emergent insights
-  Output: kb/memory_neuron/l3_synthesis/SYNTHESIS.md
+  Reads L2 graph clusters (cross-file, medium-similarity edges only — near-duplicates excluded)
+  For each cluster: LLM synthesizes an emergent insight (skeptical prompt — returns NONE if no real pattern)
+  3-stage gate before promotion-eligible:
+    Stage 1 — LLM audit: confidence must exceed threshold; uncertain insights penalized
+    Stage 2 — Convergence: same pattern must surface from ≥2 independent clusters
+    Stage 3 — Recurrence: underlying edges must have persisted across ≥3 graph rebuilds
+  Deduplicates against existing insights
         │
         ▼
-[L3: Contradiction detection — contradiction_check.py]
-  Checks new insights against existing → flags contradictions
+[L3: Contradiction Detection — contradiction_check.py]
+  LLM checks new insights against existing promoted knowledge for conflicts
+  Blocking contradictions → queued, not promoted
+  Warnings → promoted but flagged
         │
-        │  weekly Sunday 4:00 UTC
+        │  weekly
         ▼
 [L4: Knowledge Promotion — memory_promote.py]
-  Durable insights → topics/PERSISTENT_AUTO.md + memory/_permanent.md
+  Reads insights that survived N synthesis cycles
+  Multi-signal evaluation: confidence + reinforcement + contradiction status + lifecycle
+  Category-aware TTL: preferences decay slower than predictions; lessons slower than uncertain insights
+  Reinforcement multiplier: insights reinforced 10+ times get 2× TTL extension
+  LLM review rescue: every 60 days, LLM judges if a decaying insight is still valid
+  Graduation rate-limited: max 2 promotions per run, hard cap of 15 permanent rules
+  Insights that pass all signals → promoted to permanent knowledge
         │
         ▼
-[L4: generate_topic_index.py]
-  Builds topics/INDEX.md → writes MEMORY.md (enriched, structured)
-
-  Unlike the flat append in dinomem base, this index is LLM-curated:
-  entries are selected by transferability (reusable lessons rank above
-  one-off datapoints), not just recency. It also embeds promoted behavioral
-  rules at the top — so MEMORY.md serves two roles: search navigation aid
-  AND always-present knowledge injected every turn.
+[L4: Index Generation — generate_topic_index.py]
+  Reads manual + auto-promoted topics
+  Builds structured topic tree
+  Writes MEMORY.md — enriched with promoted insights at the top
+  MEMORY.md serves two roles: search navigation aid + always-present behavioral layer
         │
         ▼
 [Root context injection — every turn]
-  topics/PERSISTENT_AUTO.md + memory/_permanent.md injected into agent context
+  Promoted insights present in every agent turn
+  No recall needed — behavior change is baseline, not on-demand
         │
         ▼
 [Behavior change]
@@ -373,4 +432,4 @@ Commercial — see LICENSE
 
 ---
 
-Made with 🦖 by [@02-dino](https://github.com/02-dino) | [komunitech.com](https://komunitech.com)
+Made with 🦖 by [@02-dino](https://github.com/02-dino)

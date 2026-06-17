@@ -8,12 +8,14 @@
 #   bash scripts/uninstall.sh --workspace DIR --purge          # also remove scripts
 #   bash scripts/uninstall.sh --workspace DIR --purge-data     # remove kb/, topics/ (NOT memory)
 #   bash scripts/uninstall.sh --workspace DIR --purge-memory   # ⚠️  WIPES memory/_permanent.md — irreversible
+#   bash scripts/uninstall.sh --workspace DIR --force          # skip all confirmation prompts (for AI agent use)
 set -euo pipefail
 
 WS="${OPENCLAW_WORKSPACE:-$HOME/.openclaw/workspace}"
 PURGE=0
 PURGE_DATA=0
 PURGE_MEMORY=0
+FORCE=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -22,6 +24,7 @@ while [ $# -gt 0 ]; do
     --purge)         PURGE=1; shift ;;
     --purge-data)    PURGE_DATA=1; shift ;;
     --purge-memory)  PURGE_MEMORY=1; shift ;;
+    --force)         FORCE=1; shift ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
 done
@@ -80,7 +83,11 @@ fi
 if [ "$PURGE_DATA" = 1 ]; then
   hr "Purge data"
   warn "This will permanently delete neuron knowledge data."
-  read -r -p "  Type 'yes' to confirm: " confirm
+  if [ "$FORCE" = 1 ]; then
+    confirm="yes"
+  else
+    read -r -p "  Type 'yes' to confirm: " confirm
+  fi
   if [ "$confirm" = "yes" ]; then
     [ -d "$WS/kb/memory_neuron" ]  && rm -rf "$WS/kb/memory_neuron"  && ok "removed kb/memory_neuron/"
     [ -d "$WS/topics" ]            && rm -rf "$WS/topics"            && ok "removed topics/"
@@ -98,7 +105,11 @@ if [ "$PURGE_MEMORY" = 1 ]; then
   printf '  \033[31m[warn]\033[0m ⚠️  This will PERMANENTLY DELETE promoted memory:\n'
   printf '         memory/_permanent.md\n'
   printf '         This cannot be undone.\n'
-  read -r -p "  Type 'wipe memory' to confirm: " confirm
+  if [ "$FORCE" = 1 ]; then
+    confirm="wipe memory"
+  else
+    read -r -p "  Type 'wipe memory' to confirm: " confirm
+  fi
   if [ "$confirm" = "wipe memory" ]; then
     [ -f "$WS/memory/_permanent.md" ] && rm "$WS/memory/_permanent.md" && ok "removed memory/_permanent.md" || skip "memory/_permanent.md not found"
   else
