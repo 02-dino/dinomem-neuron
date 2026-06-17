@@ -50,7 +50,7 @@ try:
 except ImportError:
     HAS_LLM = False
 
-BASE = Path("/root/.openclaw/workspace-analyst")
+BASE = Path("DINOMEM_WORKSPACE_PLACEHOLDER")
 L3_DIR = BASE / "kb/memory_neuron/l3_synthesis"
 L4_DIR = BASE / "kb/memory_neuron/l4_promoted"
 TOPICS_DIR = BASE / "topics"
