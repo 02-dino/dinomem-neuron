@@ -99,7 +99,7 @@ REINFORCE_MULTIPLIER = [
 LLM_REVIEW_INTERVAL_DAYS = 60
 GRADUATE_REINFORCE = 3      # distinct reinforcing runs needed to graduate
 MAX_GRADUATIONS_PER_RUN = 2 # rate limit: behavior memory can't be flooded
-MAX_PERSISTENT_RULES = 12   # hard cap on injected rules — keep MEMORY.md lean
+MAX_PERSISTENT_RULES = 15   # hard cap on injected rules — keep MEMORY.md lean (calibrated for 200k effective context window)
 SAME_RATIO = 0.6            # fuzzy ratio above which two patterns are "the same"
 
 
