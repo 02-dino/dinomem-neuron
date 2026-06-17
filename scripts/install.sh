@@ -138,7 +138,7 @@ fi
 
 # ── 2) Copy scripts ───────────────────────────────────────────────────────────
 hr "Copying scripts"
-for f in procedures/memory_graph.py procedures/memory_synthesis.py procedures/memory_promote.py procedures/contradiction_check.py procedures/generate_topic_index.py procedures/docs_ingest.py procedures/calendar_sync.py tools/docs_search.py tools/cache_utils.py tools/calendar_tool.py scripts/calendar_oauth_setup.py; do
+for f in procedures/memory_graph.py procedures/memory_synthesis.py procedures/memory_promote.py procedures/contradiction_check.py procedures/generate_topic_index.py procedures/docs_ingest.py procedures/session_ingest.py procedures/calendar_sync.py tools/docs_search.py tools/session_search.py tools/cache_utils.py tools/calendar_tool.py scripts/calendar_oauth_setup.py; do
   dst="$WS/$f"
   if [ -f "$dst" ] && [ "$FORCE" = 0 ]; then
     skip "$f (exists, use --force to overwrite)"
@@ -189,6 +189,8 @@ if [ "$DO_CRON" = 1 ]; then
   # docs_ingest — daily at 4:00 UTC (RAG long docs)
   DOCS_CRON="0 4 * * * cd $WS && python3 procedures/docs_ingest.py >> logs/docs_ingest.log 2>&1"
   upsert_cron "docs_ingest.py" "dinomem-neuron: RAG docs re-ingest (daily)" "$DOCS_CRON" "docs_ingest cron (daily 4:00 UTC)"
+  SESSION_CRON="30 5 * * * cd $WS && python3 procedures/session_ingest.py >> logs/session_ingest.log 2>&1"
+  upsert_cron "session_ingest.py" "dinomem-neuron: session RAG ingest + cleanup (daily)" "$SESSION_CRON" "session_ingest cron (daily 5:30 UTC)"
 
   # calendar_sync — daily at 7:00 UTC (auto-resolve _note_ from past calendar events)
   CAL_CRON="0 7 * * * cd $WS && python3 procedures/calendar_sync.py >> logs/calendar_sync.log 2>&1"
@@ -215,6 +217,12 @@ BLOCK="$BEGIN
   trigger: explicit date/time | deadline | appointment
   workflow: save _note_<slug>.md → extract date/time → ask if missing → python3 tools/calendar_tool.py create "<title>" --date <YYYY-MM-DD> [--time HH:MM] --note _note_<slug>.md [--reminder popup:30] [--attendee email] → confirm
   skip_if: no date/time implied | user says no calendar
+
+## session_deep_recall
+  trigger: memory_search score < 0.6 AND source session < 7 days old
+  action: python3 tools/session_search.py "<query>" --k 5
+  note: fallback only — agent decides when to trigger, user never needs to ask. after 7 days, memory/*.md summary is sufficient.
+  never: call session_search on every turn — only when memory_search result is thin
 $END"
 
 touch "$AGENTS"
