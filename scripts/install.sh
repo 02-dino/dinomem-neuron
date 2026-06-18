@@ -122,6 +122,27 @@ fi
 if [ -f "$WS/AGENTS.md" ] && grep -qF "rag_long_docs" "$WS/AGENTS.md" 2>/dev/null; then
   warn "AGENTS.md already has a rag_long_docs section — neuron block will be appended. Check for duplicates after install."
 fi
+# Root files size check
+ROOT_FILES="AGENTS.md SOUL.md IDENTITY.md TOOLS.md USER.md"
+TOTAL_CHARS=0
+for rf in $ROOT_FILES; do
+  if [ -f "$WS/$rf" ]; then
+    RF_SIZE=$(wc -c < "$WS/$rf")
+    TOTAL_CHARS=$((TOTAL_CHARS + RF_SIZE))
+    if [ "$RF_SIZE" -gt 15000 ]; then
+      warn "$rf is ${RF_SIZE} chars — exceeds 15k. Trim now: remove outdated or redundant sections."
+    elif [ "$RF_SIZE" -gt 10000 ]; then
+      warn "$rf is ${RF_SIZE} chars — approaching 15k limit. Consider trimming soon."
+    fi
+  fi
+done
+if [ "$TOTAL_CHARS" -gt 60000 ]; then
+  warn "Total root files: ${TOTAL_CHARS} chars — exceeds maxBootstrapTotalChars (60000). Some files won't be fully injected."
+elif [ "$TOTAL_CHARS" -gt 50000 ]; then
+  warn "Total root files: ${TOTAL_CHARS} chars — approaching maxBootstrapTotalChars (60000). Consider trimming soon."
+else
+  ok "Root files: ${TOTAL_CHARS} chars total — within limits"
+fi
 
 # ── 0) Python dependencies ───────────────────────────────────────────────────
 hr "Python dependencies"
