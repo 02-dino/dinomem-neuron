@@ -70,6 +70,44 @@ hr "dinomem-neuron -> $WS (agent: $AGENT_ID)"
 
 # ── Pre-flight compatibility checks ─────────────────────────────────────────
 hr "Pre-flight checks"
+# Python version check
+if ! command -v python3 &>/dev/null; then
+  warn "python3 not found — attempting install..."
+  if command -v brew &>/dev/null; then
+    brew install python3 && ok "python3 installed (brew)" || warn "python3 install failed — install manually: https://python.org"
+  elif command -v apt-get &>/dev/null; then
+    apt-get install -y software-properties-common 2>/dev/null
+    add-apt-repository -y ppa:deadsnakes/ppa 2>/dev/null || true
+    apt-get update -q && apt-get install -y python3.12 python3.12-venv python3-pip \
+      && ln -sf /usr/bin/python3.12 /usr/local/bin/python3 \
+      && ok "python3.12 installed (deadsnakes)" \
+      || warn "python3 install failed — install manually: https://python.org"
+  elif command -v curl &>/dev/null; then
+    curl https://pyenv.run | bash \
+      && export PATH="$HOME/.pyenv/bin:$PATH" \
+      && pyenv install 3.12 && pyenv global 3.12 \
+      && ok "python3.12 installed (pyenv)" \
+      || warn "pyenv install failed — install python3 manually: https://python.org"
+  else
+    warn "No package manager found — install python3 manually: https://python.org"
+  fi
+fi
+PY_VERSION=$(python3 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>/dev/null || echo "0.0")
+PY_MAJOR=$(echo "$PY_VERSION" | cut -d. -f1)
+PY_MINOR=$(echo "$PY_VERSION" | cut -d. -f2)
+if [ "$PY_MAJOR" -lt 3 ] || { [ "$PY_MAJOR" -eq 3 ] && [ "$PY_MINOR" -lt 8 ]; }; then
+  warn "Python $PY_VERSION detected — dinomem-neuron requires Python 3.8+. Upgrade before continuing."
+else
+  ok "Python $PY_VERSION"
+fi
+# Workspace writable check
+if [ ! -d "$WS" ]; then
+  warn "Workspace '$WS' does not exist — create it first or pass correct --workspace path."
+elif [ ! -w "$WS" ]; then
+  warn "Workspace '$WS' is not writable — fix permissions before installing."
+else
+  ok "Workspace writable: $WS"
+fi
 # dinomem base must be installed + version check
 DINOMEM_MIN_VERSION="1.0.0"
 if [ ! -f "$WS/procedures/extract_memory.py" ]; then
@@ -129,10 +167,13 @@ for rf in $ROOT_FILES; do
   if [ -f "$WS/$rf" ]; then
     RF_SIZE=$(wc -c < "$WS/$rf")
     TOTAL_CHARS=$((TOTAL_CHARS + RF_SIZE))
-    if [ "$RF_SIZE" -gt 15000 ]; then
-      warn "$rf is ${RF_SIZE} chars — exceeds 15k. Trim now: remove outdated or redundant sections."
+    if [ "$RF_SIZE" -gt 20000 ]; then
+      warn "$rf is ${RF_SIZE} chars — exceeds maxBootstrapFileChars (20000). Content beyond limit won't be injected."
+      warn "  Trim $rf: remove outdated or redundant sections to keep it lightweight."
+    elif [ "$RF_SIZE" -gt 15000 ]; then
+      warn "$rf is ${RF_SIZE} chars — getting large. Consider trimming soon."
     elif [ "$RF_SIZE" -gt 10000 ]; then
-      warn "$rf is ${RF_SIZE} chars — approaching 15k limit. Consider trimming soon."
+      warn "$rf is ${RF_SIZE} chars — approaching 15k. Keep an eye on size."
     fi
   fi
 done
