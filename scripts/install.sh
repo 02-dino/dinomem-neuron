@@ -257,11 +257,6 @@ BLOCK="$BEGIN
   action: save docs/<slug>.md → python3 procedures/docs_ingest.py --file docs/<slug>.md → confirm
   note: auto-re-ingested daily 4:00 UTC; never save long docs to memory/
 
-## contradiction_alerts
-  when: contradiction_check.py flags conflict
-  action: surface to user on next relevant turn → ask user to resolve
-  never: auto-resolve
-
 ## calendar_integration
   trigger: explicit date/time | deadline | appointment
   workflow: save _note_<slug>.md → extract date/time → ask if missing → python3 tools/calendar_tool.py create "<title>" --date <YYYY-MM-DD> [--time HH:MM] --note _note_<slug>.md [--reminder popup:30] [--attendee email] → confirm
