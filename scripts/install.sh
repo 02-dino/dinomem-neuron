@@ -328,6 +328,11 @@ BLOCK="$BEGIN
   trigger: memory_search returns thin/uncertain result (few hits, [uncertain] tag, or low confidence) AND memory file date < 7 days old AND user intent requires detail
   action: python3 tools/session_search.py "<query>" --k 5
   skip: do not call session_search every turn — only when memory_search result is clearly insufficient
+  query_style:
+    applies_to: memory_search | session_search
+    prefer: natural_language
+    avoid: technical_identifiers | code_terms | exact_strings | variable_names
+    enforce: rewrite query to natural language before calling any memory tool
 $END"
 
 touch "$AGENTS"
