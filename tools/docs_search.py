@@ -32,9 +32,9 @@ _SCRIPT_DIR = Path(__file__).parent
 sys.path.insert(0, str(_SCRIPT_DIR.parent))
 
 try:
-    from tools.cache_utils import cached
+    from tools.cache_utils import cached, get as cache_get, set as cache_set
 except ImportError:
-    from cache_utils import cached
+    from cache_utils import cached, get as cache_get, set as cache_set
 
 from langchain_chroma import Chroma
 from langchain_huggingface import HuggingFaceEmbeddings
@@ -43,10 +43,24 @@ from langchain_huggingface import HuggingFaceEmbeddings
 WORKSPACE = Path(__file__).parent.parent
 DB_PATH = str(WORKSPACE / "kb/vector_db_docs")
 
-LOCAL_MODEL_PATH = (
-    "DINOMEM_HF_CACHE_PLACEHOLDER/hub/models--sentence-transformers--all-MiniLM-L6-v2"
-    "/snapshots/8b3219a92973c328a8e22fadcfa821b5dc75636a"
+# Resolve the local model snapshot dynamically rather than hardcoding a snapshot
+# hash (hardcoded hashes break silently when the HF cache pins a different
+# revision on another machine) or relying solely on an install-time sed of
+# DINOMEM_HF_CACHE_PLACEHOLDER. Glob the snapshots dir under the HF cache; fall
+# back to the model id so HF resolves it normally if no local snapshot exists.
+import pathlib
+_MODEL_ID = "sentence-transformers/all-MiniLM-L6-v2"
+_hf_cache = pathlib.Path(
+    os.environ.get("HF_HOME")
+    or (pathlib.Path.home() / ".cache" / "huggingface")
 )
+_model_root = _hf_cache / "hub" / "models--sentence-transformers--all-MiniLM-L6-v2" / "snapshots"
+try:
+    _snaps = sorted(p for p in _model_root.iterdir() if p.is_dir()) if _model_root.exists() else []
+    LOCAL_MODEL_PATH = str(_snaps[-1]) if _snaps else _MODEL_ID
+except Exception:
+    LOCAL_MODEL_PATH = _MODEL_ID
+_LOCAL_MODEL_RESOLVED = LOCAL_MODEL_PATH != _MODEL_ID
 
 # ── Lazy init ─────────────────────────────────────────────────────────────────
 _embeddings = None
@@ -55,9 +69,11 @@ _vectorstore = None
 def _get_vectorstore():
     global _embeddings, _vectorstore
     if _embeddings is None:
+        # Only force offline/local_files_only when we resolved an actual local
+        # snapshot; otherwise let HF resolve the model id normally.
         _embeddings = HuggingFaceEmbeddings(
             model_name=LOCAL_MODEL_PATH,
-            model_kwargs={'device': 'cpu', 'local_files_only': True},
+            model_kwargs={'device': 'cpu', 'local_files_only': _LOCAL_MODEL_RESOLVED},
             encode_kwargs={'normalize_embeddings': True}
         )
     if _vectorstore is None:
@@ -90,7 +106,30 @@ def _cached_search(cache_key: str, query: str, fetch_k: int):
 # ── Search ────────────────────────────────────────────────────────────────────
 def _hyde_expand(query: str) -> str:
     """Generate a hypothetical document passage for HyDE query expansion.
-    Falls back to original query if LLM unavailable."""
+
+    Default ON (improves recall on formal/long-form docs). Optimized so the
+    expensive LLM call is not repeated for the same query:
+      - Persistent disk cache (24h TTL) keyed on the query — HyDE expansion of a
+        given question is stable, so a repeat query is a cache hit (no LLM call,
+        no 15s latency).
+      - Falls back silently to the original query if the LLM/gateway is
+        unavailable, so it never breaks search on a fresh machine.
+    """
+    HYDE_TTL = 86400  # 24h — expansion is stable per query
+    cached_val = cache_get("docs_hyde", query, ttl_seconds=HYDE_TTL)
+    if cached_val:
+        return cached_val
+    # Timeout is generous (default 25s) and env-overridable: a too-tight timeout
+    # is worst-of-both — it pays the wait AND loses the expansion. A successful
+    # expansion is cached for 24h, so the cost is paid once per unique query.
+    # Set DOCS_HYDE_TIMEOUT=0 to disable HyDE entirely (instant, recall-only).
+    try:
+        hyde_timeout = float(os.environ.get('DOCS_HYDE_TIMEOUT', '25'))
+    except Exception:
+        hyde_timeout = 25.0
+    if hyde_timeout <= 0:
+        return query
+    expanded = query
     try:
         import subprocess, shutil
         openclaw_bin = shutil.which('openclaw') or '/home/linuxbrew/.linuxbrew/bin/openclaw'
@@ -100,15 +139,19 @@ def _hyde_expand(query: str) -> str:
         )
         result = subprocess.run(
             [openclaw_bin, 'capability', 'model', 'run', '--prompt', prompt, '--gateway', '--json'],
-            capture_output=True, text=True, timeout=15
+            capture_output=True, text=True, timeout=hyde_timeout
         )
         if result.returncode == 0:
             data = json.loads(result.stdout)
             if data.get('ok') and data.get('outputs'):
-                return data['outputs'][0].get('text', query).strip() or query
+                expanded = data['outputs'][0].get('text', query).strip() or query
     except Exception:
-        pass
-    return query
+        expanded = query
+    # Only cache successful expansions; don't cache fallbacks (so a transient
+    # gateway outage doesn't pin the un-expanded query for 24h).
+    if expanded and expanded != query:
+        cache_set("docs_hyde", query, result=expanded)
+    return expanded
 
 
 def docs_search(
@@ -139,46 +182,62 @@ def docs_search(
     """
     # HyDE: expand query with hypothetical document passage for better recall
     search_query = _hyde_expand(query) if hyde else query
-    ck = _cache_key(query, k, doc_filter, section_filter)  # cache key uses original query
-    raw = _cached_search(ck, search_query, k * 4)
 
-    results = []
-    for item in raw:
-        meta = item['metadata']
+    # Fetch depth: normally k*4. When a doc/section filter is active, the filter
+    # is applied POST-fetch, so a narrow filter can starve the result set below
+    # k even though matching chunks exist deeper in the ranking. In that case we
+    # progressively widen the fetch (up to a cap) so filtered queries stay
+    # reliable on edge cases, without paying the cost on unfiltered queries.
+    has_filter = bool(doc_filter or section_filter)
+    fetch_k = k * 4
+    FETCH_CAP = 400
 
-        # doc_filter — match against title or source_file
-        if doc_filter:
-            title = meta.get('title', '').lower()
-            src = meta.get('source_file', '').lower()
-            if doc_filter.lower() not in title and doc_filter.lower() not in src:
-                continue
+    def _collect(raw):
+        out = []
+        for item in raw:
+            meta = item['metadata']
+            if doc_filter:
+                title = meta.get('title', '').lower()
+                src = meta.get('source_file', '').lower()
+                if doc_filter.lower() not in title and doc_filter.lower() not in src:
+                    continue
+            if section_filter:
+                section = meta.get('section_title', '').lower()
+                if section_filter.lower() not in section:
+                    continue
+            content = item['page_content']
+            if max_chars:
+                content = content[:max_chars]
+            out.append({
+                'content': content,
+                'score': item['score'],
+                'metadata': {
+                    'doc_title': meta.get('title', ''),
+                    'section_title': meta.get('section_title', ''),
+                    'section_level': meta.get('section_level', 0),
+                    'chunk_index': meta.get('chunk_index', 0),
+                    'source_file': meta.get('source_file', ''),
+                    'date': meta.get('date', ''),
+                    'doc_type': meta.get('doc_type', 'document'),
+                }
+            })
+            if len(out) >= k:
+                break
+        return out
 
-        # section_filter
-        if section_filter:
-            section = meta.get('section_title', '').lower()
-            if section_filter.lower() not in section:
-                continue
+    ck = _cache_key(query, fetch_k, doc_filter, section_filter)  # cache key uses original query
+    raw = _cached_search(ck, search_query, fetch_k)
+    results = _collect(raw)
 
-        content = item['page_content']
-        if max_chars:
-            content = content[:max_chars]
-
-        results.append({
-            'content': content,
-            'score': item['score'],
-            'metadata': {
-                'doc_title': meta.get('title', ''),
-                'section_title': meta.get('section_title', ''),
-                'section_level': meta.get('section_level', 0),
-                'chunk_index': meta.get('chunk_index', 0),
-                'source_file': meta.get('source_file', ''),
-                'date': meta.get('date', ''),
-                'doc_type': meta.get('doc_type', 'document'),
-            }
-        })
-
-        if len(results) >= k:
-            break
+    # Edge case: filtered query came up short. Widen fetch and retry until we
+    # either fill k results or hit the fetch cap / exhaust the corpus.
+    while has_filter and len(results) < k and fetch_k < FETCH_CAP:
+        fetch_k = min(fetch_k * 2, FETCH_CAP)
+        ck = _cache_key(query, fetch_k, doc_filter, section_filter)
+        raw_wider = _cached_search(ck, search_query, fetch_k)
+        results = _collect(raw_wider)
+        if len(raw_wider) < fetch_k:
+            break  # corpus exhausted — no more chunks to fetch
 
     return results
 

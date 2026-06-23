@@ -43,10 +43,20 @@ DOCS_DIR = WORKSPACE / "docs"
 DB_PATH = str(WORKSPACE / "kb/vector_db_docs")
 LOG_FILE = WORKSPACE / "logs/docs_ingest.log"
 
-LOCAL_MODEL_PATH = (
-    "DINOMEM_HF_CACHE_PLACEHOLDER/hub/models--sentence-transformers--all-MiniLM-L6-v2"
-    "/snapshots/8b3219a92973c328a8e22fadcfa821b5dc75636a"
+# Resolve the local model snapshot dynamically (see docs_search.py). Must match
+# what docs_search uses, or ingested vectors won't align with query vectors.
+_MODEL_ID = "sentence-transformers/all-MiniLM-L6-v2"
+_hf_cache = Path(
+    os.environ.get("HF_HOME")
+    or (Path.home() / ".cache" / "huggingface")
 )
+_model_root = _hf_cache / "hub" / "models--sentence-transformers--all-MiniLM-L6-v2" / "snapshots"
+try:
+    _snaps = sorted(p for p in _model_root.iterdir() if p.is_dir()) if _model_root.exists() else []
+    LOCAL_MODEL_PATH = str(_snaps[-1]) if _snaps else _MODEL_ID
+except Exception:
+    LOCAL_MODEL_PATH = _MODEL_ID
+_LOCAL_MODEL_RESOLVED = LOCAL_MODEL_PATH != _MODEL_ID
 
 MAX_SECTION_CHARS = 2000   # split section into paragraphs if larger
 MAX_PARA_CHARS    = 1500   # split paragraph into sentences if larger
@@ -293,7 +303,7 @@ def main():
     log("Loading embeddings model...")
     embeddings = HuggingFaceEmbeddings(
         model_name=LOCAL_MODEL_PATH,
-        model_kwargs={'device': 'cpu', 'local_files_only': True},
+        model_kwargs={'device': 'cpu', 'local_files_only': _LOCAL_MODEL_RESOLVED},
         encode_kwargs={'normalize_embeddings': True}
     )
 

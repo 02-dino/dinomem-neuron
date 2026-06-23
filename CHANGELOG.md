@@ -4,6 +4,30 @@ All notable changes to dinomem-neuron are documented here.
 
 ---
 
+## [1.1.1] — 2026-06-23
+
+### Fixed
+- **`docs_search` + `docs_ingest` model resolution** — removed the hardcoded HF
+  snapshot hash + `DINOMEM_HF_CACHE_PLACEHOLDER` (install-time sed). Both now
+  resolve the local MiniLM snapshot dynamically (glob snapshots dir, honor
+  `HF_HOME`, fall back to the model id). Ingest and search resolve the SAME
+  snapshot so vectors always align. This was a silent-death bug on fresh VPS
+  installs where the cached revision differed from the pinned hash.
+- **`docs_search` filtered queries** — `--doc` / `--section` filters are applied
+  post-fetch, so a narrow filter could return fewer than `k` results even when
+  matching chunks existed deeper in the ranking. Fetch now widens progressively
+  (k×4 → up to 400) when a filter is active and the set is short, until `k` is
+  filled or the corpus is exhausted. No extra cost on unfiltered queries.
+
+### Changed
+- **`docs_search` HyDE** — stays default ON (better recall on formal docs) but
+  optimized: successful expansions are cached on disk for 24h (repeat query =
+  instant, no LLM call), timeout raised to 25s and made env-configurable
+  (`DOCS_HYDE_TIMEOUT`, set `0` to disable). Fallbacks are not cached, so a
+  transient gateway outage never pins an un-expanded query.
+
+---
+
 ## [1.1.0] — 2026-06-23
 
 ### Added
