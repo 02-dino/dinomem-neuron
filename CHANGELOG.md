@@ -4,6 +4,24 @@ All notable changes to dinomem-neuron are documented here.
 
 ---
 
+## [1.1.0] — 2026-06-23
+
+### Added
+- **`session_search` recency rerank** — light, score-gap-based recency tie-breaker.
+  Among similarly-relevant sessions the fresher one wins (sessions are usually
+  recalled to find the *most recent* discussion of a topic), while a clearly
+  more-relevant older session is never buried. Blends on normalized similarity
+  score gap (not rank position): small gap → recency decides, large gap →
+  relevance dominates. Half-life ~3d, weight 0.25. No recency floor / no
+  intraday mode (recall, not news). Over-fetch raised to k×3 for rerank headroom.
+
+### Fixed
+- `session_search`: resolve the local MiniLM snapshot dir dynamically instead of
+  hardcoding a snapshot hash (hardcoded hashes break silently when the HF cache
+  pins a different revision on another machine); falls back to the model id.
+
+---
+
 ## [1.0.0] — 2026-06-18
 
 ### Added

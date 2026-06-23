@@ -7,11 +7,12 @@ No HyDE: query and session content are both conversational, raw query embedding
 is more accurate than hypothetical expansion.
 
 Trigger (agent-side):
-  - memory_search score < 0.6 AND source session < 7 days old
-  - Agent calls this tool for deeper recall when memory summary is thin
+  - memory_search returns thin/uncertain result ([uncertain] tag, few hits, low confidence)
+  - AND memory file date < 7 days old
+  - AND user intent requires detail
 
 Usage (CLI):
-  python3 tools/session_search.py "what did we decide about the API design"
+  python3 tools/session_search.py "what did we decide about X"
   python3 tools/session_search.py "funding rate discussion" --k 5
   python3 tools/session_search.py --list
 
@@ -25,6 +26,7 @@ import sys
 import json
 import hashlib
 import argparse
+from datetime import datetime
 from pathlib import Path
 from typing import List, Dict, Optional
 
@@ -47,11 +49,18 @@ WORKSPACE = Path(__file__).parent.parent
 DB_PATH = str(WORKSPACE / "kb/vector_db_sessions")
 
 import pathlib
+# Resolve the local model snapshot dynamically instead of hardcoding a snapshot
+# hash (hardcoded hashes break silently when the HF cache pins a different
+# revision on another machine). Glob the snapshots dir; fall back to the model
+# id so HF can resolve it normally if no local snapshot exists.
 _cache_dir = pathlib.Path.home() / ".cache/huggingface/hub"
-LOCAL_MODEL_PATH = str(
-    _cache_dir / "models--sentence-transformers--all-MiniLM-L6-v2"
-    / "snapshots/8b3219a92973c328a8e22fadcfa821b5dc75636a"
-)
+_model_root = _cache_dir / "models--sentence-transformers--all-MiniLM-L6-v2" / "snapshots"
+_MODEL_ID = "sentence-transformers/all-MiniLM-L6-v2"
+try:
+    _snaps = sorted(p for p in _model_root.iterdir() if p.is_dir()) if _model_root.exists() else []
+    LOCAL_MODEL_PATH = str(_snaps[-1]) if _snaps else _MODEL_ID
+except Exception:
+    LOCAL_MODEL_PATH = _MODEL_ID
 
 # ── Lazy init ─────────────────────────────────────────────────────────────────
 _embeddings = None
@@ -77,11 +86,6 @@ def _get_vectorstore():
         )
     return _vectorstore
 
-# ── Cache ─────────────────────────────────────────────────────────────────────
-def _cache_key(query: str, k: int, session_filter: Optional[str]) -> str:
-    raw = f"{query}|{k}|{session_filter}"
-    return hashlib.md5(raw.encode()).hexdigest()
-
 # ── Search ────────────────────────────────────────────────────────────────────
 def session_search(
     query: str,
@@ -92,15 +96,7 @@ def session_search(
     """
     Search recent session DB for chunks relevant to query.
 
-    Args:
-        query:          Natural language query
-        k:              Number of results to return
-        session_filter: Filter by session name substring (optional)
-        max_chars:      Truncate chunk content to this length (optional)
-
-    Returns:
-        List of dicts with keys: content, score, session_name, archived_date,
-        chunk_index, source_file
+    Returns list of dicts: content, score, session_name, archived_date, chunk_index, source_file
     """
     db = _get_vectorstore()
 
@@ -108,20 +104,25 @@ def session_search(
     if session_filter:
         where = {"session_name": {"$contains": session_filter}}
 
+    # Over-fetch (k*3) so the recency rerank has room to reorder the top band.
+    # Sessions are recalled to answer "what did we decide about X" — almost
+    # always the MOST RECENT discussion of X. Pure similarity can surface an
+    # older session over a newer one that resolved the topic. We add a LIGHT
+    # recency tie-breaker (half-life ~3d, w ~0.15) so among similarly-relevant
+    # sessions the fresher wins, without burying a clearly-more-relevant older
+    # session. No recency floor / no intraday mode — this is recall, not news.
+    fetch_k = max(k * 3, 15)
     try:
-        results = db.similarity_search_with_relevance_scores(
-            query, k=k, filter=where
-        )
+        raw = db.similarity_search_with_relevance_scores(query, k=fetch_k, filter=where)
     except Exception:
-        # Fallback: no filter if Chroma rejects $contains
-        results = db.similarity_search_with_relevance_scores(query, k=k)
+        raw = db.similarity_search_with_relevance_scores(query, k=fetch_k)
 
-    output = []
-    for doc, score in results:
+    items = []
+    for doc, score in raw:
         content = doc.page_content
         if max_chars and len(content) > max_chars:
             content = content[:max_chars] + '...'
-        output.append({
+        items.append({
             'content': content,
             'score': round(score, 4),
             'session_name': doc.metadata.get('session_name', ''),
@@ -130,7 +131,63 @@ def session_search(
             'source_file': doc.metadata.get('source_file', ''),
         })
 
-    return output
+    return _recency_rerank(items, k)
+
+
+def _parse_archived_date(s: str):
+    """Parse archived_date (YYYY-MM-DD or ISO) to naive datetime; None if unparseable."""
+    if not s:
+        return None
+    try:
+        val = str(s).replace('Z', '+00:00')
+        dt = datetime.fromisoformat(val)
+        if dt.tzinfo is not None:
+            dt = dt.replace(tzinfo=None)
+        return dt
+    except Exception:
+        try:
+            return datetime.strptime(str(s)[:10], '%Y-%m-%d')
+        except Exception:
+            return None
+
+
+def _recency_rerank(items: List[Dict], k: int, half_life_days: float = 3.0,
+                    w: float = 0.25) -> List[Dict]:
+    """Recency tie-breaker over session results, blended on SIMILARITY SCORE gap
+    (not rank position) so the effect scales with how close the matches are.
+
+    final = (1-w)*relevance_norm + w*recency_component
+    - relevance_norm: similarity score min-max normalized to [0,1] across the
+      candidate set. A SMALL score gap (near-tie) => recency decides; a LARGE
+      score gap => relevance dominates and recency cannot override it.
+    - recency_component: 0.5 ** (age_days / half_life), in [0,1].
+    Sessions with no parseable date use the list-median age (neither boosted
+    nor buried). This keeps recency a genuine tie-breaker, never a driver.
+    """
+    n = len(items)
+    if n <= 1:
+        return items[:k]
+    now = datetime.now()
+    ages = []
+    for it in items:
+        dt = _parse_archived_date(it.get('archived_date', ''))
+        ages.append(None if dt is None else max(0.0, (now - dt).total_seconds() / 86400.0))
+    known = [a for a in ages if a is not None]
+    median_age = sorted(known)[len(known) // 2] if known else 0.0
+
+    scores = [float(it.get('score', 0.0)) for it in items]
+    smin, smax = min(scores), max(scores)
+    span = (smax - smin) or 1e-9
+
+    scored = []
+    for i, it in enumerate(items):
+        relevance_norm = (scores[i] - smin) / span  # best=1.0, worst=0.0
+        age = ages[i] if ages[i] is not None else median_age
+        recency_component = 0.5 ** (age / half_life_days)
+        final = (1.0 - w) * relevance_norm + w * recency_component
+        scored.append((final, i, it))
+    scored.sort(key=lambda t: (-t[0], t[1]))
+    return [it for _, _, it in scored][:k]
 
 def list_sessions() -> List[Dict]:
     """List all sessions currently indexed in the DB."""
@@ -151,24 +208,28 @@ def list_sessions() -> List[Dict]:
 def main():
     parser = argparse.ArgumentParser(description='Search recent session vector DB')
     parser.add_argument('query', nargs='?', help='Search query')
-    parser.add_argument('--k', type=int, default=5, help='Number of results (default: 5)')
+    parser.add_argument('--k', type=int, default=5)
     parser.add_argument('--session', type=str, help='Filter by session name substring')
     parser.add_argument('--list', action='store_true', help='List all indexed sessions')
     parser.add_argument('--json', action='store_true', help='Output raw JSON')
     args = parser.parse_args()
 
     if args.list:
-        sessions = list_sessions()
+        try:
+            sessions = list_sessions()
+        except FileNotFoundError as e:
+            print(f"Error: {e}")
+            sys.exit(1)
         if args.json:
             print(json.dumps(sessions, indent=2))
         else:
             if not sessions:
                 print("No sessions indexed. Run: python3 procedures/session_ingest.py")
                 return
-            print(f"\n{'Session':<50} {'Archived':<12}")
-            print("-" * 64)
+            print(f"\n{'Session':<60} {'Archived':<12}")
+            print("-" * 74)
             for s in sessions:
-                print(f"{s['session_name']:<50} {s['archived_date']:<12}")
+                print(f"{s['session_name']:<60} {s['archived_date']:<12}")
         return
 
     if not args.query:
