@@ -98,11 +98,23 @@ def get_openclaw_config():
 
 def call_llm_gateway(prompt, max_tokens=2000):
     """Call LLM via OpenClaw gateway."""
-    import subprocess
+    import subprocess, shutil
+
+    # Resolve the openclaw binary portably: PATH first, then common install
+    # locations. Hardcoding the linuxbrew path breaks on npm-global installs and
+    # other distros where openclaw lives elsewhere.
+    openclaw_bin = shutil.which("openclaw")
+    if not openclaw_bin:
+        for _c in ("/home/linuxbrew/.linuxbrew/bin/openclaw",
+                   "/usr/local/bin/openclaw", "/usr/bin/openclaw"):
+            if Path(_c).exists():
+                openclaw_bin = _c
+                break
+    openclaw_bin = openclaw_bin or "openclaw"
 
     try:
         result = subprocess.run(
-            ["/home/linuxbrew/.linuxbrew/bin/openclaw", "capability", "model", "run",
+            [openclaw_bin, "capability", "model", "run",
              "--prompt", prompt,
              "--gateway",
              "--json"],

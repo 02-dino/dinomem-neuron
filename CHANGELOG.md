@@ -4,6 +4,31 @@ All notable changes to dinomem-neuron are documented here.
 
 ---
 
+## [1.1.2] — 2026-06-23
+
+### Fixed
+- **`session_ingest` model resolution** — the last remaining hardcoded HF
+  snapshot hash (`8b3219…`). Now resolves the local MiniLM snapshot dynamically,
+  identical to `session_search`, so ingested session vectors always align with
+  query vectors. This file was missed in 1.1.1 and was silently broken on any
+  machine whose HF cache pinned a different revision (the case on the current
+  host — only `1110a24…` existed, so the hardcoded `8b3219…` never loaded).
+- **`generate_topic_index` openclaw binary resolution** — replaced a raw
+  hardcoded `/home/linuxbrew/.linuxbrew/bin/openclaw` (no PATH lookup) with a
+  `shutil.which("openclaw")`-first resolver + common-location fallbacks, matching
+  the rest of the codebase. Previously broke topic-index generation on
+  npm-global / non-linuxbrew installs.
+
+### Audit
+- Full sweep of both dinomem (public) and dinomem-neuron (private) for hardcoded
+  paths/hashes (portability problem #1): **zero** hardcoded HF snapshot hashes
+  remain; all openclaw-binary references are now PATH-first with fallbacks. The
+  `DINOMEM_*_PLACEHOLDER` tokens are by-design (install.sh sed-replaces every
+  token used) and verified complete in both repos. Public repo has no embedding
+  model dependency, so it was never affected by the hash bug.
+
+---
+
 ## [1.1.1] — 2026-06-23
 
 ### Fixed
