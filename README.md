@@ -1,8 +1,8 @@
 # 🧠 dinomem-neuron — Self-Improving Memory for AI Agents
 
-> The learning layer on top of [dinomem](https://github.com/02-dino/dinomem). Every night it finds patterns across everything you've told your agent, promotes the stable ones into permanent knowledge, and injects them every turn — so your agent connects January's decision to November's pattern, without touching model weights.
+> The learning layer on top of [dinomem](https://github.com/02-dino/dinomem). On a daily cron it finds patterns across everything you've told your agent, promotes the stable ones into permanent knowledge, and injects them every turn — so your agent connects January's decision to November's pattern, without touching model weights.
 
-Every night, it builds a graph of how your memories relate, clusters them, and runs synthesis — an LLM pass that finds patterns across everything you've ever told your agent. Insights are rigorously evaluated before being promoted to permanent knowledge. And it's injected every turn, so those insights actually influence behavior.
+Once a day, it builds a graph of how your memories relate, clusters them, and runs synthesis — an LLM pass that finds patterns across everything you've ever told your agent. Insights are rigorously evaluated before being promoted to permanent knowledge. And it's injected every turn, so those insights actually influence behavior.
 
 The result: an agent that connects a decision you made in January to a pattern from November. That notices you've been contradicting yourself. That builds a structured knowledge base from your sessions. It changes behavior based on all of that—without you writing a single line of code.
 
@@ -122,7 +122,7 @@ crontab -l | grep memory_graph
 crontab -l | grep memory_synthesis
 ```
 
-**Step 4 — run first graph build manually** (optional, won't wait until tonight's cron)
+**Step 4 — run first graph build manually** (optional, so you don't wait for the next daily cron)
 ```bash
 python3 ~/.openclaw/workspace-myagent/procedures/memory_graph.py
 python3 ~/.openclaw/workspace-myagent/procedures/memory_synthesis.py

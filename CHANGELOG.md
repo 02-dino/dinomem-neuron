@@ -4,6 +4,14 @@ All notable changes to dinomem-neuron are documented here.
 
 ---
 
+## 1.1.4 — 2026-06-24
+
+### Changed
+- README: replaced timezone-assuming “every night” / “tonight’s cron” wording with
+  neutral, accurate phrasing (“on a daily cron” / “once a day” / “next daily cron”).
+  The synthesis/graph-build runs on a daily schedule — “night” is relative to the
+  reader’s timezone and was both ambiguous and slightly inaccurate.
+
 ## 1.1.3 — 2026-06-24
 
 ### Changed
