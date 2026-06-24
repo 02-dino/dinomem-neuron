@@ -115,8 +115,13 @@ elif [ ! -w "$WS" ]; then
 else
   ok "Workspace writable: $WS"
 fi
-# dinomem base must be installed + version check
-DINOMEM_MIN_VERSION="1.0.0"
+# dinomem base must be installed + version check.
+# Floor is 1.2.0: that's where base's call_llm gained reasoning/thinking routing
+# (--thinking + --model). neuron's reasoning scripts (synthesis/contradiction/
+# promote) pass reasoning=True; on older base the flag is accepted but ignored
+# (silently degraded — no thinking budget). Enforce the floor so install order
+# (base first, often an old base) can't quietly weaken reasoning quality.
+DINOMEM_MIN_VERSION="1.2.0"
 if [ ! -f "$WS/procedures/extract_memory.py" ]; then
   warn "dinomem base not detected (extract_memory.py missing) — install dinomem first."
   warn "  bash dinomem/scripts/install.sh --workspace $WS --agent-id $AGENT_ID"

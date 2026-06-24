@@ -223,8 +223,12 @@ model without a thinking boost.
 The cheap-model lever (`DINOMEM_CHEAP_MODEL`) only affects dinomem base's
 no-reasoning bulk scripts (`extract_memory`, `memory_review`). See
 [dinomem → Model selection](https://github.com/02-dino/dinomem#model-selection).
-These flags live in `extract_memory.call_llm`, which neuron imports — so install
-dinomem base **v1.2.0+** for the reasoning routing to take effect.
+These flags live in `extract_memory.call_llm`, which neuron imports — so dinomem
+base **v1.2.0+ is required**. neuron's installer enforces this floor. The catch:
+most people install base **first**, sometimes an older one. On base below 1.2.0
+the `reasoning=True` flag is *accepted but silently ignored* (no thinking budget,
+no error) — reasoning quality quietly degrades. If neuron's installer warns that
+your base is too old, run `dinomem/scripts/update.sh` before using neuron.
 
 ---
 

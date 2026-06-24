@@ -4,6 +4,17 @@ All notable changes to dinomem-neuron are documented here.
 
 ---
 
+## 1.2.1 — 2026-06-25
+
+### Fixed
+- **Enforce dinomem base floor at 1.2.0 (was 1.0.0).** Install order is usually
+  base-first, sometimes an *old* base. Below base 1.2.0, neuron's `reasoning=True`
+  calls are accepted but silently ignored (no thinking budget, no error) —
+  reasoning quality degrades invisibly. The installer's existing semver gate now
+  requires `1.2.0`, so an old base triggers a clear “update dinomem first” warning
+  instead of quietly weakening synthesis/contradiction/promotion. README updated
+  to explain the silent-degradation risk.
+
 ## 1.2.0 — 2026-06-25
 
 ### Fixed
