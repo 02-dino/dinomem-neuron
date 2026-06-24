@@ -37,6 +37,13 @@ if [ "$LICENSE_AGREED" != "1" ]; then
   cat "$SKILL_DIR/LICENSE"
   echo ""
   echo "  ────────────────────────────────────────────────────────────"
+  # If stdin is not a TTY (piped / CI / AI-agent install), do not block on read.
+  # Fail fast with the exact flag to pass instead of hanging forever.
+  if [ ! -t 0 ]; then
+    echo "  License not accepted and no terminal to prompt on." >&2
+    echo "  ACTION[agent]: ask the OWNER to accept the dinomem-neuron license, then re-run with --agree (or set LICENSE_AGREED=1). License acceptance is the human's decision — do not auto-agree." >&2
+    exit 1
+  fi
   read -p "  Type 'agree' to accept the license and continue: " USER_AGREE
   if [ "$USER_AGREE" != "agree" ]; then
     echo "  License not accepted. Exiting."
