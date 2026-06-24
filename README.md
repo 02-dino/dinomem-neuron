@@ -1,8 +1,6 @@
-# 🧠 dinomem-neuron — Dino Agent Memory (Neuron Layer)
+# 🧠 dinomem-neuron — Self-Improving Memory for AI Agents
 
-> Requires [dinomem](https://github.com/02-dino/dinomem) installed first.
-
-The learning layer on top of dinomem.
+> The learning layer on top of [dinomem](https://github.com/02-dino/dinomem). Every night it finds patterns across everything you've told your agent, promotes the stable ones into permanent knowledge, and injects them every turn — so your agent connects January's decision to November's pattern, without touching model weights.
 
 Every night, it builds a graph of how your memories relate, clusters them, and runs synthesis — an LLM pass that finds patterns across everything you've ever told your agent. Insights are rigorously evaluated before being promoted to permanent knowledge. And it's injected every turn, so those insights actually influence behavior.
 

@@ -4,6 +4,20 @@ All notable changes to dinomem-neuron are documented here.
 
 ---
 
+## 1.1.3 — 2026-06-24
+
+### Changed
+- **README repositioned.** New title “Self-Improving Memory for AI Agents” — leads
+  with neuron’s differentiator (behavior change via synthesis + promotion +
+  injection, no model-weight updates) instead of the generic “Dino Agent Memory
+  (Neuron Layer)”.
+- **Real subtitle.** Replaced the bare install-prerequisite line (“Requires dinomem
+  installed first”) with a value-prop subtitle: nightly pattern-finding → promotion to
+  permanent knowledge → every-turn injection, with the January↔November example. The
+  dinomem dependency is now carried as value (“learning layer on top of dinomem”).
+- Brand language aligned across products: dinotrust = self-enforcing,
+  dinomem = self-curating, dinomem-neuron = self-improving / learns-without-fine-tuning.
+
 ## [1.1.2] — 2026-06-23
 
 ### Fixed
