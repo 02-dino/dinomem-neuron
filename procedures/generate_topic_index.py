@@ -96,15 +96,8 @@ def get_openclaw_config():
         return None, None, None
 
 
-# Topic-index generation is a no-reasoning summarization task — cheap tier.
-# Default Haiku: gemini-flash 404s through `capability model run` (gemini-cli
-# misroute). Override via env once that routing is fixed.
-NO_REASONING_MODEL = os.environ.get(
-    "DINOMEM_NO_REASONING_MODEL", "ninerouter/cc/claude-haiku-4-5-20251001"
-)
-
 def call_llm_gateway(prompt, max_tokens=2000):
-    """Call LLM via OpenClaw gateway (cheap no-reasoning model)."""
+    """Call LLM via OpenClaw gateway."""
     import subprocess, shutil
 
     # Resolve the openclaw binary portably: PATH first, then common install
@@ -124,8 +117,7 @@ def call_llm_gateway(prompt, max_tokens=2000):
             [openclaw_bin, "capability", "model", "run",
              "--prompt", prompt,
              "--gateway",
-             "--json",
-             "--model", NO_REASONING_MODEL],
+             "--json"],
             capture_output=True,
             text=True,
             timeout=120
