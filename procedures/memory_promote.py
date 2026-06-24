@@ -50,7 +50,17 @@ try:
 except ImportError:
     HAS_LLM = False
 
-BASE = Path("DINOMEM_WORKSPACE_PLACEHOLDER")
+# Workspace resolution (priority): DINOMEM_WORKSPACE env var > install-time sed
+# substitution of DINOMEM_WORKSPACE_PLACEHOLDER > self-locate from this file's
+# location (procedures/ is one level under the workspace root). Self-locate is a
+# safety net if the install-time sed was skipped/failed (manual copy, partial
+# install, moved workspace dir).
+import os as _os
+_WS_DEFAULT = "DINOMEM_WORKSPACE_PLACEHOLDER"
+if _WS_DEFAULT.startswith("DINOMEM_"):  # sed did not run
+    _WS_DEFAULT = str(Path(__file__).resolve().parent.parent)
+BASE = Path(_os.environ.get("DINOMEM_WORKSPACE", _WS_DEFAULT))
+WORKSPACE_ROOT = BASE  # alias used elsewhere in this module
 L3_DIR = BASE / "kb/memory_neuron/l3_synthesis"
 L4_DIR = BASE / "kb/memory_neuron/l4_promoted"
 TOPICS_DIR = BASE / "topics"

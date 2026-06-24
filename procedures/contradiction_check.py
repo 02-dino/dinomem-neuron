@@ -28,9 +28,19 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 from extract_memory import call_llm  # noqa: E402
 
-INSIGHT_HISTORY = Path("DINOMEM_WORKSPACE_PLACEHOLDER/kb/memory_neuron/l3_synthesis/insight_history.jsonl")
-CONTRADICTION_LOG = Path("DINOMEM_WORKSPACE_PLACEHOLDER/kb/memory_neuron/l3_synthesis/contradiction_log.jsonl")
-CONTRADICTION_QUEUE = Path("DINOMEM_WORKSPACE_PLACEHOLDER/kb/memory_neuron/l3_synthesis/contradiction_queue.jsonl")
+# Workspace resolution (priority): DINOMEM_WORKSPACE env var > install-time sed
+# substitution of DINOMEM_WORKSPACE_PLACEHOLDER > self-locate from this file's
+# location. Self-locate is a safety net if the install-time sed was
+# skipped/failed (manual copy, partial install, moved workspace dir).
+import os as _os
+_WS_DEFAULT = "DINOMEM_WORKSPACE_PLACEHOLDER"
+if _WS_DEFAULT.startswith("DINOMEM_"):  # sed did not run
+    _WS_DEFAULT = str(Path(__file__).resolve().parent.parent)
+_WS = Path(_os.environ.get("DINOMEM_WORKSPACE", _WS_DEFAULT))
+_L3 = _WS / "kb/memory_neuron/l3_synthesis"
+INSIGHT_HISTORY = _L3 / "insight_history.jsonl"
+CONTRADICTION_LOG = _L3 / "contradiction_log.jsonl"
+CONTRADICTION_QUEUE = _L3 / "contradiction_queue.jsonl"
 
 TOPIC_SIM_THRESHOLD = 0.20  # lowered: short statements vs long explanations need looser match
 MIN_KEYWORDS_OVERLAP = 2   # need at least 2 meaningful shared keywords to consider related

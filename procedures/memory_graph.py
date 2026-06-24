@@ -37,7 +37,15 @@ DB_PATH = Path("DINOMEM_SQLITE_PLACEHOLDER")
 # recursively) nor under kb/docs/ (the kb ingester scans kb/docs/**/*.md). A
 # top-level kb/ subfolder is scanned by neither, so the graph never feeds back
 # into any index (avoids the derived-data feedback loop).
-OUT_DIR = Path("DINOMEM_WORKSPACE_PLACEHOLDER/kb/memory_neuron/l2_graph")
+# Workspace resolution (priority): DINOMEM_WORKSPACE env var > install-time sed
+# substitution > self-locate from this file's location (safety net if sed was
+# skipped/failed). DB_PATH (sqlite) stays on sed — it is not self-locatable.
+import os as _os
+_WS_DEFAULT = "DINOMEM_WORKSPACE_PLACEHOLDER"
+if _WS_DEFAULT.startswith("DINOMEM_"):  # sed did not run
+    _WS_DEFAULT = str(Path(__file__).resolve().parent.parent)
+_WS = Path(_os.environ.get("DINOMEM_WORKSPACE", _WS_DEFAULT))
+OUT_DIR = _WS / "kb/memory_neuron/l2_graph"
 
 
 def compute_signature(db_path):
@@ -228,7 +236,7 @@ def main():
         except Exception:
             history = {}
     recurrence = {}
-    l3_conf_path = Path("DINOMEM_WORKSPACE_PLACEHOLDER/kb/memory_neuron/l3_synthesis/l3_edge_confidence.json")
+    l3_conf_path = _WS / "kb/memory_neuron/l3_synthesis/l3_edge_confidence.json"
     l3_conf = {}
     if l3_conf_path.exists():
         try:

@@ -38,11 +38,18 @@ sys.path.insert(0, str(Path(__file__).parent))
 from extract_memory import call_llm  # noqa: E402
 
 DB_PATH = Path("DINOMEM_SQLITE_PLACEHOLDER")
-GRAPH_JSON = Path("DINOMEM_WORKSPACE_PLACEHOLDER/kb/memory_neuron/l2_graph/memory_graph.json")
+# Workspace resolution (priority): DINOMEM_WORKSPACE env var > install-time sed
+# substitution > self-locate from this file's location (safety net if sed was
+# skipped/failed). DB_PATH (sqlite) stays on sed — it is not self-locatable.
+_WS_DEFAULT = "DINOMEM_WORKSPACE_PLACEHOLDER"
+if _WS_DEFAULT.startswith("DINOMEM_"):  # sed did not run
+    _WS_DEFAULT = str(Path(__file__).resolve().parent.parent)
+_WS = Path(os.environ.get("DINOMEM_WORKSPACE", _WS_DEFAULT))
+GRAPH_JSON = _WS / "kb/memory_neuron/l2_graph/memory_graph.json"
 # Generated L3 insight drafts live in their own subfolder (they accumulate as
 # dated files, unlike the always-overwritten L2 graph). kb/memory_neuron/ is
 # scanned by no indexer → no feedback loop. Design docs stay in proposals/.
-OUT_DIR = Path("DINOMEM_WORKSPACE_PLACEHOLDER/kb/memory_neuron/l3_synthesis")
+OUT_DIR = _WS / "kb/memory_neuron/l3_synthesis"
 
 LINK_MIN = 0.45   # below this = too weak to be a real relation
 LINK_MAX = 0.82   # at/above this = near-duplicate (dedup territory, not insight)
