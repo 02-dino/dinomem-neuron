@@ -4,6 +4,19 @@ All notable changes to dinomem-neuron are documented here.
 
 ---
 
+## 1.2.2 — 2026-06-25
+
+### Added
+- **Post-install re-surfaces the model-selection recommendation at the right
+  time.** The split (cheap bulk + compaction, default+thinking for reasoning) is
+  manual and only becomes *meaningful* once neuron is installed — but neuron's
+  installer never mentioned it, so users who deferred it at base install forgot
+  to set anything. Neuron post-install now prints a `MODEL_HINT` /
+  `AGENT_ACTION` block framed as “now relevant — set it now or it won't happen,”
+  covering `DINOMEM_CHEAP_MODEL` + `compaction.model` (bulk) and the
+  default-model reasoning tier. Closes the recommendation-timing gap: base
+  install plants it, neuron install (when the reasoning tier appears) repeats it.
+
 ## 1.2.1 — 2026-06-25
 
 ### Fixed
