@@ -24,6 +24,8 @@ Instead it learns by:
 Experiences → Patterns → Promotion → Behavior Change
 ```
 
+**This compounds with model quality.** Synthesis is an LLM finding patterns across your memory — not weights you fine-tune. Every time the base model gets smarter, the patterns get deeper and promotion gets more accurate, with no retraining and no rewrite. Fine-tuning-based approaches have to redo their work each model generation; neuron just inherits the gain for free.
+
 ---
 
 ## How behavior changes

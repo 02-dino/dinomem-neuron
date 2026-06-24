@@ -4,6 +4,15 @@ All notable changes to dinomem-neuron are documented here.
 
 ---
 
+## 1.1.5 — 2026-06-24
+
+### Changed
+- README “What we mean by learning”: added a closing thesis paragraph — because
+  synthesis is an LLM finding patterns across memory (not fine-tuned weights), the
+  patterns get deeper and promotion more accurate every time the base model improves,
+  with no retraining or rewrite. Fine-tuning approaches redo work each model
+  generation; neuron inherits the gain for free.
+
 ## 1.1.4 — 2026-06-24
 
 ### Changed
