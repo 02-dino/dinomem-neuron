@@ -207,6 +207,25 @@ Session → Archive → extract_memory.py → memory/*.md + MEMORY.md + vector D
   Promoted insights present on every turn — no recall needed
 ```
 
+### Model selection
+
+neuron's pipeline is the **reasoning tier**. `memory_synthesis`, `contradiction_check`,
+and `memory_promote` make validity/judgment calls (emergent-insight synthesis,
+contradiction logic, permanent-promotion verdicts) — so they always run on your
+OpenClaw **default** model and request a thinking budget
+(`DINOMEM_REASONING_THINKING`, default `high`). They ignore `DINOMEM_CHEAP_MODEL`
+on purpose: routing these to a cheap model risks cementing stale insights or
+deleting good memory.
+
+`generate_topic_index` is mechanical (tree assembly) and stays on the default
+model without a thinking boost.
+
+The cheap-model lever (`DINOMEM_CHEAP_MODEL`) only affects dinomem base's
+no-reasoning bulk scripts (`extract_memory`, `memory_review`). See
+[dinomem → Model selection](https://github.com/02-dino/dinomem#model-selection).
+These flags live in `extract_memory.call_llm`, which neuron imports — so install
+dinomem base **v1.2.0+** for the reasoning routing to take effect.
+
 ---
 
 ## How do I know it's working?

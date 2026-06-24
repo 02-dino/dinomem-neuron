@@ -247,7 +247,7 @@ def synthesize(cluster, texts):
         sources.append(Path(path).name)
         entries.append(f"- ({Path(path).name}) {text.strip()[:400]}")
     prompt = SYN_PROMPT.format(entries="\n".join(entries))
-    ok, raw = call_llm(prompt, max_tokens=600)
+    ok, raw = call_llm(prompt, max_tokens=600, reasoning=True)
     if not ok:
         return None
     try:
@@ -304,7 +304,7 @@ def merge_insights(kept):
         ],
         ensure_ascii=False,
     )
-    ok, raw = call_llm(MERGE_PROMPT.format(payload=payload), max_tokens=1500)
+    ok, raw = call_llm(MERGE_PROMPT.format(payload=payload), max_tokens=1500, reasoning=True)
     if not ok:
         for k in kept:
             k.setdefault("occurrences", 1)
@@ -422,7 +422,7 @@ def verify_insight(insight, evidence, models):
     if models:
         raw_results = [(m, *verify_call(prompt, m)) for m in models]
     else:
-        ok, raw = call_llm(prompt, max_tokens=400)
+        ok, raw = call_llm(prompt, max_tokens=400, reasoning=True)
         raw_results = [("default", ok, raw)]
     verdicts = []
     for m, ok, raw in raw_results:

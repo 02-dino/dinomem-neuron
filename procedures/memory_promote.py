@@ -215,7 +215,7 @@ Answer with exactly one word: valid OR invalidated
 - valid: still accurate, still useful for the agent to remember
 - invalidated: outdated, proven wrong, or no longer applicable"""
 
-    ok, result = _call_llm(prompt, max_tokens=10)
+    ok, result = _call_llm(prompt, max_tokens=10, reasoning=True)
     if not ok:
         return "skip"
     answer = result.strip().lower()

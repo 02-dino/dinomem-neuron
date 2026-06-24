@@ -4,6 +4,25 @@ All notable changes to dinomem-neuron are documented here.
 
 ---
 
+## 1.2.0 — 2026-06-25
+
+### Fixed
+- **Reasoning calls now actually request reasoning.** The 5 LLM call sites in the
+  reasoning tier passed no `reasoning=` flag, so they defaulted to `False` and ran
+  without a thinking budget — a latent mistag. Flipped to `reasoning=True`:
+  - `memory_synthesis.py` ×3 (insight synthesis 600t, merge 1500t, audit 400t)
+  - `contradiction_check.py` ×1 (conflict check 400t)
+  - `memory_promote.py` ×1 (permanent-promotion validity verdict)
+  With dinomem base v1.2.0+, `reasoning=True` routes these to the default model
+  with `--thinking` (`DINOMEM_REASONING_THINKING`, default `high`) and keeps them
+  off `DINOMEM_CHEAP_MODEL`.
+
+### Added
+- **README “Model selection” section** (under “How it all works”): documents that
+  the neuron pipeline is the reasoning tier — always default model + thinking,
+  never the cheap lever — and points to dinomem base's cheap-model knob. Notes the
+  base **v1.2.0+** requirement for the routing to take effect.
+
 ## 1.1.5 — 2026-06-24
 
 ### Changed

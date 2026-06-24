@@ -189,7 +189,7 @@ def llm_contradiction_check(new_insight, existing_insight):
         candidate_why=new_insight.get("why", ""),
     )
 
-    ok, raw = call_llm(prompt, max_tokens=400)
+    ok, raw = call_llm(prompt, max_tokens=400, reasoning=True)
     if not ok or not raw:
         return {
             "contradiction": False,
