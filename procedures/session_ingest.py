@@ -31,7 +31,14 @@ from langchain_core.documents import Document
 
 # ── Config ────────────────────────────────────────────────────────────────────
 WORKSPACE       = Path(__file__).parent.parent
-ARCHIVES_DIR    = WORKSPACE / "archives"
+# Archived sessions are written IN PLACE by session_reset.py into the agent's
+# OpenClaw sessions dir as *.archived.*.jsonl (NOT into workspace/archives, which
+# is never created). Point the ingester at that real location, filled by the
+# installer (DINOMEM_AGENT_SESSIONS_PLACEHOLDER = $OPENCLAW_DIR/agents/$AGENT_ID/
+# sessions). Env override wins for non-standard layouts / testing.
+ARCHIVES_DIR    = Path(
+    os.environ.get("SESSION_ARCHIVES_DIR") or "DINOMEM_AGENT_SESSIONS_PLACEHOLDER"
+)
 DB_PATH         = str(WORKSPACE / "kb/vector_db_sessions")
 LOG_FILE        = WORKSPACE / "logs/session_ingest.log"
 MAX_AGE_DAYS    = 7
@@ -283,7 +290,7 @@ def main():
         return
 
     jsonl_files = [
-        p for p in ARCHIVES_DIR.glob("**/*.jsonl")
+        p for p in ARCHIVES_DIR.glob("*.archived.*.jsonl")
         if is_within_max_age(p)
     ]
 

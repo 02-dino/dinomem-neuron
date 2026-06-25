@@ -70,6 +70,10 @@ fi
 
 OPENCLAW_DIR="$(dirname "$WS")"
 OPENCLAW_MEMORY_DIR="$OPENCLAW_DIR/memory"
+# Agent sessions dir — where session_reset.py archives *.archived.*.jsonl in
+# place. session_ingest.py reads from here (same path the base dinomem installer
+# uses). Must match, or the session-search index never refreshes.
+SESSIONS_DIR="$OPENCLAW_DIR/agents/$AGENT_ID/sessions"
 SQLITE_PATH="$OPENCLAW_MEMORY_DIR/$AGENT_ID.sqlite"
 
 echo
@@ -267,6 +271,7 @@ for f in procedures/memory_graph.py procedures/memory_synthesis.py procedures/me
     sed -i "s|DINOMEM_OPENCLAW_MEMORY_PLACEHOLDER|$OPENCLAW_MEMORY_DIR|g" "$dst"
     sed -i "s|DINOMEM_HF_CACHE_PLACEHOLDER|$HOME/.cache/huggingface|g" "$dst"
     sed -i "s|DINOMEM_AGENT_ID_PLACEHOLDER|$AGENT_ID|g" "$dst"
+    sed -i "s|DINOMEM_AGENT_SESSIONS_PLACEHOLDER|$SESSIONS_DIR|g" "$dst"
     ok "$f"
   fi
 done
