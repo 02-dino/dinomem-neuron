@@ -355,6 +355,84 @@ else
   ok "AGENTS.md wired"
 fi
 
+# ── Wire TOOLS.md ────────────────────────────────────────────────────────────
+# AGENTS.md carries the WHEN/policy (session_deep_recall). TOOLS.md carries the
+# HOW/capability spec — the CLI surface + output schema the agent consults to
+# construct a non-trivial call. Inject the matching tool reference block so the
+# tools neuron adds aren't orphaned (registered only in a policy block).
+hr "TOOLS.md"
+TOOLS="$WS/TOOLS.md"
+if [ -f "$TOOLS" ]; then
+  bash "$SKILL_DIR/scripts/file-backup.sh" "$TOOLS" >/dev/null 2>&1 && ok "TOOLS.md backed up" || warn "TOOLS.md backup failed — continuing"
+fi
+TOOLS_BLOCK="$BEGIN
+  session_search:
+    path: tools/session_search.py
+    type: exec
+    db: kb/vector_db_sessions
+    capabilities:
+      - session_deep_recall
+      - semantic_search_archived_sessions
+      - recency_weighted_reranking
+      - list_indexed_sessions
+    when_to_use: |
+      Deep recall over recent CONVERSATION transcripts (not memory notes, not
+      long-doc KB). Use when memory_search is thin/uncertain AND the relevant
+      session is <7 days old AND transcript-level detail is needed. See AGENTS.md
+      session_deep_recall for the WHEN/policy; this is the HOW/capability spec.
+    scope: |
+      Indexes only archived session .jsonl within the last 7 days (MAX_AGE_DAYS),
+      ingested by procedures/session_ingest.py (cron via auto_session_reset.py,
+      every 15 min). If the DB is missing, the tool errors with a build hint.
+    inputs:
+      query:
+        type: string
+        required: false
+        note: \"Positional. Required unless --list. Use natural language, not code identifiers.\"
+      k:
+        type: integer
+        required: false
+        default: 5
+        note: \"Number of results after recency-weighted rerank.\"
+      session:
+        type: string
+        required: false
+        note: \"Filter by session name substring (--session).\"
+      list:
+        type: boolean
+        required: false
+        note: \"List all indexed sessions; no query needed (--list).\"
+      json:
+        type: boolean
+        required: false
+        default: false
+        note: \"Output raw JSON instead of formatted text (--json).\"
+    output:
+      type: list
+      structure: chunks_with_metadata
+      fields:
+        - content: \"Chunk text (consecutive user+assistant exchanges).\"
+        - score: \"Relevance score (rounded). Reranked: large score gap => relevance wins; near-tie => recency decides.\"
+        - session_name: \"Source session identifier.\"
+        - archived_date: \"Date the session was archived (YYYY-MM-DD).\"
+        - chunk_index: \"Position of chunk within the session.\"
+        - source_file: \"Archived .jsonl filename.\"
+    constraints:
+      mode: read_only
+    libraries:
+      - langchain_chroma
+      - langchain_huggingface
+      - sentence-transformers (all-MiniLM-L6-v2, local)
+$END"
+
+touch "$TOOLS"
+if grep -qF "$BEGIN" "$TOOLS" 2>/dev/null; then
+  skip "TOOLS.md already wired (use --force to refresh)"
+else
+  printf '\n%s\n' "$TOOLS_BLOCK" >> "$TOOLS"
+  ok "TOOLS.md wired"
+fi
+
 echo
 hr "done"
 echo "  dinomem-neuron installed for agent: $AGENT_ID"
