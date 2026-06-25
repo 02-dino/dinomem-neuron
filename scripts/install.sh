@@ -423,6 +423,112 @@ TOOLS_BLOCK="$BEGIN
       - langchain_chroma
       - langchain_huggingface
       - sentence-transformers (all-MiniLM-L6-v2, local)
+
+  docs_search:
+    path: tools/docs_search.py
+    type: exec
+    db: kb/vector_db_docs
+    capabilities:
+      - semantic_search_long_docs
+      - structure_aware_retrieval
+      - filter_by_document
+      - filter_by_section
+      - list_indexed_documents
+    when_to_use: |
+      Semantic search over long-form documents previously ingested via
+      docs_ingest.py (legal text, contracts, manuals, books). See AGENTS.md
+      rag_long_docs for the WHEN/policy. For conversation transcripts use
+      session_search; for market/memory KB use the agent's memory tools.
+    scope: |
+      Searches the structure-aware document store (kb/vector_db_docs), populated
+      by procedures/docs_ingest.py (re-ingested daily ~4:00 UTC via cron). If the
+      DB is missing, the tool errors with a build hint.
+    inputs:
+      query:
+        type: string
+        required: false
+        note: \"Positional. Required unless --list. Natural language.\"
+      k:
+        type: integer
+        required: false
+        default: 5
+        note: \"Number of results (--k).\"
+      doc:
+        type: string
+        required: false
+        note: \"Filter by document title/filename substring (--doc).\"
+      section:
+        type: string
+        required: false
+        note: \"Filter by section title substring (--section).\"
+      max_chars:
+        type: integer
+        required: false
+        default: 1500
+        note: \"Truncate chunk content (--max-chars).\"
+      list:
+        type: boolean
+        required: false
+        note: \"List all indexed documents; no query needed (--list).\"
+      json:
+        type: boolean
+        required: false
+        default: false
+        note: \"Output raw JSON instead of formatted text (--json).\"
+    output:
+      type: list
+      structure: chunks_with_metadata
+      fields:
+        - content: \"Chunk text (section-aware).\"
+        - score: \"Relevance score.\"
+        - doc_title: \"Source document title/filename.\"
+        - section_title: \"Section the chunk belongs to.\"
+        - chunk_index: \"Position of chunk within the document.\"
+    constraints:
+      mode: read_only
+    libraries:
+      - langchain_chroma
+      - langchain_huggingface
+      - sentence-transformers (all-MiniLM-L6-v2, local)
+
+  calendar_tool:
+    path: tools/calendar_tool.py
+    type: exec
+    capabilities:
+      - google_calendar_create_event
+      - list_upcoming_events
+      - delete_event
+      - link_note_file
+    when_to_use: |
+      Create/list/delete Google Calendar events. See AGENTS.md
+      calendar_integration for the WHEN/policy (explicit date/time, deadline,
+      appointment). Skip when no date/time is implied or the user declines.
+    requirements:
+      auth: \"Google Calendar OAuth (run scripts/calendar_oauth_setup.py once).\"
+    subcommands:
+      create:
+        usage: \"calendar_tool.py create <title> --date YYYY-MM-DD [--time HH:MM] [--desc TEXT] [--note _note_*.md] [--reminder METHOD:MINUTES] [--attendee EMAIL]\"
+        inputs:
+          title:    { type: string,  required: true,  note: \"Positional event title.\" }
+          date:     { type: string,  required: true,  note: \"--date YYYY-MM-DD.\" }
+          time:     { type: string,  required: false, note: \"--time HH:MM (24h); omit for all-day.\" }
+          desc:     { type: string,  required: false, note: \"--desc event description.\" }
+          note:     { type: string,  required: false, note: \"--note _note_*.md filename to link.\" }
+          reminder: { type: list,    required: false, note: \"--reminder METHOD:MINUTES (repeatable), e.g. popup:30.\" }
+          attendee: { type: list,    required: false, note: \"--attendee EMAIL (repeatable).\" }
+      list:
+        usage: \"calendar_tool.py list [--upcoming DAYS]\"
+        inputs:
+          upcoming: { type: integer, required: false, default: 7, note: \"--upcoming days ahead.\" }
+      delete:
+        usage: \"calendar_tool.py delete <event_id>\"
+        inputs:
+          event_id: { type: string, required: true, note: \"Positional event ID to delete.\" }
+    constraints:
+      mode: exec
+    libraries:
+      - google-api-python-client
+      - google-auth-oauthlib
 $END"
 
 touch "$TOOLS"
