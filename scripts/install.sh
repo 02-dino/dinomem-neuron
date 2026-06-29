@@ -440,6 +440,8 @@ BLOCK="$BEGIN
   mandatory: after every step rewrite resume_state so note is self-sufficient; reliability linchpin
   driver: hybrid -- user may say continue; else Project Advancer cron auto-advances in_progress notes (unattended, announces progress, pauses on destructive/external steps)
   resolve: done_when met -> Daily Note Review (base) deletes/promotes via normal pipeline
+  awaiting_approval_reverify: a project parked at a safety-gated final step (git push / external action the Advancer cannot run unattended) is the classic orphan case — Advancer wont run it, so Advancer never marks it done. At session cold start (see base M_session_start) AND whenever such a note resurfaces, RE-VERIFY whether the gated artifact now exists (e.g. git -C <repo> rev-parse HEAD == @{u} means the push already happened). If yes, close the note (status: done) rather than re-asking the user to approve something already done. This closes the read-back loop so a human-completed gated step does not leave a zombie in_progress note.
+  done_when_verifiability: every step done_when (and the project done_when) must be LOCALLY checkable with no chat history / no network identity (file exists, grep match, command exit 0, git rev-parse HEAD==@{u}). Narrative done_when ("pushed", "told user") never auto-closes — see base memory_pin schema done_when_MUST_be_locally_verifiable.
 $END"
 
 touch "$AGENTS"
