@@ -317,6 +317,43 @@ if [ "$DO_CRON" = 1 ]; then
   # calendar_sync — daily at 7:00 UTC (auto-resolve _note_ from past calendar events)
   CAL_CRON="0 7 * * * cd $WS && python3 procedures/calendar_sync.py >> logs/calendar_sync.log 2>&1"
   upsert_cron "calendar_sync.py" "dinomem-neuron: calendar sync auto-resolve _note_ (daily)" "$CAL_CRON" "calendar_sync cron (daily 7:00 UTC)"
+
+  # project_advancer — OpenClaw agentTurn cron (NOT shell crontab): auto-advance type:project in_progress notes
+  # one step per run, unattended, announces progress. Premium: only neuron installs this.
+  PROJ_ADV_CHECK=$(python3 -c "
+import subprocess, json, sys
+try:
+    r = subprocess.run(['openclaw', 'cron', 'list', '--json'], capture_output=True, text=True, timeout=10)
+    jobs = json.loads(r.stdout) if r.returncode == 0 else []
+    exists = any('project' in j.get('name','').lower() and 'advancer' in j.get('name','').lower() for j in (jobs if isinstance(jobs, list) else jobs.get('jobs', {}).get('jobs', [])))
+    print('exists' if exists else 'missing')
+except: print('skip')
+" 2>/dev/null)
+  if [ "$PROJ_ADV_CHECK" = "exists" ]; then
+    skip "project_advancer OpenClaw cron (exists)"
+  elif [ "$PROJ_ADV_CHECK" = "skip" ]; then
+    warn "Could not check OpenClaw cron — add Project Advancer cron manually via OpenClaw"
+  else
+    python3 - <<PYEOF
+import subprocess, json
+job = {
+    "name": "Project Advancer",
+    "schedule": {"kind": "cron", "expr": "0 */4 * * *", "tz": "UTC"},
+    "payload": {
+        "kind": "agentTurn",
+        "message": "Project Advancer. Auto-advance step-by-step project notes unattended, announce progress.\n\nStep 1: ls memory/_note_*.md in $WS/memory/. Read each. Select only notes with type: project AND status: in_progress. If none, stop silently (no announce).\n\nStep 2: For each in_progress project note, pick the lowest unchecked step at current_step. Resume from resume_state ONLY (the note is self-sufficient; do not rely on chat history).\n\nStep 3: SAFETY GATE before executing the step. If the step is destructive or external (deletes data, git push, sends external messages, irreversible writes outside workspace, spends money, touches credentials), DO NOT execute it. Leave it pending, announce the project is paused awaiting user approval at step n/m, move to the next project. Read/build/local-file steps proceed unattended.\n\nStep 4: Execute the one current step. After it: verify the step done_when. If met, mark [x], advance current_step, REWRITE resume_state with what the next step needs (paths, decisions, assumptions). If not met, leave pending and record why in resume_state.\n\nStep 5: Context guard. Check session_status context%. If over 60%, checkpoint (state already written) and stop advancing this run. Otherwise continue to the next step of the same project until done or context pressure.\n\nStep 6: When a project done_when (all steps [x] / final artifact) is met, flip status to done. Daily Note Review will delete/promote it.\n\nStep 7: Announce a concise progress line per project touched: name, step n/m advanced, or completed, or paused-awaiting-approval. Only announce projects you actually touched.",
+        "timeoutSeconds": 600
+    },
+    "sessionTarget": "isolated",
+    "delivery": {"mode": "announce"}
+}
+r = subprocess.run(['openclaw', 'cron', 'add', '--json', json.dumps(job)], capture_output=True, text=True, timeout=15)
+if r.returncode == 0:
+    print("  \033[32m[ok]\033[0m   project_advancer OpenClaw cron registered (every 4h)")
+else:
+    print(f"  \033[33m[warn]\033[0m Could not register project_advancer cron: {r.stderr[:100]}")
+PYEOF
+  fi
 fi
 
 # ── Wire AGENTS.md ───────────────────────────────────────────────────────────
@@ -345,6 +382,32 @@ BLOCK="$BEGIN
   trigger: memory_search returns thin/uncertain result (few hits, [uncertain] tag, or low confidence) AND memory file date < 7 days old AND user intent requires detail
   action: python3 tools/session_search.py "<query>" --k 5
   skip: do not call session_search every turn — only when memory_search result is clearly insufficient
+
+## auto_note
+  purpose: create _note_ files without explicit user prompt; reduce reliance on user asking (extends base memory_pin.transient)
+  triggers:
+    - self_commitment: agent own output implies deferred work (next step / TODO / I will do later / remaining X) -> auto-write _note_
+    - completion_followup: task finishes but leaves follow-up -> auto-write _note_ for remainder
+    - project_estimate: request trips project gate (see project_note.estimate) -> auto-write project _note_ before starting
+  guardrail: only auto-note if a concrete done_when is writable; if not checkable, do not note (anti-spam)
+  uncertain: still ask before noting personal/ambiguous items; self-commitments + project plans do not need asking
+
+## project_note
+  purpose: context-bounded step-by-step executor; durable plan on disk survives context limits + new sessions
+  type: project (extends base _note_ schema)
+  format: '# Project <name>\\ntype: project\\nstatus: in_progress | done\\ndate: YYYY-MM-DD\\ndone_when: <final artifact / all steps [x]>\\nstale_after: YYYY-MM-DD\\ncurrent_step: <n>\\nsteps:\\n  - [ ] 1. <step> -- done_when: <check>\\n  - [ ] 2. ...\\nresume_state: <paths/decisions/assumptions next turn needs to resume blind>'
+  estimate:
+    when: at request time, before starting
+    gate: '>3 files OR >5 sequential tool-steps OR research-then-build OR user says project/build'
+    method: heuristic gate floor + LLM override; trip gate -> make project note, else normal one-turn
+  execute:
+    loop: do current_step -> check session_status context%
+    under_60: mark step [x], update resume_state, advance current_step, continue next step same turn
+    over_60: checkpoint (write resume_state), stop cleanly, tell user step n/m done + context%; resume next turn/cron from current_step
+    resume: new session reads note, jumps to current_step, resumes from resume_state ONLY (no chat-history reliance)
+  mandatory: after every step rewrite resume_state so note is self-sufficient; reliability linchpin
+  driver: hybrid -- user may say continue; else Project Advancer cron auto-advances in_progress notes (unattended, announces progress, pauses on destructive/external steps)
+  resolve: done_when met -> Daily Note Review (base) deletes/promotes via normal pipeline
 $END"
 
 touch "$AGENTS"

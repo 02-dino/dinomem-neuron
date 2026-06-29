@@ -71,6 +71,8 @@ This insight is now injected every turn. Future investing discussions automatica
 | 🗺️ | **Enriched navigation index** | `MEMORY.md` serves dual roles: search navigation aid (like dinomem base) + always-present behavior layer. Promoted insights live here — active every turn without recall. |
 | 📚 | **RAG for long docs** | Semantic search over contracts, books, legal text — stored separately, never pollutes memory |
 | 📅 | **Calendar integration** | Links `_note_` reminders to Google Calendar — auto-deleted when the event passes |
+| 🤖 | **Automatic notes** | The agent writes `_note_` files from its own commitments ("next step", "TODO") and task follow-ups — not just when you ask |
+| 🏗️ | **Project executor** | Large builds become `type: project` notes: the agent estimates whether the work fits one turn, and if not writes an ordered step plan and executes one step per turn (checkpointing at 60% context) so nothing is lost across sessions. A Project Advancer cron auto-advances unfinished projects unattended and announces progress, pausing for approval on anything destructive. |
 | 🔍 | **Session deep recall** | When memory summary is thin, searches raw archived sessions (7-day window) for the exact exchange — sharper, more detailed recall for recent context |
 
 ---
@@ -292,6 +294,7 @@ All signals must align. One-off or low-confidence insights stay in synthesis —
 | Daily 3:30 UTC | `memory_synthesis.py` + `contradiction_check.py` | L3 — Pattern Synthesis + contradiction check |
 | Daily 4:00 UTC | `docs_ingest.py` | Re-ingest new/changed docs |
 | Daily 7:00 UTC | `calendar_sync.py` | Auto-delete `_note_` files linked to past events |
+| Every 4h | Project Advancer (OpenClaw cron) | Auto-advance `type: project` notes one step/run, unattended, announce progress |
 | Weekly Sun 4:00 UTC | `memory_promote.py` + `generate_topic_index.py` | L4 — Knowledge Promotion + MEMORY.md enrichment |
 
 ---
