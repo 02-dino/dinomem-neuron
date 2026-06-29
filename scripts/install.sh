@@ -165,6 +165,35 @@ if [ -d "$WS/kb/vector_db_docs" ] && [ "$(ls -A "$WS/kb/vector_db_docs" 2>/dev/n
 else
   ok "kb/vector_db_docs/ clear"
 fi
+# RAG document-extraction tools (optional — enable PDF/Office ingest).
+# pdftotext (poppler-utils) handles PDF; pandoc handles docx/rtf/odt/html/epub.
+# Missing → plain text/markdown ingest still works; only PDF/Office is gated.
+# Mirrors the python3 auto-install pattern above: detect PM → install → warn-fallback.
+# Never hard-fails (warn, not fail) — the feature degrades, it does not block install.
+SUDO=""; [ "$(id -u)" -ne 0 ] && command -v sudo &>/dev/null && SUDO="sudo"
+pm_install() { # $@ = packages; prints command, runs via detected PM, returns nonzero on failure
+  if   command -v apt-get &>/dev/null; then $SUDO apt-get update -q && $SUDO apt-get install -y "$@"
+  elif command -v dnf     &>/dev/null; then $SUDO dnf install -y "$@"
+  elif command -v yum     &>/dev/null; then $SUDO yum install -y "$@"
+  elif command -v pacman  &>/dev/null; then $SUDO pacman -S --noconfirm "$@"
+  elif command -v apk     &>/dev/null; then $SUDO apk add "$@"
+  elif command -v brew    &>/dev/null; then brew install "$@"
+  else return 127; fi
+}
+if command -v pdftotext &>/dev/null; then ok "pdftotext present — PDF ingest enabled"; else
+  warn "pdftotext missing — PDF ingest needs it. Attempting install (poppler-utils)..."
+  # poppler-utils on apt/dnf/yum/apk; 'poppler' on pacman/brew
+  if   command -v pacman &>/dev/null || command -v brew &>/dev/null; then pm_install poppler
+  else pm_install poppler-utils; fi \
+    && command -v pdftotext &>/dev/null && ok "pdftotext installed" \
+    || warn "  could not auto-install — PDF ingest disabled until you install poppler-utils/poppler. Text/Markdown ingest still works."
+fi
+if command -v pandoc &>/dev/null; then ok "pandoc present — docx/rtf/odt/html/epub ingest enabled"; else
+  warn "pandoc missing — Office/HTML ingest needs it. Attempting install..."
+  pm_install pandoc \
+    && command -v pandoc &>/dev/null && ok "pandoc installed" \
+    || warn "  could not auto-install — docx/Office ingest disabled until you install pandoc (https://pandoc.org/installing.html). Text/Markdown + PDF ingest still work."
+fi
 # Existing MEMORY.md
 if [ -f "$WS/MEMORY.md" ] && [ -s "$WS/MEMORY.md" ]; then
   warn "MEMORY.md already exists and has content."
@@ -369,9 +398,12 @@ BEGIN="<!-- BEGIN:dinomem-neuron (managed) -->"
 END="<!-- END:dinomem-neuron -->"
 BLOCK="$BEGIN
 ## rag_long_docs
-  when: long doc shared | save/remember doc | content >2000 chars
-  action: save docs/<slug>.md → python3 procedures/docs_ingest.py --file docs/<slug>.md → confirm
-  note: auto-re-ingested daily 4:00 UTC; never save long docs to memory/
+  when: long doc shared | doc file uploaded (pdf/docx/rtf/odt/html/epub/md/txt) | save/remember doc | content >2000 chars
+  action:
+    uploaded_file: python3 procedures/docs_ingest.py --file <media path> → confirm  # script self-extracts pdf/docx/etc → docs/<slug>.md
+    pasted_text: save docs/<slug>.md → python3 procedures/docs_ingest.py --file docs/<slug>.md → confirm
+  media_path: inbound uploads at ~/.openclaw/media/inbound/<uuid> (from <media:...> placeholder); pass that path straight to --file
+  note: ingest auto-extracts via pdftotext+pandoc (no manual convert); re-ingested daily 4:00 UTC; ready for docs_search after; never save long docs to memory/
 
 ## calendar_integration
   trigger: explicit date/time | deadline | appointment
@@ -504,8 +536,10 @@ TOOLS_BLOCK="$BEGIN
       session_search; for market/memory KB use the agent's memory tools.
     scope: |
       Searches the structure-aware document store (kb/vector_db_docs), populated
-      by procedures/docs_ingest.py (re-ingested daily ~4:00 UTC via cron). If the
-      DB is missing, the tool errors with a build hint.
+      by procedures/docs_ingest.py (re-ingested daily ~4:00 UTC via cron). ingest
+      auto-extracts pdf/docx/rtf/odt/html/epub (via pdftotext+pandoc) and accepts
+      uploaded file paths (e.g. ~/.openclaw/media/inbound/<uuid>) directly — no
+      manual conversion. If the DB is missing, the tool errors with a build hint.
     inputs:
       query:
         type: string

@@ -3,3 +3,9 @@ __pycache__/
 *.pyo
 .env
 *.log
+
+# Runtime / generated data (never commit)
+cache/
+kb/
+docs/
+logs/

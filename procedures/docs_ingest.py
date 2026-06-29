@@ -220,8 +220,104 @@ def make_chunk_doc(chunk_text: str, section_title: str, section_level: int,
     return Document(page_content=enriched, metadata=meta)
 
 # ── Load single file ──────────────────────────────────────────────────────────
+# ── Format extraction (PDF/docx/etc → markdown) ────────────────────────────
+import subprocess
+import shutil
+
+# Extensions read directly as text (no conversion needed)
+_TEXT_EXTS = {'.md', '.markdown', '.txt', '.text'}
+# Extensions routed through pandoc → markdown
+_PANDOC_EXTS = {'.docx', '.doc', '.rtf', '.odt', '.html', '.htm', '.epub'}
+
+def _slugify(name: str) -> str:
+    s = re.sub(r'[^a-zA-Z0-9]+', '-', name.lower()).strip('-')
+    return (s or 'doc')[:60]
+
+def _sniff_format(path: Path) -> str:
+    """Detect format by extension, falling back to magic bytes.
+    Returns one of: 'text', 'pdf', 'pandoc', 'unknown'.
+    Inbound files (e.g. ~/.openclaw/media/inbound/<uuid>) may lack an extension."""
+    ext = path.suffix.lower()
+    if ext in _TEXT_EXTS:
+        return 'text'
+    if ext == '.pdf':
+        return 'pdf'
+    if ext in _PANDOC_EXTS:
+        return 'pandoc'
+    # No (or unknown) extension → sniff magic bytes
+    try:
+        head = path.read_bytes()[:8]
+    except Exception:
+        return 'unknown'
+    if head[:4] == b'%PDF':
+        return 'pdf'
+    if head[:4] == b'PK\x03\x04':
+        # zip container — docx/odt/epub/xlsx; pandoc handles the doc types
+        return 'pandoc'
+    if head[:5].lower() == b'<html' or head[:9].lower() == b'<!doctype':
+        return 'pandoc'
+    # Assume utf-8 text as a last resort (covers extension-less .md/.txt)
+    return 'text'
+
+def extract_to_markdown(src: Path) -> Path:
+    """Convert a non-markdown source into a markdown file under DOCS_DIR.
+    Returns the path of the markdown file to ingest. Text sources already inside
+    DOCS_DIR are returned as-is (no copy). Uses system binaries only (pdftotext,
+    pandoc) — no extra Python deps."""
+    fmt = _sniff_format(src)
+
+    # Plain text/markdown already living in docs/ → ingest in place.
+    if fmt == 'text' and src.suffix.lower() in _TEXT_EXTS and DOCS_DIR in src.resolve().parents:
+        return src
+
+    DOCS_DIR.mkdir(parents=True, exist_ok=True)
+    slug = _slugify(src.stem)
+    out = DOCS_DIR / f"{slug}.md"
+    # Avoid clobbering an existing different doc with the same slug.
+    n = 2
+    while out.exists() and out.resolve() != src.resolve():
+        out = DOCS_DIR / f"{slug}-{n}.md"
+        n += 1
+
+    if fmt == 'text':
+        text = src.read_text(encoding='utf-8', errors='replace')
+        out.write_text(text, encoding='utf-8')
+        log(f"  extracted (text): {src.name} → {out.name}")
+        return out
+
+    if fmt == 'pdf':
+        if not shutil.which('pdftotext'):
+            raise RuntimeError(
+                "PDF ingest needs 'pdftotext' (poppler-utils), which isn't installed. "
+                "Install it (Debian/Ubuntu: poppler-utils, macOS/Arch: poppler) and retry. "
+                "Text/Markdown docs ingest without it.")
+        r = subprocess.run(['pdftotext', '-layout', str(src), str(out)],
+                           capture_output=True, text=True, timeout=120)
+        if r.returncode != 0 or not out.exists():
+            raise RuntimeError(f"pdftotext failed: {r.stderr.strip()[:200]}")
+        log(f"  extracted (pdf): {src.name} → {out.name}")
+        return out
+
+    if fmt == 'pandoc':
+        if not shutil.which('pandoc'):
+            raise RuntimeError(
+                "docx/Office/HTML ingest needs 'pandoc', which isn't installed. "
+                "Install it (https://pandoc.org/installing.html) and retry. "
+                "Text/Markdown and PDF docs ingest without it.")
+        r = subprocess.run(['pandoc', str(src), '-t', 'gfm', '-o', str(out)],
+                           capture_output=True, text=True, timeout=120)
+        if r.returncode != 0 or not out.exists():
+            raise RuntimeError(f"pandoc failed: {r.stderr.strip()[:200]}")
+        log(f"  extracted (pandoc): {src.name} → {out.name}")
+        return out
+
+    raise RuntimeError(f"unsupported/undetectable format: {src.name}")
+
 def load_file(path: Path) -> Tuple[List[Document], dict]:
-    """Load and chunk a single markdown file. Returns (chunks, doc_meta)."""
+    """Load and chunk a single document. Non-markdown sources (PDF, docx, etc.)
+    are first extracted to a markdown file under docs/. Returns (chunks, doc_meta)."""
+    if _sniff_format(path) != 'text' or path.suffix.lower() not in _TEXT_EXTS:
+        path = extract_to_markdown(path)
     content = path.read_text(encoding='utf-8')
     frontmatter, body = load_frontmatter(content)
     doc_meta = build_doc_metadata(path, frontmatter, body)
