@@ -209,37 +209,6 @@ Session → Archive → extract_memory.py → memory/*.md + MEMORY.md + vector D
   Promoted insights present on every turn — no recall needed
 ```
 
-### Note automation & project execution
-
-Separate from the L2/L3/L4 memory pipeline above, neuron also upgrades the base `_note_` system (which by itself only tracks `done_when` + `stale_after`). Two capabilities:
-
-**Automatic note creation.** Base note creation is user-driven ("remember to X"). Neuron makes it automatic on three triggers:
-- **Self-commitment** — when the agent's own output implies deferred work ("next step…", "TODO", "remaining: X"), it writes a `_note_` for that commitment. Closes the gap where an agent promises something and a later session forgets.
-- **Completion follow-up** — when a task finishes but leaves a remainder, the leftover becomes a `_note_`.
-- **Project estimate** — when a request trips the project gate (below), the agent writes a project note before starting.
-
-Anti-spam guardrail: only auto-notes when a concrete `done_when` is writable. Personal/ambiguous items still ask first.
-
-**Project executor.** A `type: project` note is a durable, on-disk plan that lets the agent execute a large build **one step per turn**, surviving context limits and fresh sessions — the note *is* the state machine.
-
-```
-# Project <name>
-type: project
-status: in_progress | done
-done_when: <final artifact / all steps [x]>
-current_step: <n>
-steps:
-  - [ ] 1. <step> -- done_when: <check>
-  - [ ] 2. ...
-resume_state: <paths / decisions the next turn needs to resume blind>
-```
-
-- **Estimate gate** — at request time the agent classifies scope: `>3 files OR >5 sequential tool-steps OR research-then-build OR user says "project/build"`. Trip it → write a project note; else execute normally in one turn.
-- **Execution loop** — do the current step, then read context budget via `session_status`. Under 60%: mark `[x]`, rewrite `resume_state`, advance, continue. Over 60%: checkpoint and stop cleanly, reporting `step n/m done`. Resumption reads `resume_state` **only** — never chat history — so a blind fresh session continues from the note alone.
-- **Driver (hybrid)** — the user can say "continue", or the **Project Advancer** cron (every 4h) sweeps `in_progress` projects and advances them unattended, announcing progress. A safety gate keeps autonomy honest: destructive or external steps (delete data, git push, external messages, spend money, credentials) are **not** run unattended — the project pauses and announces it's awaiting approval. Read/build/local-file steps proceed on their own.
-
-Resolution is unchanged: once `done_when` is met, the base Daily Note Review cron deletes or promotes the note. See [`references/architecture.md`](references/architecture.md) for the full spec.
-
 ### Model selection
 
 neuron's pipeline is the **reasoning tier**. `memory_synthesis`, `contradiction_check`,
@@ -262,6 +231,55 @@ most people install base **first**, sometimes an older one. On base below 1.2.0
 the `reasoning=True` flag is *accepted but silently ignored* (no thinking budget,
 no error) — reasoning quality quietly degrades. If neuron's installer warns that
 your base is too old, run `dinomem/scripts/update.sh` before using neuron.
+
+---
+
+## Beyond the pipeline
+
+The L2/L3/L4 flow above is neuron's core: turning raw memory into validated, behavior-changing knowledge. Riding on that same base are four capabilities that aren't part of the synthesis engine but extend what the agent can do day to day.
+
+### RAG for long documents
+
+Contracts, books, legal text, manuals — anything too long to live in memory. You drop files in `docs/`; `docs_ingest.py` chunks and embeds them into a separate vector store (`kb/vector_db_docs/`), kept apart from memory so long docs never pollute the synthesis pipeline. The agent retrieves passages via `docs_search.py` (HyDE query expansion on by default). Re-ingested daily so new/changed files stay searchable.
+
+### Calendar integration
+
+Links `_note_` reminders to Google Calendar. When the agent saves a dated `_note_` (e.g. a deadline or appointment), `calendar_tool.py` creates the matching event; `calendar_sync.py` runs daily and auto-deletes the note once the event date has passed — so reminders clean themselves up. Requires a one-time OAuth setup (see [Calendar setup](#calendar-setup)).
+
+### Automatic note creation
+
+Base note creation is user-driven ("remember to X"). Neuron makes it automatic on three triggers:
+- **Self-commitment** — when the agent's own output implies deferred work ("next step…", "TODO", "remaining: X"), it writes a `_note_` for that commitment. Closes the gap where an agent promises something and a later session forgets.
+- **Completion follow-up** — when a task finishes but leaves a remainder, the leftover becomes a `_note_`.
+- **Project estimate** — when a request trips the project gate (below), the agent writes a project note before starting.
+
+Anti-spam guardrail: only auto-notes when a concrete `done_when` is writable. Personal/ambiguous items still ask first.
+
+### Project executor
+
+A `type: project` note is a durable, on-disk plan that lets the agent execute a large build **one step per turn**, surviving context limits and fresh sessions — the note *is* the state machine.
+
+```
+# Project <name>
+type: project
+status: in_progress | done
+done_when: <final artifact / all steps [x]>
+current_step: <n>
+steps:
+  - [ ] 1. <step> -- done_when: <check>
+  - [ ] 2. ...
+resume_state: <paths / decisions the next turn needs to resume blind>
+```
+
+- **Estimate gate** — at request time the agent classifies scope: `>3 files OR >5 sequential tool-steps OR research-then-build OR user says "project/build"`. Trip it → write a project note; else execute normally in one turn.
+- **Execution loop** — do the current step, then read context budget via `session_status`. Under 60%: mark `[x]`, rewrite `resume_state`, advance, continue. Over 60%: checkpoint and stop cleanly, reporting `step n/m done`. Resumption reads `resume_state` **only** — never chat history — so a blind fresh session continues from the note alone.
+- **Driver (hybrid)** — the user can say "continue", or the **Project Advancer** cron (every 4h) sweeps `in_progress` projects and advances them unattended, announcing progress. A safety gate keeps autonomy honest: destructive or external steps (delete data, git push, external messages, spend money, credentials) are **not** run unattended — the project pauses and announces it's awaiting approval. Read/build/local-file steps proceed on their own.
+
+Resolution is unchanged: once `done_when` is met, the base Daily Note Review cron deletes or promotes the note. See [`references/architecture.md`](references/architecture.md) for the full spec.
+
+### Session deep recall
+
+When `memory_search` returns thin or uncertain results for recent context, `session_search.py` searches the raw archived session transcripts (7-day window) for the exact exchange — sharper, more detailed recall than the memory summary alone. Used only when the memory summary is insufficient, not every turn.
 
 ---
 
