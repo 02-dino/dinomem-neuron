@@ -4,6 +4,23 @@ All notable changes to dinomem-neuron are documented here.
 
 ---
 
+## 1.2.3 — 2026-06-29
+
+### Fixed
+- **`install.sh` hard-failed while wiring AGENTS.md (`line NNN: title: No such
+  file or directory`, exit 1).** The AGENTS.md/TOOLS.md managed blocks were built
+  as double-quoted shell strings (`BLOCK="$BEGIN ..."`) containing **unescaped**
+  double-quotes mid-string — e.g. `calendar_tool.py create "<title>"`,
+  `session_search.py "<query>"`, and `done_when ("pushed", "told user")`. Each
+  unescaped quote closed the string early, leaving the following `<title>` /
+  `<query>` placeholder in shell command position where `<` parsed as a
+  redirection. Under `set -e` the install aborted before AGENTS.md was wired, so
+  neuron's policy/tool blocks were never installed. (Same bug class fixed in base
+  dinomem v1.2.8; neuron's variant hard-fails instead of degrading.) Fixed by
+  building both blocks as quoted heredocs (`cat <<'EOF'`), which makes inner
+  quotes and `<...>` placeholders literal. Generated content is byte-for-byte
+  unchanged.
+
 ## 1.2.2 — 2026-06-25
 
 ### Added

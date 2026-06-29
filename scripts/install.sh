@@ -396,7 +396,9 @@ if [ -f "$WS/MEMORY.md" ]; then
 fi
 BEGIN="<!-- BEGIN:dinomem-neuron (managed) -->"
 END="<!-- END:dinomem-neuron -->"
-BLOCK="$BEGIN
+# Body is a literal quoted heredoc: embedded double-quotes ("<title>", "<query>")
+# and <angle-bracket> placeholders must NOT be shell-evaluated. Markers wrapped after.
+DINOMEM_BODY=$(cat <<'DINOMEM_NEURON_AGENTS_BODY'
 ## rag_long_docs
   when: long doc shared | doc file uploaded (pdf/docx/rtf/odt/html/epub/md/txt) | save/remember doc | content >2000 chars
   action:
@@ -427,7 +429,7 @@ BLOCK="$BEGIN
 ## project_note
   purpose: context-bounded step-by-step executor; durable plan on disk survives context limits + new sessions
   type: project (extends base _note_ schema)
-  format: '# Project <name>\\ntype: project\\nstatus: in_progress | done\\ndate: YYYY-MM-DD\\ndone_when: <final artifact / all steps [x]>\\nstale_after: YYYY-MM-DD\\ncurrent_step: <n>\\nsteps:\\n  - [ ] 1. <step> -- done_when: <check>\\n  - [ ] 2. ...\\nresume_state: <paths/decisions/assumptions next turn needs to resume blind>'
+  format: '# Project <name>\ntype: project\nstatus: in_progress | done\ndate: YYYY-MM-DD\ndone_when: <final artifact / all steps [x]>\nstale_after: YYYY-MM-DD\ncurrent_step: <n>\nsteps:\n  - [ ] 1. <step> -- done_when: <check>\n  - [ ] 2. ...\nresume_state: <paths/decisions/assumptions next turn needs to resume blind>'
   estimate:
     when: at request time, before starting
     gate: '>3 files OR >5 sequential tool-steps OR research-then-build OR user says project/build'
@@ -442,6 +444,10 @@ BLOCK="$BEGIN
   resolve: done_when met -> Daily Note Review (base) deletes/promotes via normal pipeline
   awaiting_approval_reverify: a project parked at a safety-gated final step (git push / external action the Advancer cannot run unattended) is the classic orphan case — Advancer wont run it, so Advancer never marks it done. At session cold start (see base M_session_start) AND whenever such a note resurfaces, RE-VERIFY whether the gated artifact now exists (e.g. git -C <repo> rev-parse HEAD == @{u} means the push already happened). If yes, close the note (status: done) rather than re-asking the user to approve something already done. This closes the read-back loop so a human-completed gated step does not leave a zombie in_progress note.
   done_when_verifiability: every step done_when (and the project done_when) must be LOCALLY checkable with no chat history / no network identity (file exists, grep match, command exit 0, git rev-parse HEAD==@{u}). Narrative done_when ("pushed", "told user") never auto-closes — see base memory_pin schema done_when_MUST_be_locally_verifiable.
+DINOMEM_NEURON_AGENTS_BODY
+)
+BLOCK="$BEGIN
+$DINOMEM_BODY
 $END"
 
 touch "$AGENTS"
@@ -462,7 +468,7 @@ TOOLS="$WS/TOOLS.md"
 if [ -f "$TOOLS" ]; then
   bash "$SKILL_DIR/scripts/file-backup.sh" "$TOOLS" >/dev/null 2>&1 && ok "TOOLS.md backed up" || warn "TOOLS.md backup failed — continuing"
 fi
-TOOLS_BLOCK="$BEGIN
+TOOLS_BODY=$(cat <<'DINOMEM_NEURON_TOOLS_BODY'
   session_search:
     path: tools/session_search.py
     type: exec
@@ -485,35 +491,35 @@ TOOLS_BLOCK="$BEGIN
       query:
         type: string
         required: false
-        note: \"Positional. Required unless --list. Use natural language, not code identifiers.\"
+        note: "Positional. Required unless --list. Use natural language, not code identifiers."
       k:
         type: integer
         required: false
         default: 5
-        note: \"Number of results after recency-weighted rerank.\"
+        note: "Number of results after recency-weighted rerank."
       session:
         type: string
         required: false
-        note: \"Filter by session name substring (--session).\"
+        note: "Filter by session name substring (--session)."
       list:
         type: boolean
         required: false
-        note: \"List all indexed sessions; no query needed (--list).\"
+        note: "List all indexed sessions; no query needed (--list)."
       json:
         type: boolean
         required: false
         default: false
-        note: \"Output raw JSON instead of formatted text (--json).\"
+        note: "Output raw JSON instead of formatted text (--json)."
     output:
       type: list
       structure: chunks_with_metadata
       fields:
-        - content: \"Chunk text (consecutive user+assistant exchanges).\"
-        - score: \"Relevance score (rounded). Reranked: large score gap => relevance wins; near-tie => recency decides.\"
-        - session_name: \"Source session identifier.\"
-        - archived_date: \"Date the session was archived (YYYY-MM-DD).\"
-        - chunk_index: \"Position of chunk within the session.\"
-        - source_file: \"Archived .jsonl filename.\"
+        - content: "Chunk text (consecutive user+assistant exchanges)."
+        - score: "Relevance score (rounded). Reranked: large score gap => relevance wins; near-tie => recency decides."
+        - session_name: "Source session identifier."
+        - archived_date: "Date the session was archived (YYYY-MM-DD)."
+        - chunk_index: "Position of chunk within the session."
+        - source_file: "Archived .jsonl filename."
     constraints:
       mode: read_only
     libraries:
@@ -546,43 +552,43 @@ TOOLS_BLOCK="$BEGIN
       query:
         type: string
         required: false
-        note: \"Positional. Required unless --list. Natural language.\"
+        note: "Positional. Required unless --list. Natural language."
       k:
         type: integer
         required: false
         default: 5
-        note: \"Number of results (--k).\"
+        note: "Number of results (--k)."
       doc:
         type: string
         required: false
-        note: \"Filter by document title/filename substring (--doc).\"
+        note: "Filter by document title/filename substring (--doc)."
       section:
         type: string
         required: false
-        note: \"Filter by section title substring (--section).\"
+        note: "Filter by section title substring (--section)."
       max_chars:
         type: integer
         required: false
         default: 1500
-        note: \"Truncate chunk content (--max-chars).\"
+        note: "Truncate chunk content (--max-chars)."
       list:
         type: boolean
         required: false
-        note: \"List all indexed documents; no query needed (--list).\"
+        note: "List all indexed documents; no query needed (--list)."
       json:
         type: boolean
         required: false
         default: false
-        note: \"Output raw JSON instead of formatted text (--json).\"
+        note: "Output raw JSON instead of formatted text (--json)."
     output:
       type: list
       structure: chunks_with_metadata
       fields:
-        - content: \"Chunk text (section-aware).\"
-        - score: \"Relevance score.\"
-        - doc_title: \"Source document title/filename.\"
-        - section_title: \"Section the chunk belongs to.\"
-        - chunk_index: \"Position of chunk within the document.\"
+        - content: "Chunk text (section-aware)."
+        - score: "Relevance score."
+        - doc_title: "Source document title/filename."
+        - section_title: "Section the chunk belongs to."
+        - chunk_index: "Position of chunk within the document."
     constraints:
       mode: read_only
     libraries:
@@ -603,31 +609,35 @@ TOOLS_BLOCK="$BEGIN
       calendar_integration for the WHEN/policy (explicit date/time, deadline,
       appointment). Skip when no date/time is implied or the user declines.
     requirements:
-      auth: \"Google Calendar OAuth (run scripts/calendar_oauth_setup.py once).\"
+      auth: "Google Calendar OAuth (run scripts/calendar_oauth_setup.py once)."
     subcommands:
       create:
-        usage: \"calendar_tool.py create <title> --date YYYY-MM-DD [--time HH:MM] [--desc TEXT] [--note _note_*.md] [--reminder METHOD:MINUTES] [--attendee EMAIL]\"
+        usage: "calendar_tool.py create <title> --date YYYY-MM-DD [--time HH:MM] [--desc TEXT] [--note _note_*.md] [--reminder METHOD:MINUTES] [--attendee EMAIL]"
         inputs:
-          title:    { type: string,  required: true,  note: \"Positional event title.\" }
-          date:     { type: string,  required: true,  note: \"--date YYYY-MM-DD.\" }
-          time:     { type: string,  required: false, note: \"--time HH:MM (24h); omit for all-day.\" }
-          desc:     { type: string,  required: false, note: \"--desc event description.\" }
-          note:     { type: string,  required: false, note: \"--note _note_*.md filename to link.\" }
-          reminder: { type: list,    required: false, note: \"--reminder METHOD:MINUTES (repeatable), e.g. popup:30.\" }
-          attendee: { type: list,    required: false, note: \"--attendee EMAIL (repeatable).\" }
+          title:    { type: string,  required: true,  note: "Positional event title." }
+          date:     { type: string,  required: true,  note: "--date YYYY-MM-DD." }
+          time:     { type: string,  required: false, note: "--time HH:MM (24h); omit for all-day." }
+          desc:     { type: string,  required: false, note: "--desc event description." }
+          note:     { type: string,  required: false, note: "--note _note_*.md filename to link." }
+          reminder: { type: list,    required: false, note: "--reminder METHOD:MINUTES (repeatable), e.g. popup:30." }
+          attendee: { type: list,    required: false, note: "--attendee EMAIL (repeatable)." }
       list:
-        usage: \"calendar_tool.py list [--upcoming DAYS]\"
+        usage: "calendar_tool.py list [--upcoming DAYS]"
         inputs:
-          upcoming: { type: integer, required: false, default: 7, note: \"--upcoming days ahead.\" }
+          upcoming: { type: integer, required: false, default: 7, note: "--upcoming days ahead." }
       delete:
-        usage: \"calendar_tool.py delete <event_id>\"
+        usage: "calendar_tool.py delete <event_id>"
         inputs:
-          event_id: { type: string, required: true, note: \"Positional event ID to delete.\" }
+          event_id: { type: string, required: true, note: "Positional event ID to delete." }
     constraints:
       mode: exec
     libraries:
       - google-api-python-client
       - google-auth-oauthlib
+DINOMEM_NEURON_TOOLS_BODY
+)
+TOOLS_BLOCK="$BEGIN
+$TOOLS_BODY
 $END"
 
 touch "$TOOLS"
