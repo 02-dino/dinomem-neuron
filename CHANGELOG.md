@@ -4,6 +4,16 @@ All notable changes to dinomem-neuron are documented here.
 
 ---
 
+## 1.2.4 — 2026-06-29
+
+### Added
+- **`investigate_before_act` policy block (injected into AGENTS.md).** Codifies
+  the verify-before-mutate discipline: inspect the real artifact, reproduce
+  locally before fixing, re-verify with evidence after fixing, check cross-entity
+  claims against the target directly (shared lineage != shared bug), and treat a
+  prior "it's fixed" claim as non-evidence. Sits beside `project_note.estimate`
+  as the pre-build/pre-fix gate. Base (memory-only) is intentionally left lean.
+
 ## 1.2.3 — 2026-06-29
 
 ### Fixed

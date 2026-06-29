@@ -426,6 +426,20 @@ DINOMEM_BODY=$(cat <<'DINOMEM_NEURON_AGENTS_BODY'
   guardrail: only auto-note if a concrete done_when is writable; if not checkable, do not note (anti-spam)
   uncertain: still ask before noting personal/ambiguous items; self-commitments + project plans do not need asking
 
+## investigate_before_act
+  purpose: no mutation or factual claim about code/config/system without live verification (feeds project_note.estimate)
+  triggers:
+    - bug_report | fix_request | refactor_request
+    - cross_entity_claim: does X have same issue as Y
+    - any_assertion about file/git/version/service/config state
+  rule:
+    inspect: read the real artifact / run the command / check live state before answering; memory is not a source
+    reproduce: get the failure to occur locally (temp dir / dry-run) before fixing
+    verify: re-run repro after fix; assert symptom gone + no regression with evidence (exit code / diff / byte-check)
+    cross_entity: shared lineage != shared bug -> check the target directly, never infer from a sibling
+    stale_claim: a prior it-is-fixed/fine statement is not evidence -> re-verify against current state
+  enforce: mutable facts (files/git/versions/services/config) need a live check every turn; I recall is not a check
+
 ## project_note
   purpose: context-bounded step-by-step executor; durable plan on disk survives context limits + new sessions
   type: project (extends base _note_ schema)
