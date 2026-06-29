@@ -125,8 +125,13 @@ Resumption reads `resume_state` **only** — never conversation history. After e
 
 **Driver — hybrid** — the user can say "continue" to advance manually. If they don't, the **Project Advancer** cron (every 4h) sweeps `status: in_progress` project notes and advances them unattended, announcing progress to chat. A safety gate keeps autonomy honest: destructive or external steps (delete data, git push, send external messages, spend money, touch credentials) are **not** executed unattended — the project pauses and announces it is awaiting approval. Read/build/local-file steps proceed on their own. Once `done_when` is met, the base Daily Note Review cron deletes or promotes the note through the normal pipeline.
 
+## RAG — long-document ingest
+
+Long documents (contracts, books, legal text, manuals) live in a separate vector store (`kb/vector_db_docs/`), kept apart from memory so they never pollute the synthesis pipeline. Ingest is **seamless and multi-format**: share a file in chat — PDF, Word (`.docx`), `.rtf`, `.odt`, HTML, EPUB, or plain text/markdown — and `docs_ingest.py` auto-extracts it to markdown (PDF via `pdftotext`, Office/HTML via `pandoc`), saves `docs/<slug>.md`, and ingests it for `docs_search`. No manual conversion, no folder drop. Uploaded media paths (`~/.openclaw/media/inbound/<uuid>`) are accepted directly, with magic-byte format detection when the extension is missing. If a binary is unavailable, text/markdown ingest still works and the affected formats degrade gracefully.
+
 ## Prerequisites
 
 - dinomem base installed (TEI running, `<agent>.sqlite` exists with embeddings)
 - Python 3.8+
 - OpenClaw memory DB populated (requires at least a few sessions extracted)
+- `pdftotext` and `pandoc` on `PATH` for multi-format RAG ingest (installer auto-installs when possible; text/markdown ingest works without them)
