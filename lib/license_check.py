@@ -93,16 +93,33 @@ def enforce_license(procedure_name=None):
             "  dinomem-neuron LICENSE EXPIRED\n"
             "  ============================================================\n"
             f"  This license (licensee: {licensee}) ended on {expires}.\n"
-            f"  The '{name}' task will not run until the license is renewed.\n"
-            f"  To renew and restore dinomem-neuron, contact the seller:\n"
+            "\n"
+            "  Your dinomem memory upgrade has STOPPED WORKING:\n"
+            "    - no more learning from new sessions\n"
+            "    - no more automatic step-by-step note building\n"
+            "    - no more memory graph linking, synthesis, or promotion\n"
+            "    - no more contradiction checks or topic indexing\n"
+            "  Your agent falls back to plain memory until the license is renewed.\n"
+            "\n"
+            f"  To renew and restore the full dinomem-neuron upgrade, contact:\n"
             f"  {SELLER}\n"
             "\n"
         )
         sys.exit(1)
     if status == "reminder":
+        days = ""
+        try:
+            from datetime import datetime as _dt, timezone as _tz
+            _d = (_dt.strptime(expires, "%Y-%m-%d").replace(tzinfo=_tz.utc) - _dt.now(_tz.utc)).days
+            days = f" (in {_d} day{'s' if _d != 1 else ''})"
+        except Exception:
+            pass
         sys.stderr.write(
-            f"\n  [dinomem-neuron] License for {licensee} expires on {expires}. "
-            f"Renew soon to avoid interruption: {SELLER}\n\n"
+            "\n"
+            f"  [dinomem-neuron] Heads up: your dinomem memory upgrade expires on {expires}{days}.\n"
+            "  After that it STOPS WORKING - no more learning, no more auto note\n"
+            "  building, no graph/synthesis/promotion. Renew to keep it running:\n"
+            f"  {SELLER}\n\n"
         )
     return status
 
