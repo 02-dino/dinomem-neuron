@@ -44,6 +44,9 @@ if [ "$LICENSE_AGREED" != "1" ]; then
     echo "  ACTION[agent]: ask the OWNER to accept the dinomem-neuron license, then re-run with --agree (or set LICENSE_AGREED=1). License acceptance is the human's decision — do not auto-agree." >&2
     exit 1
   fi
+  echo "  This is a SINGLE-BUYER license. This copy is watermarked and traceable to you."
+  echo "  Redistribution or resale is prohibited and forfeits updates + support."
+  echo ""
   read -p "  Type 'agree' to accept the license and continue: " USER_AGREE
   if [ "$USER_AGREE" != "agree" ]; then
     echo "  License not accepted. Exiting."

@@ -9,3 +9,7 @@ cache/
 kb/
 docs/
 logs/
+
+# Per-buyer release builds + private buyer ledger (NEVER commit / ship)
+releases/
+buyers_manifest.csv
