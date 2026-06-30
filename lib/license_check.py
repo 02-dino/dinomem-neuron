@@ -97,6 +97,8 @@ def enforce_license(procedure_name=None):
             "  Your dinomem memory upgrade has STOPPED WORKING:\n"
             "    - no more learning from new sessions\n"
             "    - no more automatic step-by-step note building\n"
+            "    - no more automatic note task tracking (the cron that advances\n"
+            "      and auto-resolves your _note_ tasks stops running)\n"
             "    - no more memory graph linking, synthesis, or promotion\n"
             "    - no more contradiction checks or topic indexing\n"
             "  Your agent falls back to plain dinomem (base, without the upgrade)\n"
