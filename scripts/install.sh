@@ -55,6 +55,11 @@ if [ "$LICENSE_AGREED" != "1" ]; then
   fi
 fi
 
+# ── License expiry check (time-limited builds only) ──────────────────────────
+if [ -f "$SKILL_DIR/scripts/license_check.sh" ]; then
+  bash "$SKILL_DIR/scripts/license_check.sh" || exit 1
+fi
+
 ok()   { printf '  \033[32m[ok]\033[0m   %s\n' "$*"; }
 skip() { printf '  \033[33m[skip]\033[0m %s\n' "$*"; }
 warn() { printf '  \033[33m[warn]\033[0m %s\n' "$*"; }
