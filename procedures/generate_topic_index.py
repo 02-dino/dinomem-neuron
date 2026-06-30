@@ -716,6 +716,16 @@ def track_removed_topics(before_files: set, after_files: set):
 
 
 if __name__ == "__main__":
+    # ---- dinomem-neuron license guard ----
+    import os as _os, sys as _sys
+    _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+    try:
+        from license_check import enforce_license as _enforce_license
+        _enforce_license(_os.path.basename(__file__))
+    except SystemExit:
+        raise
+    except Exception:
+        pass
     dry_run = "--dry-run" in sys.argv
     success = generate_index(dry_run=dry_run)
     sys.exit(0 if success else 1)

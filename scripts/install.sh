@@ -298,6 +298,8 @@ fi
 hr "Copying scripts"
 for f in procedures/memory_graph.py procedures/memory_synthesis.py procedures/memory_promote.py procedures/contradiction_check.py procedures/generate_topic_index.py procedures/docs_ingest.py procedures/session_ingest.py procedures/calendar_sync.py tools/docs_search.py tools/session_search.py tools/cache_utils.py tools/calendar_tool.py scripts/calendar_oauth_setup.py; do
   dst="$WS/$f"
+  # license_check.py must sit beside procedures so the runtime guard can import it.
+  true
   if [ -f "$dst" ] && [ "$FORCE" = 0 ]; then
     skip "$f (exists, use --force to overwrite)"
   else
@@ -312,6 +314,17 @@ for f in procedures/memory_graph.py procedures/memory_synthesis.py procedures/me
     ok "$f"
   fi
 done
+
+# license_check.py -> workspace procedures/ (runtime guard import target)
+cp "$SKILL_DIR/lib/license_check.py" "$WS/procedures/license_check.py"
+sed -i "s|DINOMEM_WORKSPACE_PLACEHOLDER|$WS|g" "$WS/procedures/license_check.py"
+ok "procedures/license_check.py (runtime license guard)"
+
+# .license_expiry -> workspace root (time-limited builds only; perpetual builds omit it)
+if [ -f "$SKILL_DIR/.license_expiry" ]; then
+  cp "$SKILL_DIR/.license_expiry" "$WS/.license_expiry"
+  ok ".license_expiry (license term)"
+fi
 
 # ── 3) Register cron jobs ─────────────────────────────────────────────────────
 # upsert_cron: add or update a cron entry by script keyword
