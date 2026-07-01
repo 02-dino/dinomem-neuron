@@ -285,7 +285,11 @@ Resolution is unchanged: once `done_when` is met, the base Daily Note Review cro
 
 ### Skill Promotion
 
-When a project note flips `status: done`, `skill_extract.py` runs automatically and distills the completed steps into a reusable skill candidate under `kb/memory_neuron/skill_candidates/<slug>/`. Each candidate tracks a `convergence_count` — how many times a similar procedure has been completed. At **convergence ≥ 3**, the candidate is promoted to `skills/<name>/SKILL.md` and becomes available as a named skill.
+`skill_extract.py` runs automatically from three sources and distills reusable procedures into skill candidates under `kb/memory_neuron/skill_candidates/<slug>/`. At **convergence ≥ 3**, a candidate is promoted to `skills/<name>/SKILL.md` and becomes available as a named skill.
+
+- **Source 1 — completed projects**: fires when a project note flips `status: done`
+- **Source 2 — L3 clusters**: fires after memory synthesis; procedural clusters (size ≥ 3, action-verb pattern) become candidates
+- **Source 3 — PERSISTENT.md**: fires after L4 promotion; best-practice insights ("always X", "prefer X over Y") become low-confidence candidates
 
 - **Review mode** (`--review <slug>`) — re-extracts from the source note and overwrites an existing skill; used when a skill is flagged as stale or broken.
 - **Prune mode** (`--prune`) — deletes zero-convergence candidates older than 60 days.
@@ -359,7 +363,7 @@ All signals must align. One-off or low-confidence insights stay in synthesis —
 | Daily 7:00 UTC | `calendar_sync.py` | Auto-delete `_note_` files linked to past events |
 | Every 4h | Project Advancer (OpenClaw cron) | Auto-advance `type: project` notes one step/run, unattended, announce progress |
 | Weekly Sun 4:00 UTC | `memory_promote.py` + `generate_topic_index.py` | L4 — Knowledge Promotion + MEMORY.md enrichment; triggers `skill_extract.py` after each run |
-| On project completion | `skill_extract.py` | Skill Promotion — extracts reusable procedures from done project notes into `skills/` candidates; promotes at convergence ≥ 3 |
+| On project completion / L3 / L4 | `skill_extract.py` | Skill Promotion — extracts reusable procedures from completed projects, L3 clusters, and PERSISTENT.md best practices; promotes at convergence ≥ 3 |
 | Every 5 min | `context_watchdog.py` | Context budget watchdog — REST-only, no LLM; sends checkpoint wake to sessions >60% context |
 
 ---
@@ -399,7 +403,7 @@ All signals must align. One-off or low-confidence insights stay in synthesis —
 │   ├── generate_topic_index.py # L4 — topic index + MEMORY.md enrichment
 │   ├── docs_ingest.py          # RAG — ingest long docs
 │   ├── calendar_sync.py        # Calendar — auto-resolve past _note_ files
-│   ├── skill_extract.py        # Skill Promotion — extract reusable procedures from done project notes
+│   ├── skill_extract.py        # Skill Promotion — extract from completed projects, L3 clusters, PERSISTENT.md best practices
 │   └── run_log.py              # Per-run audit trail — append-only JSONL log for all cron scripts
 ├── tools/
 │   ├── docs_search.py          # RAG — semantic search over long docs (HyDE query expansion enabled by default)
