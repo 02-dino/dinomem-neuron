@@ -133,6 +133,117 @@ def snippet(text, n=90):
     return t[:n] + ("…" if len(t) > n else "")
 
 
+FORWARD_REFS_FILE = OUT_DIR / "forward_refs.md"
+
+
+def find_forward_refs(chunks, nodes):
+    """Extract forward references: concepts mentioned in nodes that have no
+    corresponding memory node yet.
+
+    Returns list of {term, mentioned_in: [node_idx, ...], confidence: float}
+    sorted by mention count desc, capped at 50.
+    """
+    import re
+    from difflib import SequenceMatcher
+
+    # Build a lookup of existing node titles + snippets for fuzzy matching
+    existing_texts = []
+    for n in nodes:
+        existing_texts.append((n["title"] + " " + n["snippet"]).lower())
+
+    # Patterns to extract candidate terms from snippet text
+    # 1. Capitalized multi-word phrases (2-5 words, at least one capitalized)
+    cap_phrase = re.compile(
+        r'\b([A-Z][a-zA-Z]+(?:\s+[A-Za-z][a-zA-Z]+){1,4})\b'
+    )
+    # 2. Quoted terms (single or double quotes)
+    quoted = re.compile(r'["\u2018\u2019\u201c\u201d]([A-Za-z][^"\u2018\u2019\u201c\u201d]{3,40})["\u2018\u2019\u201c\u201d]')
+    # 3. Terms after trigger words
+    trigger = re.compile(
+        r'(?:about|regarding|related to|see also|covers|describes|mentions)\s+([A-Z][a-zA-Z]+(?:\s+[A-Za-z][a-zA-Z]+){1,4})'
+    )
+
+    # Collect candidate terms per node
+    term_mentions = defaultdict(set)  # term -> set of node_idx
+
+    for node in nodes:
+        text = node["snippet"]
+        if len(text) < 20:
+            continue
+        idx = node["idx"]
+        candidates = set()
+        for m in cap_phrase.finditer(text):
+            phrase = m.group(1).strip()
+            words = phrase.split()
+            if 2 <= len(words) <= 5:
+                candidates.add(phrase)
+        for m in quoted.finditer(text):
+            phrase = m.group(1).strip()
+            words = phrase.split()
+            if 2 <= len(words) <= 5:
+                candidates.add(phrase)
+        for m in trigger.finditer(text):
+            phrase = m.group(1).strip()
+            words = phrase.split()
+            if 2 <= len(words) <= 5:
+                candidates.add(phrase)
+        for phrase in candidates:
+            term_mentions[phrase].add(idx)
+
+    # Filter: keep only terms that do NOT fuzzy-match any existing node
+    forward_refs = []
+    seen_terms = set()
+    for term, mentioned_in in term_mentions.items():
+        term_lower = term.lower()
+        if term_lower in seen_terms:
+            continue
+        # Check against all existing node texts
+        best_match = 0.0
+        for et in existing_texts:
+            ratio = SequenceMatcher(None, term_lower, et[:len(term_lower) + 20]).ratio()
+            if ratio > best_match:
+                best_match = ratio
+        if best_match < 0.75:
+            # It's a gap — no existing node covers this term
+            confidence = round(1.0 - best_match, 4)
+            forward_refs.append({
+                "term": term,
+                "mentioned_in": sorted(mentioned_in),
+                "confidence": confidence,
+            })
+            seen_terms.add(term_lower)
+
+    # Sort by mention count desc, then confidence desc; cap at 50
+    forward_refs.sort(key=lambda x: (-len(x["mentioned_in"]), -x["confidence"]))
+    return forward_refs[:50]
+
+
+def write_forward_refs_md(forward_refs, out_path, now):
+    """Write the forward_refs.md knowledge-gap report."""
+    date_str = now[:10]
+    if not forward_refs:
+        out_path.write_text(
+            "# Forward References\n_No gaps found._\n",
+            encoding="utf-8",
+        )
+        return
+    lines = [
+        "# Forward References — Knowledge Gaps",
+        f"_Generated: {date_str}_",
+        "",
+        "These concepts are mentioned in memory but have no dedicated node yet.",
+        "Consider writing about them.",
+        "",
+        f"## Gaps ({len(forward_refs)} total)",
+        "",
+    ]
+    for ref in forward_refs:
+        n = len(ref["mentioned_in"])
+        node_word = "node" if n == 1 else "nodes"
+        lines.append(f"- **{ref['term']}** — mentioned in {n} {node_word}")
+    out_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
 def extract_title(text, maxlen=48):
     """Extract a clean human-readable title from a memory chunk."""
     import re
@@ -305,6 +416,10 @@ def main():
             "neural_score": neural_score,
             "l3_confidence": l3_conf,
         })
+    # Forward reference tracking — surface knowledge gaps
+    forward_refs = find_forward_refs(chunks, nodes)
+    write_forward_refs_md(forward_refs, FORWARD_REFS_FILE, now)
+
     (OUT_DIR / "memory_graph.json").write_text(
         json.dumps(
             {
@@ -314,6 +429,7 @@ def main():
                 "edge_count": len(edge_list),
                 "nodes": nodes,
                 "edges": edge_list,
+                "forward_refs": forward_refs,
             },
             indent=2,
             ensure_ascii=False,
@@ -350,6 +466,8 @@ def main():
     print(f"✅ graph built: {len(nodes)} nodes, {len(edge_list)} edges ({cross} cross-file)")
     print(f"   {OUT_DIR/'memory_graph.json'}")
     print(f"   {OUT_DIR/'memory_graph.md'}")
+    if forward_refs:
+        print(f"   {len(forward_refs)} forward reference(s) found → {FORWARD_REFS_FILE}")
 
 
 
@@ -370,5 +488,15 @@ if __name__ == "__main__":
         with _RunLog("memory_graph") as _log:
             main()
             _log.artifact("graph_json", str(OUT_DIR / "memory_graph.json"))
+            # Log forward refs count and path (forward_refs is local to main(),
+            # so we read it back from the JSON output)
+            try:
+                import json as _json
+                _gj = _json.loads((OUT_DIR / "memory_graph.json").read_text(encoding="utf-8"))
+                _fref_count = len(_gj.get("forward_refs", []))
+                _log.artifact("forward_refs_count", str(_fref_count))
+                _log.artifact("forward_refs_md", str(FORWARD_REFS_FILE))
+            except Exception:
+                pass
     except ImportError:
         main()
