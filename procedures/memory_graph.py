@@ -24,11 +24,20 @@ Design notes:
 import argparse
 import json
 import math
+import re
 import sqlite3
 import sys
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
+
+# Optional spaCy for SVO triple extraction (graceful fallback if not installed)
+try:
+    import spacy
+    nlp = spacy.load("en_core_web_sm")
+    SPACY_AVAILABLE = True
+except (ImportError, OSError):
+    SPACY_AVAILABLE = False
 
 DB_PATH = Path("DINOMEM_SQLITE_PLACEHOLDER")
 # Output lives in kb/memory_neuron/ — a deliberate home that documents this is
@@ -259,6 +268,111 @@ def extract_title(text, maxlen=48):
     return t[:maxlen] if t else snippet(text, maxlen)
 
 
+def extract_relation_edges(memory_dir, nodes):
+    """Scan memory/*.md for [relation] lines and build typed edges.
+
+    Returns list of relation edge dicts:
+      {"type": "relation", "label": verb, "a": node_idx, "b": node_idx,
+       "confidence": 0.9, "subject": str, "object": str}
+    Unmatched subjects/objects are returned as forward references with node_idx=-1.
+    Also runs spaCy SVO extraction if SPACY_AVAILABLE (confidence 0.6).
+    """
+    from difflib import SequenceMatcher
+
+    RELATION_RE = re.compile(
+        r'^\[relation\]\s*(.+?)\s*\u2192\s*(.+?)\s*\u2192\s*(.+?)\s*$'
+    )
+
+    # Build lookup: node_idx -> combined text for fuzzy matching
+    node_texts = []
+    for n in nodes:
+        node_texts.append((n["title"] + " " + n["snippet"]).lower())
+
+    def fuzzy_match_node(term):
+        """Return (best_idx, best_score) for term against all nodes."""
+        term_lower = term.lower().strip()
+        best_idx, best_score = -1, 0.0
+        for idx, nt in enumerate(node_texts):
+            score = SequenceMatcher(None, term_lower, nt[:len(term_lower) + 30]).ratio()
+            if score > best_score:
+                best_score = score
+                best_idx = idx
+        return best_idx, best_score
+
+    relation_edges = []
+
+    # --- Pass 1: explicit [relation] lines from memory/*.md ---
+    md_files = sorted(Path(memory_dir).glob("*.md"))
+    for md_file in md_files:
+        if md_file.name in {"MEMORY.md", "auto_promoted.md"}:
+            continue
+        try:
+            lines = md_file.read_text(encoding="utf-8").splitlines()
+        except Exception:
+            continue
+        for line in lines:
+            m = RELATION_RE.match(line.strip())
+            if not m:
+                continue
+            subject = m.group(1).strip()
+            verb = m.group(2).strip()
+            obj = m.group(3).strip()
+
+            idx_a, score_a = fuzzy_match_node(subject)
+            idx_b, score_b = fuzzy_match_node(obj)
+
+            matched_a = score_a >= 0.70
+            matched_b = score_b >= 0.70
+
+            relation_edges.append({
+                "type": "relation",
+                "label": verb,
+                "subject": subject,
+                "object": obj,
+                "a": idx_a if matched_a else -1,
+                "b": idx_b if matched_b else -1,
+                "confidence": 0.9,
+                "source": "explicit",
+                "source_file": md_file.name,
+            })
+
+    # --- Pass 2: spaCy SVO triples (optional, confidence 0.6) ---
+    if SPACY_AVAILABLE and nodes:
+        for node in nodes:
+            text = node["snippet"]
+            if not text or len(text) < 20:
+                continue
+            try:
+                doc = nlp(text)
+                for token in doc:
+                    if token.dep_ == "ROOT" and token.pos_ == "VERB":
+                        subjects = [w for w in token.lefts if w.dep_ in ("nsubj", "nsubjpass")]
+                        objects = [w for w in token.rights if w.dep_ in ("dobj", "attr", "pobj", "oprd")]
+                        for subj in subjects:
+                            for obj in objects:
+                                subj_text = subj.text
+                                obj_text = obj.text
+                                verb_text = token.lemma_
+                                idx_a, score_a = fuzzy_match_node(subj_text)
+                                idx_b, score_b = fuzzy_match_node(obj_text)
+                                if score_a >= 0.70 and score_b >= 0.70:
+                                    relation_edges.append({
+                                        "type": "relation",
+                                        "label": verb_text,
+                                        "subject": subj_text,
+                                        "object": obj_text,
+                                        "a": idx_a,
+                                        "b": idx_b,
+                                        "confidence": 0.6,
+                                        "source": "spacy_svo",
+                                        "source_file": node["file"],
+                                    })
+            except Exception:
+                continue
+
+    return relation_edges
+
+
 def build_graph(chunks, topk, threshold, cross_file_only, mutual=False):
     units = [normalize(c["vec"]) for c in chunks]
     n = len(chunks)
@@ -420,6 +534,10 @@ def main():
     forward_refs = find_forward_refs(chunks, nodes)
     write_forward_refs_md(forward_refs, FORWARD_REFS_FILE, now)
 
+    # Relation edges from explicit [relation] lines + spaCy SVO
+    memory_dir = _WS / "memory"
+    relation_edges = extract_relation_edges(memory_dir, nodes)
+
     (OUT_DIR / "memory_graph.json").write_text(
         json.dumps(
             {
@@ -427,8 +545,10 @@ def main():
                 "params": vars(args),
                 "node_count": len(nodes),
                 "edge_count": len(edge_list),
+                "relation_edge_count": len(relation_edges),
                 "nodes": nodes,
                 "edges": edge_list,
+                "relation_edges": relation_edges,
                 "forward_refs": forward_refs,
             },
             indent=2,
