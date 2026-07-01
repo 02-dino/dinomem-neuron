@@ -451,6 +451,7 @@ DINOMEM_BODY=$(cat <<'DINOMEM_NEURON_AGENTS_BODY'
     - project_estimate: request trips project gate (see project_note.estimate) -> auto-write project _note_ before starting
   guardrail: only auto-note if a concrete done_when is writable; if not checkable, do not note (anti-spam)
   uncertain: still ask before noting personal/ambiguous items; self-commitments + project plans do not need asking
+  upgrade: note has steps listed → write type: project directly; never write task_bound when steps exist
 
 ## investigate_before_act
   purpose: no mutation or factual claim about code/config/system without live verification (feeds project_note.estimate)
