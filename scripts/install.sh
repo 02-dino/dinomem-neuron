@@ -438,10 +438,10 @@ DINOMEM_BODY=$(cat <<'DINOMEM_NEURON_AGENTS_BODY'
   workflow: save _note_<slug>.md → extract date/time → ask if missing → python3 tools/calendar_tool.py create "<title>" --date <YYYY-MM-DD> [--time HH:MM] --note _note_<slug>.md [--reminder popup:30] [--attendee email] → confirm
   skip_if: no date/time implied | user says no calendar
 
-## session_deep_recall
-  trigger: memory_search returns thin/uncertain result (few hits, [uncertain] tag, or low confidence) AND memory file date < 7 days old AND user intent requires detail
-  action: python3 tools/session_search.py "<query>" --k 5
-  skip: do not call session_search every turn — only when memory_search result is clearly insufficient
+## memory_tools
+  memory_search: simple recall — facts, preferences, decisions, context; default for most queries
+  session_search: python3 tools/session_search.py; when memory_search thin/uncertain AND session <7d old AND transcript detail needed
+  graph_search: tools/graph_search.py; when complex relational query; fallback: memory_search; skip when relation_edges not yet populated
 
 ## auto_note
   purpose: create _note_ files without explicit user prompt; reduce reliance on user asking (extends base memory_pin.transient)
