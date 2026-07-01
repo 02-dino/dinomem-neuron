@@ -133,6 +133,21 @@ def snippet(text, n=90):
     return t[:n] + ("…" if len(t) > n else "")
 
 
+def extract_title(text, maxlen=48):
+    """Extract a clean human-readable title from a memory chunk."""
+    import re
+    t = " ".join(text.split())
+    # Strip leading markers: - [valid], - [pattern], ## Decisions, # 2026-06-01, etc.
+    t = re.sub(r'^[-#\s]*\[(valid|pattern|factual|preference|uncertain|invalidated|stale)[^\]]*\]\s*', '', t)
+    t = re.sub(r'^#+\s*', '', t)  # markdown headings
+    t = re.sub(r'^[-*\s]+', '', t)  # list markers
+    t = t.strip()
+    # If still looks like a date header, use filename-style label
+    if re.match(r'^20\d\d-\d\d-\d\d', t):
+        return t[:10]  # just the date
+    return t[:maxlen] if t else snippet(text, maxlen)
+
+
 def build_graph(chunks, topk, threshold, cross_file_only, mutual=False):
     units = [normalize(c["vec"]) for c in chunks]
     n = len(chunks)
@@ -268,6 +283,7 @@ def main():
             "file": short_path(c["path"]),
             "lines": [c["start"], c["end"]],
             "degree": degree.get(i, 0),
+            "title": extract_title(c["text"]),
             "snippet": snippet(c["text"], 140),
         }
         for i, c in enumerate(chunks)
