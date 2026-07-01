@@ -268,6 +268,45 @@ def extract_title(text, maxlen=48):
     return t[:maxlen] if t else snippet(text, maxlen)
 
 
+def extract_entity_nodes(memory_dir):
+    """Scan memory/*.md for [entity] lines and return deduplicated entity nodes.
+
+    Each [entity] line has the form:
+      [entity] Name | type: person|project|tool|concept|org
+
+    Returns list of dicts: {"name": str, "type": str, "mentions": int}
+    sorted by mentions descending.
+    """
+    ENTITY_RE = re.compile(
+        r'^\[entity\]\s*(.+?)\s*\|\s*type:\s*(\S+)\s*$'
+    )
+    # name (lowercased) -> {name, type, mentions}
+    seen = {}
+    md_files = sorted(Path(memory_dir).glob("*.md"))
+    for md_file in md_files:
+        if md_file.name in {"MEMORY.md", "auto_promoted.md"}:
+            continue
+        try:
+            lines = md_file.read_text(encoding="utf-8").splitlines()
+        except Exception:
+            continue
+        for line in lines:
+            m = ENTITY_RE.match(line.strip())
+            if not m:
+                continue
+            try:
+                name = m.group(1).strip()
+                etype = m.group(2).strip()
+                key = name.lower()
+                if key in seen:
+                    seen[key]["mentions"] += 1
+                else:
+                    seen[key] = {"name": name, "type": etype, "mentions": 1}
+            except Exception:
+                continue  # graceful: skip malformed lines
+    return sorted(seen.values(), key=lambda x: x["mentions"], reverse=True)
+
+
 def extract_relation_edges(memory_dir, nodes):
     """Scan memory/*.md for [relation] lines and build typed edges.
 
@@ -538,6 +577,27 @@ def main():
     memory_dir = _WS / "memory"
     relation_edges = extract_relation_edges(memory_dir, nodes)
 
+    # Entity nodes from explicit [entity] lines + entity→chunk edges
+    entity_nodes = extract_entity_nodes(memory_dir)
+    entity_edges = []
+    if entity_nodes and nodes:
+        from difflib import SequenceMatcher
+        node_texts = [
+            (n["title"] + " " + n["snippet"]).lower()
+            for n in nodes
+        ]
+        for ent in entity_nodes:
+            name_lower = ent["name"].lower()
+            for idx, nt in enumerate(node_texts):
+                score = SequenceMatcher(None, name_lower, nt[:len(name_lower) + 30]).ratio()
+                if score >= 0.75:
+                    entity_edges.append({
+                        "type": "entity_ref",
+                        "entity": ent["name"],
+                        "node_idx": idx,
+                        "confidence": 0.85,
+                    })
+
     (OUT_DIR / "memory_graph.json").write_text(
         json.dumps(
             {
@@ -546,9 +606,13 @@ def main():
                 "node_count": len(nodes),
                 "edge_count": len(edge_list),
                 "relation_edge_count": len(relation_edges),
+                "entity_node_count": len(entity_nodes),
+                "entity_edge_count": len(entity_edges),
                 "nodes": nodes,
                 "edges": edge_list,
                 "relation_edges": relation_edges,
+                "entity_nodes": entity_nodes,
+                "entity_edges": entity_edges,
                 "forward_refs": forward_refs,
             },
             indent=2,
@@ -588,6 +652,7 @@ def main():
     print(f"   {OUT_DIR/'memory_graph.md'}")
     if forward_refs:
         print(f"   {len(forward_refs)} forward reference(s) found → {FORWARD_REFS_FILE}")
+    print(f"   {len(entity_nodes)} entity node(s) extracted")
 
 
 

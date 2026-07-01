@@ -525,7 +525,8 @@ Each object in the array must have this structure:
   "operational": ["[operational] exact names/paths/values + behavioral default"],
   "user_preferences": ["permanent user trait or boundary"],
   "topics": ["#hashtag"],
-  "relations": ["Subject → verb → Object"]
+  "relations": ["Subject → verb → Object"],
+  "entities": ["Name | type: person|project|tool|concept|org"]
 }}
 
 Rules:
@@ -536,6 +537,7 @@ Rules:
 - [operational] = specific and actionable, end with [ctx:max 5 words]
 - [decision] and [correction] = end with [ctx:max 5 words]
 - [relation] = explicit relationship between two named concepts: "Subject → verb → Object" format. Only extract when relationship is clear and non-trivial. Examples: "Project Advancer → depends on → sessions_spawn", "Komunitech pricing → affects → workshop conversion rate", "memory_graph.py → reads from → memory/*.md". Max 3 per archive. Skip obvious/trivial ones.
+- [entity] = named concept worth tracking as a node: "Name | type: person|project|tool|concept|org". Only extract proper nouns, named tools, projects, people, orgs. Skip generic terms. Max 5 per archive.
 - Return empty arrays if nothing worth remembering for that archive
 - JSON array only, no explanation outside JSON"""
     log(f"   🔄 Batch analyzing {len(included)} archives: {archive_list}...")
@@ -573,7 +575,8 @@ Rules:
                 'operational': item.get('operational', []),
                 'user_preferences': item.get('user_preferences', []),
                 'topics': item.get('topics', []),
-                'relations': item.get('relations', [])
+                'relations': item.get('relations', []),
+                'entities': item.get('entities', [])
             }
             if has_content:
                 log(f"   ✅ {summary['archive']}: {len(summary['insights'])} insights, {len(summary['decisions'])} decisions, {len(summary['corrections'])} corrections, {len(summary['operational'])} operational")
@@ -630,7 +633,8 @@ Required JSON structure:
     "What you learned about the user's style, preferences, or boundaries — permanent traits only"
   ],
   "topics": ["#hashtag topics covered, lowercase, no spaces"],
-  "relations": ["Subject → verb → Object"]
+  "relations": ["Subject → verb → Object"],
+  "entities": ["Name | type: person|project|tool|concept|org"]
 }}
 
 Rules:
@@ -645,6 +649,7 @@ Rules:
 - [operational] items MUST be specific and actionable: exact names, paths, values — NOT vague descriptions
 - EVERY [operational], [decision], [correction] item MUST end with a [ctx:...] tag: one short phrase (max 5 words) describing the session context. Example: [ctx:github push session], [ctx:cron restore fix], [ctx:user correction]. Keep it minimal.
 - [relation] = explicit relationship between two named concepts: "Subject → verb → Object" format. Only extract when relationship is clear and non-trivial. Examples: "Project Advancer → depends on → sessions_spawn", "Komunitech pricing → affects → workshop conversion rate", "memory_graph.py → reads from → memory/*.md". Max 3 per archive. Skip obvious/trivial ones.
+- [entity] = named concept worth tracking as a node: "Name | type: person|project|tool|concept|org". Only extract proper nouns, named tools, projects, people, orgs. Skip generic terms. Max 5 per archive.
 - Return empty arrays if nothing is worth remembering
 - No markdown inside JSON values, plain text only
 - Focus on RECALLABLE knowledge, not operational logs
@@ -676,7 +681,8 @@ Rules:
             'operational': llm_output.get('operational', []),
             'user_preferences': llm_output.get('user_preferences', []),
             'topics': llm_output.get('topics', []),
-            'relations': llm_output.get('relations', [])
+            'relations': llm_output.get('relations', []),
+            'entities': llm_output.get('entities', [])
         }
         has_content = (
             summary['context'].strip() or
@@ -900,6 +906,13 @@ def write_memory_file(summary, dedup=True):
         for r in relations
         if r.strip()
     ]
+    entities = summary.get('entities', [])
+    # Prefix entities with [entity] tag if not already present
+    entities = [
+        e if e.startswith('[entity]') else f'[entity] {e}'
+        for e in entities
+        if e.strip()
+    ]
 
     # TTL tagging
     from datetime import timedelta
@@ -931,6 +944,7 @@ def write_memory_file(summary, dedup=True):
         ('operational', operational),
         ('preference', prefs),
         ('relation', relations),
+        ('entity', entities),
     ]
 
     written = 0
