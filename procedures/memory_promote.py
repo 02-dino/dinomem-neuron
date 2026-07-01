@@ -50,17 +50,7 @@ try:
 except ImportError:
     HAS_LLM = False
 
-# Workspace resolution (priority): DINOMEM_WORKSPACE env var > install-time sed
-# substitution of DINOMEM_WORKSPACE_PLACEHOLDER > self-locate from this file's
-# location (procedures/ is one level under the workspace root). Self-locate is a
-# safety net if the install-time sed was skipped/failed (manual copy, partial
-# install, moved workspace dir).
-import os as _os
-_WS_DEFAULT = "DINOMEM_WORKSPACE_PLACEHOLDER"
-if _WS_DEFAULT.startswith("DINOMEM_"):  # sed did not run
-    _WS_DEFAULT = str(Path(__file__).resolve().parent.parent)
-BASE = Path(_os.environ.get("DINOMEM_WORKSPACE", _WS_DEFAULT))
-WORKSPACE_ROOT = BASE  # alias used elsewhere in this module
+BASE = Path("/root/.openclaw/workspace-analyst")
 L3_DIR = BASE / "kb/memory_neuron/l3_synthesis"
 L4_DIR = BASE / "kb/memory_neuron/l4_promoted"
 TOPICS_DIR = BASE / "topics"
@@ -215,7 +205,7 @@ Answer with exactly one word: valid OR invalidated
 - valid: still accurate, still useful for the agent to remember
 - invalidated: outdated, proven wrong, or no longer applicable"""
 
-    ok, result = _call_llm(prompt, max_tokens=10, reasoning=True)
+    ok, result = _call_llm(prompt, max_tokens=10)
     if not ok:
         return "skip"
     answer = result.strip().lower()
@@ -454,6 +444,20 @@ def run(dry_run=False):
         if new_handoff:
             CONSUMED_FILE.write_text(json.dumps({"sig": handoff_sig, "ts": now_iso()}),
                                      encoding="utf-8")
+        # Feature 3: Skill Promotion — run after every promote cycle to catch
+        # any project notes that flipped status:done since last run.
+        try:
+            import subprocess
+            result = subprocess.run(
+                [sys.executable, str(Path(__file__).parent / "skill_extract.py")],
+                capture_output=True, text=True, timeout=30
+            )
+            if result.stdout.strip():
+                print(f"  [skill_extract] {result.stdout.strip()}")
+            if result.returncode != 0 and result.stderr.strip():
+                print(f"  [skill_extract warn] {result.stderr.strip()[:200]}")
+        except Exception as _se:
+            print(f"  [skill_extract skip] {_se}")
 
     consumed_note = "" if new_handoff else " [handoff already consumed — intake skipped]"
     n_prov = sum(1 for e in state.values() if e.get("status") == "provisional")
@@ -515,14 +519,4 @@ def main():
 
 
 if __name__ == "__main__":
-    # ---- dinomem-neuron license guard ----
-    import os as _os, sys as _sys
-    _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
-    try:
-        from license_check import enforce_license as _enforce_license
-        _enforce_license(_os.path.basename(__file__))
-    except SystemExit:
-        raise
-    except Exception:
-        pass
     main()
