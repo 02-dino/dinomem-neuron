@@ -161,6 +161,7 @@ def docs_search(
     section_filter: Optional[str] = None,
     max_chars: Optional[int] = None,
     hyde: bool = True,
+    graph: bool = True,
 ) -> List[Dict]:
     """
     Semantic search over indexed long-form documents.
@@ -171,14 +172,17 @@ def docs_search(
         doc_filter:     Filter by document title/filename substring (case-insensitive)
         section_filter: Filter by section title substring (case-insensitive)
         max_chars:      Truncate chunk content to N chars (None = no limit)
+        graph:          Augment results with entity-graph traversal (default True)
 
     Returns:
         List of dicts: {content, score, metadata: {doc_title, section_title,
                         section_level, chunk_index, source_file, date, doc_type}}
+        Graph-retrieved results include graph_retrieved=True and graph_overlap count.
 
     Example:
         docs_search("force majeure", k=5)
         docs_search("pasal 1", doc_filter="uu-cipta-kerja", k=3)
+        docs_search("entity", graph=False)  # skip graph traversal
     """
     # HyDE: expand query with hypothetical document passage for better recall
     search_query = _hyde_expand(query) if hyde else query
@@ -239,7 +243,123 @@ def docs_search(
         if len(raw_wider) < fetch_k:
             break  # corpus exhausted — no more chunks to fetch
 
+    # Graph-augmented retrieval: find related chunks via entity/relation edges
+    if graph and results:
+        results = _graph_expand(results, k=k)
+
     return results
+
+# ── Graph-augmented retrieval ────────────────────────────────────────────────
+DOCS_ENTITY_GRAPH = WORKSPACE / "kb" / "docs_entity_graph.json"
+
+_entity_graph_cache: Optional[Dict] = None
+_entity_graph_mtime: float = 0.0
+
+def _load_entity_graph() -> Optional[Dict]:
+    """Load docs_entity_graph.json with mtime-based cache invalidation."""
+    global _entity_graph_cache, _entity_graph_mtime
+    if not DOCS_ENTITY_GRAPH.exists():
+        return None
+    try:
+        mtime = DOCS_ENTITY_GRAPH.stat().st_mtime
+        if _entity_graph_cache is not None and mtime == _entity_graph_mtime:
+            return _entity_graph_cache
+        with open(DOCS_ENTITY_GRAPH) as f:
+            _entity_graph_cache = json.load(f)
+        _entity_graph_mtime = mtime
+        return _entity_graph_cache
+    except Exception:
+        return None
+
+def _graph_expand(results: List[Dict], k: int) -> List[Dict]:
+    """Traverse docs_entity_graph to find related chunks not in top-k results.
+
+    Strategy:
+    1. Collect entities mentioned in top-k result chunks.
+    2. Find other chunks that share those entities (entity_in_chunk edges).
+    3. Score candidate chunks by entity overlap count.
+    4. Append top candidates (not already in results) up to k extra chunks.
+    """
+    graph = _load_entity_graph()
+    if not graph:
+        return results
+
+    chunk_entity_map = graph.get("chunk_entity_map", {})
+
+    # Build chunk_key → source_file + chunk_index mapping from results
+    result_chunk_keys: set = set()
+    for r in results:
+        src = r["metadata"].get("source_file", "")
+        idx = r["metadata"].get("chunk_index", 0)
+        if src:
+            result_chunk_keys.add(f"{src}::{idx}")
+
+    # Collect entity names from result chunks
+    result_entities: set = set()
+    for ck in result_chunk_keys:
+        entry = chunk_entity_map.get(ck, {})
+        for ent in entry.get("entities", []):
+            result_entities.add(ent.lower())
+
+    if not result_entities:
+        return results
+
+    # Score all other chunks by entity overlap
+    candidate_scores: Dict[str, int] = {}
+    for ck, entry in chunk_entity_map.items():
+        if ck in result_chunk_keys:
+            continue
+        overlap = sum(
+            1 for ent in entry.get("entities", [])
+            if ent.lower() in result_entities
+        )
+        if overlap > 0:
+            candidate_scores[ck] = overlap
+
+    if not candidate_scores:
+        return results
+
+    # Sort candidates by overlap score descending; take top k
+    top_candidates = sorted(candidate_scores, key=lambda x: -candidate_scores[x])[:k]
+
+    # Fetch candidate chunk content from vectorstore
+    vs = _get_vectorstore()
+    all_data = vs.get()
+    docs_content = all_data.get("documents", [])
+    docs_meta = all_data.get("metadatas", [])
+
+    # Build lookup: chunk_key → (content, metadata)
+    chunk_lookup: Dict[str, tuple] = {}
+    for content, meta in zip(docs_content, docs_meta):
+        src = meta.get("source_file", "")
+        idx = meta.get("chunk_index", 0)
+        ck = f"{src}::{idx}"
+        if ck not in chunk_lookup:
+            chunk_lookup[ck] = (content, meta)
+
+    # Build graph-augmented results
+    graph_results = []
+    for ck in top_candidates:
+        if ck not in chunk_lookup:
+            continue
+        content, meta = chunk_lookup[ck]
+        graph_results.append({
+            "content": content,
+            "score": 0.0,  # graph-retrieved, no vector score
+            "graph_retrieved": True,
+            "graph_overlap": candidate_scores[ck],
+            "metadata": {
+                "doc_title": meta.get("title", ""),
+                "section_title": meta.get("section_title", ""),
+                "section_level": meta.get("section_level", 0),
+                "chunk_index": meta.get("chunk_index", 0),
+                "source_file": meta.get("source_file", ""),
+                "date": meta.get("date", ""),
+                "doc_type": meta.get("doc_type", "document"),
+            }
+        })
+
+    return results + graph_results
 
 # ── List docs ─────────────────────────────────────────────────────────────────
 def list_docs() -> List[Dict]:

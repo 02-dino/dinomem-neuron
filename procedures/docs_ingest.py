@@ -22,8 +22,10 @@ Usage:
   python3 procedures/docs_ingest.py --dry-run     # show what would be ingested
 """
 
+import json
 import os
 import re
+import subprocess
 import sys
 import yaml
 import hashlib
@@ -41,6 +43,7 @@ from langchain_core.documents import Document
 WORKSPACE = Path(__file__).parent.parent
 DOCS_DIR = WORKSPACE / "docs"
 DB_PATH = str(WORKSPACE / "kb/vector_db_docs")
+DOCS_ENTITY_GRAPH = WORKSPACE / "kb" / "docs_entity_graph.json"
 LOG_FILE = WORKSPACE / "logs/docs_ingest.log"
 
 # Resolve the local model snapshot dynamically (see docs_search.py). Must match
@@ -219,6 +222,205 @@ def make_chunk_doc(chunk_text: str, section_title: str, section_level: int,
 
     return Document(page_content=enriched, metadata=meta)
 
+# ── LLM helpers (reuse extract_memory.py pattern) ───────────────────────────
+def _get_openclaw_model():
+    """Read default model from openclaw.json."""
+    cfg = Path.home() / ".openclaw" / "openclaw.json"
+    if cfg.exists():
+        try:
+            with open(cfg) as f:
+                c = json.load(f)
+            m = c.get('agents', {}).get('defaults', {}).get('model', {}).get('primary')
+            if m:
+                return m
+        except Exception:
+            pass
+    return None
+
+_NO_REASONING_MODEL = os.environ.get(
+    "DINOMEM_NO_REASONING_MODEL", "ninerouter/gc/gemini-2.5-flash"
+)
+
+def _call_llm(prompt: str, max_tokens: int = 1500, model: str = None) -> Tuple[bool, str]:
+    """Call LLM via OpenClaw gateway (cheap model by default)."""
+    import shutil as _shutil
+    _oc = _shutil.which("openclaw") or "/home/linuxbrew/.linuxbrew/bin/openclaw"
+    _model = model or _NO_REASONING_MODEL
+    _cmd = [_oc, "capability", "model", "run",
+            "--prompt", prompt, "--gateway", "--json",
+            "--model", _model]
+    try:
+        result = subprocess.run(_cmd, capture_output=True, text=True, timeout=90)
+        if result.returncode == 0:
+            out = json.loads(result.stdout)
+            if out.get("ok") and out.get("outputs"):
+                text = out["outputs"][0].get("text", "")
+                if text:
+                    return True, text
+        log(f"  ⚠️  LLM call failed: {result.stderr[:200]}")
+    except subprocess.TimeoutExpired:
+        log("  ⚠️  LLM call timed out")
+    except Exception as e:
+        log(f"  ⚠️  LLM call error: {e}")
+    return False, ""
+
+
+# ── Entity + relation extraction ──────────────────────────────────────────────
+_ENTITY_PROMPT_TMPL = """\
+You are an entity and relation extractor for a document knowledge graph.
+
+Document: {doc_title}
+Section: {section_title}
+
+Text:
+{chunk_text}
+
+Extract:
+1. Named entities (people, organizations, tools, concepts, projects, laws, places).
+2. Relations between entities in this text.
+
+Respond ONLY with valid JSON (no markdown fences, no explanation):
+{{
+  "entities": [
+    {{"name": "<entity name>", "type": "person|org|tool|concept|project|law|place|other"}}
+  ],
+  "relations": [
+    {{"subject": "<entity name>", "predicate": "<verb phrase>", "object": "<entity name>"}}
+  ]
+}}
+
+Rules:
+- Only include entities clearly present in the text.
+- Normalize names (title case, no trailing punctuation).
+- Relations must use entity names from the entities list.
+- If no entities found, return {{"entities": [], "relations": []}}.
+"""
+
+def extract_entities_relations(chunk_text: str, doc_title: str,
+                               section_title: str) -> Dict:
+    """Call LLM to extract entities + relations from one chunk.
+    Returns {entities: [...], relations: [...]} or empty on failure."""
+    prompt = _ENTITY_PROMPT_TMPL.format(
+        doc_title=doc_title,
+        section_title=section_title or "(no section)",
+        chunk_text=chunk_text[:3000],  # cap to avoid token overflow
+    )
+    ok, text = _call_llm(prompt, max_tokens=800)
+    if not ok or not text.strip():
+        return {"entities": [], "relations": []}
+    # Strip markdown fences if model adds them
+    text = re.sub(r'^```[a-z]*\n?', '', text.strip())
+    text = re.sub(r'\n?```$', '', text.strip())
+    try:
+        data = json.loads(text)
+        if isinstance(data, dict):
+            data.setdefault("entities", [])
+            data.setdefault("relations", [])
+            return data
+    except json.JSONDecodeError:
+        log(f"  ⚠️  Entity extraction JSON parse failed for section '{section_title}'")
+    return {"entities": [], "relations": []}
+
+
+# ── Graph persistence ─────────────────────────────────────────────────────────
+def load_entity_graph() -> Dict:
+    """Load existing docs_entity_graph.json or return empty structure."""
+    if DOCS_ENTITY_GRAPH.exists():
+        try:
+            with open(DOCS_ENTITY_GRAPH) as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {"nodes": [], "edges": [], "chunk_entity_map": {}}
+
+
+def save_entity_graph(graph: Dict):
+    """Persist graph to kb/docs_entity_graph.json."""
+    DOCS_ENTITY_GRAPH.parent.mkdir(parents=True, exist_ok=True)
+    with open(DOCS_ENTITY_GRAPH, 'w') as f:
+        json.dump(graph, f, indent=2, ensure_ascii=False)
+
+
+def merge_into_graph(graph: Dict, doc_title: str, source_file: str,
+                     chunk_idx: int, section_title: str,
+                     extracted: Dict) -> Dict:
+    """Merge extracted entities + relations into the graph dict in-place."""
+    chunk_key = f"{source_file}::{chunk_idx}"
+
+    # Build entity name → node index map (existing)
+    name_to_idx: Dict[str, int] = {}
+    for i, node in enumerate(graph["nodes"]):
+        if node.get("type") == "entity":
+            name_to_idx[node["name"].lower()] = i
+
+    # Upsert entity nodes
+    chunk_entity_names = []
+    for ent in extracted.get("entities", []):
+        name = ent.get("name", "").strip()
+        etype = ent.get("type", "other")
+        if not name:
+            continue
+        key = name.lower()
+        if key not in name_to_idx:
+            idx = len(graph["nodes"])
+            graph["nodes"].append({
+                "type": "entity",
+                "name": name,
+                "entity_type": etype,
+                "first_seen_doc": doc_title,
+                "first_seen_file": source_file,
+            })
+            name_to_idx[key] = idx
+        else:
+            # Update entity_type if currently 'other'
+            node = graph["nodes"][name_to_idx[key]]
+            if node.get("entity_type") == "other" and etype != "other":
+                node["entity_type"] = etype
+        chunk_entity_names.append(name)
+
+    # Record which entities appear in this chunk
+    graph["chunk_entity_map"][chunk_key] = {
+        "doc_title": doc_title,
+        "section_title": section_title,
+        "entities": chunk_entity_names,
+    }
+
+    # Add entity→chunk edges
+    for name in chunk_entity_names:
+        key = name.lower()
+        if key in name_to_idx:
+            graph["edges"].append({
+                "type": "entity_in_chunk",
+                "entity_name": name,
+                "entity_idx": name_to_idx[key],
+                "chunk_key": chunk_key,
+                "doc_title": doc_title,
+                "section_title": section_title,
+            })
+
+    # Add relation edges
+    for rel in extracted.get("relations", []):
+        subj = rel.get("subject", "").strip()
+        pred = rel.get("predicate", "").strip()
+        obj = rel.get("object", "").strip()
+        if not subj or not pred or not obj:
+            continue
+        a_idx = name_to_idx.get(subj.lower())
+        b_idx = name_to_idx.get(obj.lower())
+        if a_idx is None or b_idx is None:
+            continue
+        graph["edges"].append({
+            "type": "relation",
+            "label": pred,
+            "a": a_idx,
+            "b": b_idx,
+            "chunk_key": chunk_key,
+            "doc_title": doc_title,
+        })
+
+    return graph
+
+
 # ── Load single file ──────────────────────────────────────────────────────────
 # ── Format extraction (PDF/docx/etc → markdown) ────────────────────────────
 import subprocess
@@ -347,8 +549,12 @@ def get_existing_hashes(db: Chroma) -> Dict[str, str]:
     return hashes
 
 def ingest_files(paths: List[Path], db: Chroma, existing_hashes: Dict[str, str],
-                 dry_run: bool = False) -> Dict[str, int]:
-    stats = {'added': 0, 'updated': 0, 'skipped': 0, 'errors': 0}
+                 dry_run: bool = False, skip_entity_extraction: bool = False) -> Dict[str, int]:
+    stats = {'added': 0, 'updated': 0, 'skipped': 0, 'errors': 0,
+             'entities_extracted': 0}
+
+    # Load existing entity graph once; merge incrementally
+    graph = load_entity_graph() if not dry_run else None
 
     for path in paths:
         try:
@@ -375,11 +581,40 @@ def ingest_files(paths: List[Path], db: Chroma, existing_hashes: Dict[str, str],
                     db.delete(where={"source_file": src_key})
                 db.add_documents(chunks)
 
+                # ── Entity + relation extraction ──────────────────────────
+                if not skip_entity_extraction:
+                    doc_title = doc_meta.get('title', path.stem)
+                    log(f"  Extracting entities from {len(chunks)} chunks ({doc_title})...")
+                    for chunk_doc in chunks:
+                        chunk_idx = chunk_doc.metadata.get('chunk_index', 0)
+                        section_title = chunk_doc.metadata.get('section_title', '')
+                        # Strip the metadata prefix from enriched content
+                        raw_text = chunk_doc.page_content
+                        # Content is: "prefix\n\nchunk_text" — extract chunk_text
+                        if '\n\n' in raw_text:
+                            raw_text = raw_text.split('\n\n', 1)[1]
+                        extracted = extract_entities_relations(
+                            raw_text, doc_title, section_title
+                        )
+                        n_ents = len(extracted.get('entities', []))
+                        if n_ents:
+                            stats['entities_extracted'] += n_ents
+                            merge_into_graph(
+                                graph, doc_title, src_key,
+                                chunk_idx, section_title, extracted
+                            )
+
             stats['updated' if is_update else 'added'] += 1
 
         except Exception as e:
             log(f"  ERROR: {path.name}: {e}")
             stats['errors'] += 1
+
+    # Persist updated graph
+    if not dry_run and graph is not None:
+        save_entity_graph(graph)
+        log(f"  Entity graph saved → {DOCS_ENTITY_GRAPH} "
+            f"({len(graph['nodes'])} nodes, {len(graph['edges'])} edges)")
 
     return stats
 
@@ -388,6 +623,8 @@ def main():
     parser = argparse.ArgumentParser(description='Ingest long-form docs into vector DB')
     parser.add_argument('--file', type=Path, help='Ingest single file')
     parser.add_argument('--dry-run', action='store_true', help='Show what would be ingested, write nothing')
+    parser.add_argument('--skip-entity-extraction', action='store_true',
+                        help='Skip LLM entity/relation extraction (faster, no graph update)')
     args = parser.parse_args()
 
     log("=" * 60)
@@ -429,10 +666,13 @@ def main():
 
     log(f"Files to check: {len(paths)}")
 
-    stats = ingest_files(paths, db, existing_hashes, dry_run=args.dry_run)
+    stats = ingest_files(paths, db, existing_hashes, dry_run=args.dry_run,
+                         skip_entity_extraction=args.skip_entity_extraction)
 
     log("=" * 60)
     log(f"Done — added: {stats['added']} | updated: {stats['updated']} | skipped: {stats['skipped']} | errors: {stats['errors']}")
+    if not args.dry_run and not args.skip_entity_extraction:
+        log(f"Entities extracted: {stats.get('entities_extracted', 0)} | Graph: {DOCS_ENTITY_GRAPH}")
     log(f"DB: {DB_PATH}")
 
 if __name__ == '__main__':
