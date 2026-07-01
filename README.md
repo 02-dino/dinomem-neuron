@@ -505,7 +505,7 @@ Optional flags:
 
 ## License
 
-Commercial — see LICENSE
+Commercial — see [LICENSE](LICENSE)
 
 ---
 

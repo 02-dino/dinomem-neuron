@@ -683,6 +683,80 @@ else
   ok "TOOLS.md wired"
 fi
 
+# ── Patch openclaw.json bootstrap caps ───────────────────────────────────────
+hr "OpenClaw config"
+OPENCLAW_JSON="${OPENCLAW_CONFIG:-$HOME/.openclaw/openclaw.json}"
+[ -f "$OPENCLAW_JSON" ] || OPENCLAW_JSON="$OPENCLAW_DIR/openclaw.json"
+if [ ! -f "$OPENCLAW_JSON" ]; then
+  warn "openclaw.json not found — skipping bootstrap cap patch"
+else
+  DINOMEM_DRY_RUN="$DRY_RUN" DINOMEM_OPENCLAW_JSON="$OPENCLAW_JSON" DINOMEM_WS="$WS" python3 - <<'PYEOF'
+import json, sys, os
+
+path = os.environ["DINOMEM_OPENCLAW_JSON"]
+with open(path) as f:
+    original = f.read()
+cfg = json.loads(original)
+
+changed = []
+
+agents = cfg.setdefault("agents", {})
+defaults = agents.setdefault("defaults", {})
+
+# bootstrapMaxChars / bootstrapTotalMaxChars -> raise caps to fit what dinomem-neuron
+# injects, so the policy blocks are never silently truncated. Measured, not a
+# fixed delta: read each root bootstrap file's ACTUAL size (the AGENTS.md/TOOLS.md
+# blocks have already been appended by this point in the script), and raise the
+# caps to max(existing_or_default, measured + buffer). ONLY ever increases.
+import os
+FILE_DEFAULT = 20000
+TOTAL_DEFAULT = 60000
+FILE_BUFFER = 10000
+TOTAL_BUFFER = 10000
+SANITY_FILE = 100000
+try:
+    ws = os.environ["DINOMEM_WS"]
+    root_files = ["AGENTS.md", "SOUL.md", "IDENTITY.md", "TOOLS.md", "USER.md", "MEMORY.md"]
+    sizes = {}
+    for rf in root_files:
+        p = os.path.join(ws, rf)
+        if os.path.isfile(p):
+            sizes[rf] = os.path.getsize(p)
+    if sizes:
+        max_file = max(sizes.values())
+        total = sum(sizes.values())
+        biggest = max(sizes, key=sizes.get)
+        if max_file > SANITY_FILE:
+            print(f"  \033[33m[warn]\033[0m {biggest} is {max_file} chars (>100k) — raising cap anyway, but consider trimming; large bootstrap inflates every prompt.")
+        need_file = max_file + FILE_BUFFER
+        need_total = total + TOTAL_BUFFER
+        cur_file = defaults.get("bootstrapMaxChars", FILE_DEFAULT)
+        cur_total = defaults.get("bootstrapTotalMaxChars", TOTAL_DEFAULT)
+        new_file = max(cur_file, FILE_DEFAULT, need_file)
+        new_total = max(cur_total, TOTAL_DEFAULT, need_total)
+        if new_file != defaults.get("bootstrapMaxChars"):
+            defaults["bootstrapMaxChars"] = new_file
+            changed.append(f"bootstrapMaxChars -> {new_file} (fits largest root file {biggest}={max_file} + {FILE_BUFFER} buffer; raise-only)")
+        if new_total != defaults.get("bootstrapTotalMaxChars"):
+            defaults["bootstrapTotalMaxChars"] = new_total
+            changed.append(f"bootstrapTotalMaxChars -> {new_total} (fits all root files {total} + {TOTAL_BUFFER} buffer; raise-only)")
+except Exception as _e:
+    print(f"  \033[33m[warn]\033[0m bootstrap cap auto-raise skipped: {_e}")
+
+if changed and os.environ.get("DINOMEM_DRY_RUN") == "1":
+    for c in changed:
+        print(f"  \033[36m[plan]\033[0m patch openclaw.json: {c}")
+elif not changed:
+    print("  \033[33m[skip]\033[0m openclaw.json bootstrap caps already correct")
+else:
+    with open(path, "w") as f:
+        json.dump(cfg, f, indent=2)
+    for c in changed:
+        print(f"  \033[32m[ok]\033[0m   patched: {c}")
+    print("  \033[33m[warn]\033[0m Restart OpenClaw: openclaw gateway restart")
+PYEOF
+fi
+
 echo
 hr "done"
 echo "  dinomem-neuron installed for agent: $AGENT_ID"
