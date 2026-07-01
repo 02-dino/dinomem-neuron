@@ -480,6 +480,7 @@ DINOMEM_BODY=$(cat <<'DINOMEM_NEURON_AGENTS_BODY'
     loop: do current_step -> check session_status context%
     under_60: mark step [x], update resume_state, advance current_step, continue next step same turn
     over_60: checkpoint (write resume_state), stop cleanly, tell user step n/m done + context%; resume next turn/cron from current_step
+    spawn: if over_60 AND remaining steps > 2 AND sessions_spawn available -> spawn subagent with task=remaining steps + resume_state; subagent works in clean context; parent waits for completion event
     resume: new session reads note, jumps to current_step, resumes from resume_state ONLY (no chat-history reliance)
   mandatory: after every step rewrite resume_state so note is self-sufficient; reliability linchpin
   driver: hybrid -- user may say continue; else Project Advancer cron auto-advances in_progress notes (unattended, announces progress, pauses on destructive/external steps)
