@@ -519,4 +519,11 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        from run_log import RunLog as _RunLog
+        with _RunLog("memory_promote") as _log:
+            main()
+            _log.artifact("behavior_file", str(BEHAVIOR_FILE))
+            _log.artifact("state_file", str(STATE_FILE))
+    except ImportError:
+        main()

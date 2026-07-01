@@ -336,6 +336,8 @@ def main():
     print(f"   {OUT_DIR/'memory_graph.md'}")
 
 
+
+
 if __name__ == "__main__":
     # ---- dinomem-neuron license guard ----
     import os as _os, sys as _sys
@@ -347,4 +349,10 @@ if __name__ == "__main__":
         raise
     except Exception:
         pass
-    main()
+    try:
+        from run_log import RunLog as _RunLog
+        with _RunLog("memory_graph") as _log:
+            main()
+            _log.artifact("graph_json", str(OUT_DIR / "memory_graph.json"))
+    except ImportError:
+        main()

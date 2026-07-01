@@ -817,4 +817,11 @@ if __name__ == "__main__":
         raise
     except Exception:
         pass
-    main()
+    try:
+        from run_log import RunLog as _RunLog
+        with _RunLog("memory_synthesis") as _log:
+            main()
+            _log.artifact("synthesis_file", str(SYNTH_FILE))
+            _log.artifact("current_insights", str(CURRENT_INSIGHTS_FILE))
+    except ImportError:
+        main()
