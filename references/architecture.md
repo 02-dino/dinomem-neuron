@@ -108,6 +108,8 @@ date: YYYY-MM-DD
 done_when: <final artifact / all steps [x]>
 stale_after: YYYY-MM-DD
 current_step: <n>
+claimed_by: <run_id>          # set by Project Advancer on claim; blank when idle
+claimed_at: <ISO timestamp>   # time of claim; stale if >10min ago (auto-released)
 steps:
   - [ ] 1. <step> -- done_when: <check>
   - [ ] 2. ...
@@ -124,6 +126,8 @@ resume_state: <paths / decisions / assumptions the next turn needs to resume bli
 Resumption reads `resume_state` **only** — never conversation history. After every step the agent rewrites `resume_state` so the note stays self-sufficient. This is the reliability linchpin: a blind fresh session must be able to continue from the note alone.
 
 **Driver — hybrid** — the user can say "continue" to advance manually. If they don't, the **Project Advancer** cron (every 4h) sweeps `status: in_progress` project notes and advances them unattended, announcing progress to chat. A safety gate keeps autonomy honest: destructive or external steps (delete data, git push, send external messages, spend money, touch credentials) are **not** executed unattended — the project pauses and announces it is awaiting approval. Read/build/local-file steps proceed on their own. Once `done_when` is met, the base Daily Note Review cron deletes or promotes the note through the normal pipeline.
+
+**Atomic task claiming** — the Project Advancer writes `claimed_by` + `claimed_at` to a note before executing any step. If another Advancer instance fires while the first is running (overlapping 4h cron windows), it sees the claim and skips that note. Claims older than 10 minutes are considered stale and auto-released. The claim is cleared on step completion, context checkpoint, or safety-gate pause. This prevents double-advancement when two cron instances overlap.
 
 ## RAG — long-document ingest
 
