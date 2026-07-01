@@ -267,17 +267,29 @@ type: project
 status: in_progress | done
 done_when: <final artifact / all steps [x]>
 current_step: <n>
+claimed_by: <run_id>          # set by Project Advancer on claim; blank when idle
+claimed_at: <ISO timestamp>   # stale if >10min ago (auto-released)
 steps:
   - [ ] 1. <step> -- done_when: <check>
   - [ ] 2. ...
 resume_state: <paths / decisions the next turn needs to resume blind>
 ```
 
-- **Estimate gate** — at request time the agent classifies scope: `>3 files OR >5 sequential tool-steps OR research-then-build OR user says "project/build"`. Trip it → write a project note; else execute normally in one turn.
+- **Estimate gate** — at request time the agent classifies scope: `>3 files OR >5 sequential tool-steps OR research-then-build OR user says "project/build"`. Trip it → write a project note; else execute normally in one turn. Before starting, the agent estimates token cost `(files × 500) + (steps × 1000) + current_context_tokens` — if over 40% of remaining budget, the task is split into sub-tasks upfront.
 - **Execution loop** — do the current step, then read context budget via `session_status`. Under 60%: mark `[x]`, rewrite `resume_state`, advance, continue. Over 60%: checkpoint and stop cleanly, reporting `step n/m done`. Resumption reads `resume_state` **only** — never chat history — so a blind fresh session continues from the note alone.
 - **Driver (hybrid)** — the user can say "continue", or the **Project Advancer** cron (every 4h) sweeps `in_progress` projects and advances them unattended, announcing progress. A safety gate keeps autonomy honest: destructive or external steps (delete data, git push, external messages, spend money, credentials) are **not** run unattended — the project pauses and announces it's awaiting approval. Read/build/local-file steps proceed on their own.
+- **Atomic task claiming** — before executing any step, the Advancer writes `claimed_by` + `claimed_at` to the note. If two Advancer instances overlap, the second sees the claim and skips. Claims older than 10 minutes are stale and auto-released.
+- **Context watchdog** — a system cron (`context_watchdog.py`, every 5min, zero LLM) checks all active sessions via REST. If context% exceeds 60%, it sends a checkpoint wake event to that session. Catches overflow cases that the estimate gate missed.
 
 Resolution is unchanged: once `done_when` is met, the base Daily Note Review cron deletes or promotes the note. See [`references/architecture.md`](references/architecture.md) for the full spec.
+
+### Skill Promotion
+
+When a project note flips `status: done`, `skill_extract.py` runs automatically and distills the completed steps into a reusable skill candidate under `kb/memory_neuron/skill_candidates/<slug>/`. Each candidate tracks a `convergence_count` — how many times a similar procedure has been completed. At **convergence ≥ 3**, the candidate is promoted to `skills/<name>/SKILL.md` and becomes available as a named skill.
+
+- **Review mode** (`--review <slug>`) — re-extracts from the source note and overwrites an existing skill; used when a skill is flagged as stale or broken.
+- **Prune mode** (`--prune`) — deletes zero-convergence candidates older than 60 days.
+- Safety scan flags any step containing destructive keywords (delete, rm, truncate, etc.) with an inline ⚠️ warning in the generated SKILL.md.
 
 ### Session deep recall
 
@@ -346,7 +358,9 @@ All signals must align. One-off or low-confidence insights stay in synthesis —
 | Daily 4:00 UTC | `docs_ingest.py` | Re-ingest new/changed docs |
 | Daily 7:00 UTC | `calendar_sync.py` | Auto-delete `_note_` files linked to past events |
 | Every 4h | Project Advancer (OpenClaw cron) | Auto-advance `type: project` notes one step/run, unattended, announce progress |
-| Weekly Sun 4:00 UTC | `memory_promote.py` + `generate_topic_index.py` | L4 — Knowledge Promotion + MEMORY.md enrichment |
+| Weekly Sun 4:00 UTC | `memory_promote.py` + `generate_topic_index.py` | L4 — Knowledge Promotion + MEMORY.md enrichment; triggers `skill_extract.py` after each run |
+| On project completion | `skill_extract.py` | Skill Promotion — extracts reusable procedures from done project notes into `skills/` candidates; promotes at convergence ≥ 3 |
+| Every 5 min | `context_watchdog.py` | Context budget watchdog — REST-only, no LLM; sends checkpoint wake to sessions >60% context |
 
 ---
 
@@ -384,12 +398,15 @@ All signals must align. One-off or low-confidence insights stay in synthesis —
 │   ├── contradiction_check.py  # L3 — contradiction detection
 │   ├── generate_topic_index.py # L4 — topic index + MEMORY.md enrichment
 │   ├── docs_ingest.py          # RAG — ingest long docs
-│   └── calendar_sync.py        # Calendar — auto-resolve past _note_ files
+│   ├── calendar_sync.py        # Calendar — auto-resolve past _note_ files
+│   ├── skill_extract.py        # Skill Promotion — extract reusable procedures from done project notes
+│   └── run_log.py              # Per-run audit trail — append-only JSONL log for all cron scripts
 ├── tools/
 │   ├── docs_search.py          # RAG — semantic search over long docs (HyDE query expansion enabled by default)
 │   ├── cache_utils.py          # Shared cache utility
 │   └── calendar_tool.py        # Calendar — create/list/delete events
 ├── scripts/
+│   ├── context_watchdog.py     # Context budget watchdog — REST-only, no LLM, system cron every 5min
 │   └── calendar_oauth_setup.py # Calendar — one-time OAuth setup
 ├── topics/
 │   ├── INDEX.md                # Auto-generated topic tree (do not edit)
