@@ -10,19 +10,19 @@ set -euo pipefail
 SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WS="${OPENCLAW_WORKSPACE:-$HOME/.openclaw/workspace}"
 AGENT_ID=""
-OWNER_HANDLE=""
+OWNER_MENTION=""
 DO_CRON=1
 FORCE=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --workspace)     WS="$2"; shift 2 ;;
-    --agent-id)      AGENT_ID="$2"; shift 2 ;;
-    --owner-handle)  OWNER_HANDLE="$2"; shift 2 ;;
-    --no-cron)       DO_CRON=0; shift ;;
-    --force)         FORCE=1; shift ;;
-    --agree)         LICENSE_AGREED=1; shift ;;
-    -h|--help)       grep -E '^#( |$)' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --workspace)      WS="$2"; shift 2 ;;
+    --agent-id)       AGENT_ID="$2"; shift 2 ;;
+    --owner-mention)  OWNER_MENTION="$2"; shift 2 ;;
+    --no-cron)        DO_CRON=0; shift ;;
+    --force)          FORCE=1; shift ;;
+    --agree)          LICENSE_AGREED=1; shift ;;
+    -h|--help)        grep -E '^#( |$)' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
 done
@@ -60,6 +60,24 @@ fi
 # ── License expiry check (time-limited builds only) ──────────────────────────
 if [ -f "$SKILL_DIR/scripts/license_check.sh" ]; then
   bash "$SKILL_DIR/scripts/license_check.sh" || exit 1
+fi
+
+# ── Owner mention (for approval notifications) ─────────────────────────────
+if [ -z "$OWNER_MENTION" ]; then
+  echo ""
+  echo "  ── Approval Notifications ──────────────────────────────────────"
+  echo "  When a project step needs your approval, the agent will tag you."
+  echo ""
+  echo "  Platform options: telegram / discord / whatsapp / signal / other"
+  read -p "  Your chat platform: " OWNER_PLATFORM
+  read -p "  Your username/handle on $OWNER_PLATFORM: " OWNER_USERNAME
+  case "$OWNER_PLATFORM" in
+    telegram) OWNER_MENTION="@$OWNER_USERNAME" ;;
+    discord)  OWNER_MENTION="<@$OWNER_USERNAME>" ;;
+    *)        OWNER_MENTION="$OWNER_USERNAME" ;;
+  esac
+  echo "  Will notify: $OWNER_MENTION"
+  echo ""
 fi
 
 ok()   { printf '  \033[32m[ok]\033[0m   %s\n' "$*"; }
@@ -398,7 +416,7 @@ job = {
     "schedule": {"kind": "cron", "expr": "0 */4 * * *", "tz": "UTC"},
     "payload": {
         "kind": "agentTurn",
-        "message": "Project Advancer. Auto-advance step-by-step project notes unattended, announce progress.\n\nStep 1: ls memory/_note_*.md in $WS/memory/. Read each. Select only notes with type: project AND status: in_progress. If none, stop silently (no announce).\n\nStep 1b — BUDGET CHECK (pre-task estimation): Before advancing any project, call session_status to get current context%. For each candidate project, estimate token cost: (number of files to read × 500) + (remaining steps × 1000). If estimated cost + current context% > 80% of budget, skip that project this run and announce it was skipped due to context budget. Only advance projects that fit within budget.\n\nStep 2 — CLAIM CHECK (atomic task claiming): For each in_progress note, read claimed_by and claimed_at fields. If claimed_by is set AND claimed_at is less than 10 minutes ago, SKIP this note entirely (another Advancer instance is working it). If claimed_at is older than 10 minutes, the claim is stale — clear claimed_by and claimed_at, then proceed. If claimed_by is absent, proceed.\n\nStep 3 — CLAIM WRITE: Before executing any step, write claimed_by: <this run's cron run_id or a short uuid> and claimed_at: <current ISO timestamp> to the note. Re-read the note immediately after writing to verify the claim was written correctly. If the re-read shows a different claimed_by (race condition), abort this note and move on.\n\nStep 4: For each claimed in_progress project note, pick the lowest unchecked step at current_step. Resume from resume_state ONLY (the note is self-sufficient; do not rely on chat history).\n\nStep 5: SAFETY GATE before executing the step. If the step is destructive or external (deletes data, git push, sends external messages, irreversible writes outside workspace, spends money, touches credentials), DO NOT execute it. Leave it pending, announce the project is paused awaiting user approval at step n/m — tag @${OWNER_HANDLE:-owner} in the announcement so they are notified, move to the next project.\n\nStep 6: Execute the one current step. After it: verify the step done_when. If met, mark [x], advance current_step, REWRITE resume_state with what the next step needs (paths, decisions, assumptions). If not met, leave pending and record why in resume_state.\n\nStep 7: Context guard. Check session_status context%. If over 60%, checkpoint (state already written), CLEAR claimed_by and claimed_at from the note, and stop advancing this run. Otherwise continue to the next step of the same project until done or context pressure.\n\nStep 8 — CLAIM RELEASE: After completing or checkpointing a project (step done, context limit hit, or safety gate pause), clear claimed_by and claimed_at from the note before moving to the next project.\n\nStep 9: When a project done_when (all steps [x] / final artifact) is met, flip status to done, clear claimed_by and claimed_at. Daily Note Review will delete/promote it.\n\nStep 10: Announce a concise progress line per project touched. For each project, include a progress bar rendered as: [filled_blocks + empty_blocks] done/total% where filled = floor(10 * done / total) blocks of the filled character and empty = 10 - filled blocks of the empty character. Use Unicode if available (filled=█ empty=░), else ASCII (filled=# empty=-). Example: [████░░░░░░] 4/10 40%. Then: project name, step n/m advanced or completed or paused-awaiting-approval or skipped-claimed. Only announce projects you actually touched.",
+        "message": "Project Advancer. Auto-advance step-by-step project notes unattended, announce progress.\n\nStep 1: ls memory/_note_*.md in $WS/memory/. Read each. Select only notes with type: project AND status: in_progress. If none, stop silently (no announce).\n\nStep 1b — BUDGET CHECK (pre-task estimation): Before advancing any project, call session_status to get current context%. For each candidate project, estimate token cost: (number of files to read × 500) + (remaining steps × 1000). If estimated cost + current context% > 80% of budget, skip that project this run and announce it was skipped due to context budget. Only advance projects that fit within budget.\n\nStep 2 — CLAIM CHECK (atomic task claiming): For each in_progress note, read claimed_by and claimed_at fields. If claimed_by is set AND claimed_at is less than 10 minutes ago, SKIP this note entirely (another Advancer instance is working it). If claimed_at is older than 10 minutes, the claim is stale — clear claimed_by and claimed_at, then proceed. If claimed_by is absent, proceed.\n\nStep 3 — CLAIM WRITE: Before executing any step, write claimed_by: <this run's cron run_id or a short uuid> and claimed_at: <current ISO timestamp> to the note. Re-read the note immediately after writing to verify the claim was written correctly. If the re-read shows a different claimed_by (race condition), abort this note and move on.\n\nStep 4: For each claimed in_progress project note, pick the lowest unchecked step at current_step. Resume from resume_state ONLY (the note is self-sufficient; do not rely on chat history).\n\nStep 5: SAFETY GATE before executing the step. If the step is destructive or external (deletes data, git push, sends external messages, irreversible writes outside workspace, spends money, touches credentials), DO NOT execute it. Leave it pending, announce the project is paused awaiting user approval at step n/m — tag ${OWNER_MENTION:-owner} in the announcement so they are notified, move to the next project.\n\nStep 6: Execute the one current step. After it: verify the step done_when. If met, mark [x], advance current_step, REWRITE resume_state with what the next step needs (paths, decisions, assumptions). If not met, leave pending and record why in resume_state.\n\nStep 7: Context guard. Check session_status context%. If over 60%, checkpoint (state already written), CLEAR claimed_by and claimed_at from the note, and stop advancing this run. Otherwise continue to the next step of the same project until done or context pressure.\n\nStep 8 — CLAIM RELEASE: After completing or checkpointing a project (step done, context limit hit, or safety gate pause), clear claimed_by and claimed_at from the note before moving to the next project.\n\nStep 9: When a project done_when (all steps [x] / final artifact) is met, flip status to done, clear claimed_by and claimed_at. Daily Note Review will delete/promote it.\n\nStep 10: Announce a concise progress line per project touched. For each project, include a progress bar rendered as: [filled_blocks + empty_blocks] done/total% where filled = floor(10 * done / total) blocks of the filled character and empty = 10 - filled blocks of the empty character. Use Unicode if available (filled=█ empty=░), else ASCII (filled=# empty=-). Example: [████░░░░░░] 4/10 40%. Then: project name, step n/m advanced or completed or paused-awaiting-approval or skipped-claimed. Only announce projects you actually touched.",
         "timeoutSeconds": 600
     },
     "sessionTarget": "isolated",
