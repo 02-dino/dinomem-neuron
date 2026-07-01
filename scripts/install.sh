@@ -392,7 +392,7 @@ except: print('skip')
 import subprocess, json
 job = {
     "name": "Project Advancer",
-    "schedule": {"kind": "cron", "expr": "0 */4 * * *", "tz": "UTC"},
+    "schedule": {"kind": "cron", "expr": "*/15 * * * *", "tz": "UTC"},
     "payload": {
         "kind": "agentTurn",
         "message": "Project Advancer. Auto-advance step-by-step project notes unattended, announce progress.\n\nStep 0: PRE-CHECK (zero LLM cost gate). Run: bash $WS/scripts/check_projects.sh
