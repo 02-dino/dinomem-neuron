@@ -612,6 +612,25 @@ def main():
             cluster_raw.append((c, res))
 
     raw_count = len(kept)
+
+    # Skill Promotion — Source 2: L3 cluster → skill candidate
+    try:
+        sys.path.insert(0, str(Path(__file__).parent))
+        from skill_extract import run_from_cluster
+        for cluster in clusters:
+            # Build cluster title from top node snippets
+            cluster_nodes = [NODE_BY_IDX.get(idx) for idx in cluster if NODE_BY_IDX.get(idx)]
+            cluster_title = " / ".join(
+                sorted({n["file"] for n in cluster_nodes if n})[:3]
+            ) or f"cluster-{len(cluster)}-nodes"
+            cluster_insights = [
+                texts.get(n["id"], (n["file"], n["snippet"]))[1].strip()[:200]
+                for n in cluster_nodes if n
+            ]
+            run_from_cluster(cluster_title, cluster_insights, str(SYNTH_FILE))
+    except ImportError:
+        pass
+
     if kept:
         print(f"  merging {raw_count} insight(s) (dedup + convergence boost)...")
         kept = merge_insights(kept)

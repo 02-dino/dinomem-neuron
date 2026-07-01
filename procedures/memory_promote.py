@@ -459,6 +459,20 @@ def run(dry_run=False):
         except Exception as _se:
             print(f"  [skill_extract skip] {_se}")
 
+        # Skill Promotion — Source 3: PERSISTENT.md best practice → skill candidate
+        # Run for each newly graduated insight that has a rule_line.
+        try:
+            from skill_extract import run_from_persistent
+            for c in (candidates if new_handoff else []):
+                rule = (c.get("rule_line") or "").strip()
+                if rule:
+                    run_from_persistent(rule, str(BEHAVIOR_FILE))
+                pattern = (c.get("pattern") or "").strip()
+                if pattern and pattern != rule:
+                    run_from_persistent(pattern, str(BEHAVIOR_FILE))
+        except ImportError:
+            pass
+
     consumed_note = "" if new_handoff else " [handoff already consumed — intake skipped]"
     n_prov = sum(1 for e in state.values() if e.get("status") == "provisional")
     n_trust = sum(1 for e in state.values() if e.get("status") == "trusted")
