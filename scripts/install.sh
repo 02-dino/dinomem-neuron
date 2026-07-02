@@ -450,6 +450,7 @@ DINOMEM_BODY=$(cat <<'DINOMEM_NEURON_AGENTS_BODY'
     when: at request time, before starting
     gate: '>3 files OR >5 sequential tool-steps OR research-then-build OR user says project/build'
     method: heuristic gate floor + LLM override; trip gate -> make project note, else normal one-turn
+    upgrade: enumerate steps FIRST; if >1 digital/verifiable step -> type: project; never skip enumeration; physical/non-verifiable tasks -> task_bound
   execute:
     loop: do current_step -> check session_status context%
     under_60: mark step [x], update resume_state, advance current_step, continue next step same turn
