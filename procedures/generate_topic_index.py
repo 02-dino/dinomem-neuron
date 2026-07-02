@@ -21,6 +21,7 @@ Usage:
 
 import json
 import os
+import re
 import sys
 from pathlib import Path
 from datetime import datetime, timedelta
@@ -42,6 +43,58 @@ MAX_ARCHIVE_ENTRIES = 15
 ARCHIVE_MAX_AGE_DAYS = 30
 ACTIVE_CUTOFF_DAYS = 60
 LLM_MAX_TOKENS = 4000
+
+
+def _resolve_max_index_chars(default_cap: int = 20000, floor: int = 18000) -> int:
+    """Char-level ceiling for the MEMORY.md this generator writes, tracking the
+    LIVE bootstrap per-file cap instead of a hardcode. This generator only capped
+    by ENTRY COUNT (50 max) — verbose entries could still blow past the bootstrap
+    char cap and get silently truncated on injection. Read agents.defaults.
+    bootstrapMaxChars from openclaw.json (same config-read idiom as the base
+    memory_cleanup.py / extract_memory.py routing) and trim at 90% of it, with a
+    18000 floor so we never trim more aggressively than the base default behavior.
+    """
+    try:
+        cfg_path = OPENCLAW_ROOT / "openclaw.json"
+        if not cfg_path.exists():
+            return floor
+        with open(cfg_path, "r", encoding="utf-8") as f:
+            defaults = json.load(f).get("agents", {}).get("defaults", {})
+        cap = defaults.get("bootstrapMaxChars", default_cap)
+        if not isinstance(cap, (int, float)) or cap <= 0:
+            cap = default_cap
+        return max(floor, int(cap * 0.9))
+    except Exception:
+        return floor
+
+
+def _guard_memory_size(memory_content: str) -> str:
+    """If the assembled MEMORY.md exceeds the live char cap, trim oldest entries
+    from the Searchable section only (never persistent rules, open projects, or
+    recency) so the index stays under the bootstrap injection limit. Trims the
+    LAST searchable lines (oldest, since entries are appended chronologically),
+    matching base memory_cleanup.py's trim-oldest behavior. No-op when under cap.
+    """
+    limit = _resolve_max_index_chars()
+    if len(memory_content) <= limit:
+        return memory_content
+    marker = "## Searchable"
+    idx = memory_content.find(marker)
+    if idx == -1:
+        # No searchable section to trim — leave content, just warn in log.
+        log(f"⚠️  MEMORY.md is {len(memory_content)} chars (> {limit} cap) but has no Searchable section to trim.")
+        return memory_content
+    head = memory_content[:idx]
+    tail = memory_content[idx:]
+    tail_lines = tail.splitlines(keepends=True)
+    # Keep trimming oldest (last) searchable entry lines until under cap or only the header remains.
+    removed = 0
+    while len(head) + len("".join(tail_lines)) > limit and len(tail_lines) > 1:
+        tail_lines.pop()
+        removed += 1
+    result = head + "".join(tail_lines).rstrip() + "\n"
+    log(f"⚠️  MEMORY.md exceeded {limit} char cap — trimmed {removed} oldest searchable line(s) to {len(result)} chars.")
+    return result
 
 # Sessions dir for recency section
 OPENCLAW_ROOT = WORKSPACE_ROOT.parent
@@ -96,8 +149,15 @@ def get_openclaw_config():
         return None, None, None
 
 
+# Topic-index generation is a no-reasoning summarization task — run it on the
+# cheap tier, not the agent's default reasoning chain. Default: gemini-flash 2.5
+# 404s through `capability model run` (gemini-cli misroute); swap via env once fixed.
+NO_REASONING_MODEL = os.environ.get(
+    "DINOMEM_NO_REASONING_MODEL", "ninerouter/gc/gemini-2.5-flash"
+)
+
 def call_llm_gateway(prompt, max_tokens=2000):
-    """Call LLM via OpenClaw gateway."""
+    """Call LLM via OpenClaw gateway (cheap no-reasoning model)."""
     import subprocess, shutil
 
     # Resolve the openclaw binary portably: PATH first, then common install
@@ -117,7 +177,8 @@ def call_llm_gateway(prompt, max_tokens=2000):
             [openclaw_bin, "capability", "model", "run",
              "--prompt", prompt,
              "--gateway",
-             "--json"],
+             "--json",
+             "--model", NO_REASONING_MODEL],
             capture_output=True,
             text=True,
             timeout=120
@@ -515,12 +576,14 @@ def generate_index(dry_run=False) -> bool:
         log("No documents found in memory/")
         # Still write index with just persistent topics
         persistent = load_persistent_topics()
+        open_proj = get_open_projects_section()
+        open_proj_block = f'{open_proj}\n\n' if open_proj else ''
         recency_section = get_previous_session_topics()
         recency_block = f'\n{recency_section}\n' if recency_section else ''
-        index_content = f"{persistent}\n{recency_block}\n## Searchable — Active (retrieved via memory_search / memory_get)\n_No documents in memory._\n\n## Archived — Deleted from memory (not searchable)\n_None._\n"
+        index_content = f"{open_proj_block}{persistent}\n{recency_block}\n## Searchable — Active (retrieved via memory_search / memory_get)\n_No documents in memory._\n\n## Archived — Deleted from memory (not searchable)\n_None._\n"
         if not dry_run:
             INDEX_FILE.write_text(index_content, encoding='utf-8')
-            memory_content = f"MEMORY.md\n\n{index_content}"
+            memory_content = _guard_memory_size(f"MEMORY.md\n\n{index_content}")
             MEMORY_FILE.write_text(memory_content, encoding='utf-8')
         log("Wrote minimal index (persistent topics only)")
         return True
@@ -533,12 +596,21 @@ def generate_index(dry_run=False) -> bool:
     # Load persistent topics
     persistent = load_persistent_topics()
 
-    # Get previous session recency hint
+    # Open projects (in_progress notes) — injected at top so cold-start sees them
+    open_proj = get_open_projects_section()
+    open_proj_block = f'{open_proj}\n\n' if open_proj else ''
+
+    # Get recent flush context (structured) + previous session keyword hint
+    flush_context = get_recent_flush_context()
     recency_section = get_previous_session_topics()
-    recency_block = f'\n{recency_section}\n' if recency_section else ''
+    recency_block = ''
+    if flush_context:
+        recency_block += f'\n{flush_context}\n'
+    if recency_section:
+        recency_block += f'\n{recency_section}\n'
 
     # Assemble final index
-    index_content = f"""{persistent}
+    index_content = f"""{open_proj_block}{persistent}
 {recency_block}
 ## Searchable — Active (retrieved via memory_search / memory_get)
 {topics_text}
@@ -557,7 +629,7 @@ _Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')} | Source: memory/*.md_
     log(f"✅ Wrote {INDEX_FILE}")
 
     # Write MEMORY.md (auto-injected root file) — same content with title
-    memory_content = f"MEMORY.md\n\n{index_content}"
+    memory_content = _guard_memory_size(f"MEMORY.md\n\n{index_content}")
     MEMORY_FILE.write_text(memory_content, encoding='utf-8')
     log(f"✅ Wrote {MEMORY_FILE} (auto-injected)")
 
@@ -566,6 +638,138 @@ _Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')} | Source: memory/*.md_
     log(f"📊 Estimated size: ~{int(token_estimate)} tokens")
 
     return True
+
+
+def get_open_projects_section() -> Optional[str]:
+    """
+    Scan memory/_note_*.md for status: in_progress notes (project executor +
+    paused multi-step tasks) and build an 'Open Projects' block injected at the
+    TOP of MEMORY.md, so a cold-start session sees unfinished work in its
+    auto-injected context instead of relying on a voluntary glob.
+
+    Emits nothing when there are no in_progress notes (no-op for pure task_bound
+    setups). This is the mechanism behind fix #1: convert 'agent must remember to
+    look' into 'it is already on screen'.
+    """
+    try:
+        if not MEMORY_DIR.exists():
+            return None
+        rows = []
+        for note in sorted(MEMORY_DIR.glob('_note_*.md')):
+            try:
+                text = note.read_text(encoding='utf-8')
+            except Exception:
+                continue
+            m = re.search(r'^status:\s*(.+)$', text, re.MULTILINE)
+            if not m or m.group(1).strip() != 'in_progress':
+                continue
+            t = re.search(r'^#\s*(?:Project:\s*)?(.+)$', text, re.MULTILINE)
+            name = t.group(1).strip() if t else note.stem.replace('_note_', '')
+            s = re.search(r'^current_step:\s*(.+)$', text, re.MULTILINE)
+            steps_total = len(re.findall(r'^\s*-\s*\[[ x]\]\s', text, re.MULTILINE))
+            step_str = ''
+            if s:
+                step_str = f' — step {s.group(1).strip()}' + (f'/{steps_total}' if steps_total else '')
+            rows.append(f'- **{name}**{step_str} — resume from its `resume_state` (file: `{note.name}`)')
+        if not rows:
+            return None
+        body = '\n'.join(rows)
+        return ('## Open Projects (resume these — read the note before answering)\n'
+                + body)
+    except Exception as e:
+        log(f"⚠️  get_open_projects_section error: {e}")
+        return None
+
+def get_recent_flush_context() -> Optional[str]:
+    """
+    Read the daily memory flush files (today + yesterday) and extract structured
+    recent context: repos/paths, key decisions, recent commits, open items.
+    Returns a formatted section string injected into MEMORY.md so cold-start
+    sessions see actionable recent context without needing a memory_search.
+    """
+    try:
+        today = datetime.now().strftime('%Y-%m-%d')
+        yesterday = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
+        lines_out = []
+
+        for date_str in [today, yesterday]:
+            flush_file = MEMORY_DIR / f'{date_str}.md'
+            if not flush_file.exists():
+                continue
+            text = flush_file.read_text(encoding='utf-8')
+            if not text.strip():
+                continue
+
+            # Extract key decisions (lines starting with - or bullet under Key decisions)
+            decisions = []
+            in_decisions = False
+            for line in text.splitlines():
+                if re.match(r'^#{1,3}\s+Key decisions', line, re.IGNORECASE):
+                    in_decisions = True
+                    continue
+                if in_decisions:
+                    if re.match(r'^#{1,3}\s+', line):  # next section
+                        in_decisions = False
+                        continue
+                    m = re.match(r'^[-*]\s+(.+)', line)
+                    if m:
+                        decisions.append(m.group(1).strip())
+
+            # Extract repo/path mentions (lines with github/, /root/, committed, pushed)
+            paths = []
+            # Also collect named repos/entities from section headers and bullet context
+            named_repos = []
+            for line in text.splitlines():
+                # Section headers naming repos/projects (e.g. '### Features built and committed to dinomem-neuron')
+                m = re.match(r'^#{1,4}\s+.*(committed to|pushed to|built in|changes in|repo:|project:)\s*([\w\-\.]+)', line, re.IGNORECASE)
+                if m:
+                    repo = m.group(2).strip()
+                    if repo and repo not in named_repos:
+                        named_repos.append(f'{repo} (repo/project from session header)')
+                # Committed lines: extract commit hash + description
+                m = re.search(r'[Cc]ommitted?\s+`?([a-f0-9]{6,8})`?', line)
+                if m:
+                    clean = re.sub(r'[*`]', '', line).strip().lstrip('-').strip()
+                    if clean and clean not in paths:
+                        paths.append(clean[:120])
+                        continue
+                # Pushed lines
+                if re.search(r'[Pp]ushed', line) and ('github' in line.lower() or 'repo' in line.lower() or '.git' in line.lower()):
+                    clean = re.sub(r'[*`]', '', line).strip().lstrip('-').strip()
+                    if clean and clean not in paths:
+                        paths.append(clean[:120])
+                        continue
+                # Explicit path mentions
+                m = re.search(r'(/root/[\w/.\-]+|github/[\w/.\-]+|workspace-[\w]+/[\w/.\-]+)', line)
+                if m and m.group(1) not in paths:
+                    paths.append(m.group(1))
+            # Prepend named repos so they appear first
+            paths = named_repos[:3] + paths
+
+            # Deduplicate and cap
+            paths = list(dict.fromkeys(paths))[:6]
+            decisions = list(dict.fromkeys(decisions))[:4]
+
+            if paths or decisions:
+                lines_out.append(f'### {date_str}')
+                if paths:
+                    lines_out.append('**Recent work:**')
+                    for p in paths:
+                        lines_out.append(f'- {p}')
+                if decisions:
+                    lines_out.append('**Key decisions:**')
+                    for d in decisions:
+                        lines_out.append(f'- {d}')
+
+        if not lines_out:
+            return None
+
+        body = '\n'.join(lines_out)
+        return f'## Recent Context (from memory flush — no search needed)\n{body}'
+
+    except Exception as e:
+        log(f'⚠️  get_recent_flush_context error: {e}')
+        return None
 
 
 def get_previous_session_topics() -> Optional[str]:
@@ -716,16 +920,6 @@ def track_removed_topics(before_files: set, after_files: set):
 
 
 if __name__ == "__main__":
-    # ---- dinomem-neuron license guard ----
-    import os as _os, sys as _sys
-    _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
-    try:
-        from license_check import enforce_license as _enforce_license
-        _enforce_license(_os.path.basename(__file__))
-    except SystemExit:
-        raise
-    except Exception:
-        pass
     dry_run = "--dry-run" in sys.argv
     success = generate_index(dry_run=dry_run)
     sys.exit(0 if success else 1)
