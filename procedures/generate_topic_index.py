@@ -746,9 +746,11 @@ def get_recent_flush_context() -> Optional[str]:
             # Prepend named repos so they appear first
             paths = named_repos[:3] + paths
 
-            # Deduplicate and cap (keep tight to avoid bootstrap overflow)
-            paths = list(dict.fromkeys(paths))[:4]
-            decisions = list(dict.fromkeys(decisions))[:3]
+            # Deduplicate only — no hard cap; _guard_memory_size trims Searchable
+            # entries if total MEMORY.md exceeds bootstrap cap. Recent Context
+            # stays at top so it survives trimming (recency wins by position).
+            paths = list(dict.fromkeys(paths))
+            decisions = list(dict.fromkeys(decisions))
 
             if paths or decisions:
                 lines_out.append(f'### {date_str}')
