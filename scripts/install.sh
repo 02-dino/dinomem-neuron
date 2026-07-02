@@ -402,7 +402,7 @@ Step 1: ls memory/_note_*.md in $WS/memory/. Read each. Select only notes with t
         "timeoutSeconds": 600
     },
     "sessionTarget": "isolated",
-    "delivery": {"mode": "announce"}
+    "delivery": {"mode": "none"}
 }
 r = subprocess.run(['openclaw', 'cron', 'add', '--json', json.dumps(job)], capture_output=True, text=True, timeout=15)
 if r.returncode == 0:
