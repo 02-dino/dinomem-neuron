@@ -746,9 +746,9 @@ def get_recent_flush_context() -> Optional[str]:
             # Prepend named repos so they appear first
             paths = named_repos[:3] + paths
 
-            # Deduplicate and cap
-            paths = list(dict.fromkeys(paths))[:6]
-            decisions = list(dict.fromkeys(decisions))[:4]
+            # Deduplicate and cap (keep tight to avoid bootstrap overflow)
+            paths = list(dict.fromkeys(paths))[:4]
+            decisions = list(dict.fromkeys(decisions))[:3]
 
             if paths or decisions:
                 lines_out.append(f'### {date_str}')
@@ -765,7 +765,9 @@ def get_recent_flush_context() -> Optional[str]:
             return None
 
         body = '\n'.join(lines_out)
-        return f'## Recent Context (from memory flush — no search needed)\n{body}'
+        marker_start = '<!-- dinomem:recency-start -->'
+        marker_end = '<!-- dinomem:recency-end -->'
+        return f'{marker_start}\n## Recent Context (from memory flush \u2014 no search needed)\n{body}\n{marker_end}'
 
     except Exception as e:
         log(f'⚠️  get_recent_flush_context error: {e}')
