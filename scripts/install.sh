@@ -441,28 +441,22 @@ DINOMEM_BODY=$(cat <<'DINOMEM_NEURON_AGENTS_BODY'
   graph_search: tools/graph_search.py; when complex relational query; fallback: memory_search; skip when relation_edges not yet populated
 
 ## auto_note
-  purpose: create _note_ files without explicit user prompt; reduce reliance on user asking (extends base memory_pin.transient)
   triggers:
-    - self_commitment: agent own output implies deferred work (next step / TODO / I will do later / remaining X) -> auto-write _note_
-    - completion_followup: task finishes but leaves follow-up -> auto-write _note_ for remainder
-    - project_estimate: request trips project gate (see project_note.estimate) -> auto-write project _note_ before starting
-  guardrail: only auto-note if a concrete done_when is writable; if not checkable, do not note (anti-spam)
-  uncertain: still ask before noting personal/ambiguous items; self-commitments + project plans do not need asking
-  upgrade: note has steps listed → write type: project directly; never write task_bound when steps exist
+    - self_commitment: own output implies deferred work → auto-write _note_
+    - completion_followup: task done but follow-up remains → auto-write _note_
+    - project_estimate: request trips project gate → auto-write project _note_ before starting
+  guardrail: only if concrete done_when is writable; personal/ambiguous → ask first
+  upgrade: steps listed → type: project; never task_bound when steps exist
 
 ## investigate_before_act
-  purpose: no mutation or factual claim about code/config/system without live verification (feeds project_note.estimate)
-  triggers:
-    - bug_report | fix_request | refactor_request
-    - cross_entity_claim: does X have same issue as Y
-    - any_assertion about file/git/version/service/config state
+  triggers: bug_report | fix_request | refactor | cross_entity_claim | any assertion about file/git/version/config
   rule:
-    inspect: read the real artifact / run the command / check live state before answering; memory is not a source
-    reproduce: get the failure to occur locally (temp dir / dry-run) before fixing
-    verify: re-run repro after fix; assert symptom gone + no regression with evidence (exit code / diff / byte-check)
-    cross_entity: shared lineage != shared bug -> check the target directly, never infer from a sibling
-    stale_claim: a prior it-is-fixed/fine statement is not evidence -> re-verify against current state
-  enforce: mutable facts (files/git/versions/services/config) need a live check every turn; I recall is not a check
+    inspect: read real artifact / run command before answering; memory is not a source
+    reproduce: get failure locally before fixing
+    verify: re-run after fix; assert symptom gone
+    cross_entity: shared lineage != shared bug; check target directly
+    stale_claim: prior "it's fixed" is not evidence; re-verify
+  enforce: mutable facts need live check every turn
 
 ## project_note
   purpose: context-bounded step-by-step executor; durable plan on disk survives context limits + new sessions
@@ -483,8 +477,8 @@ DINOMEM_BODY=$(cat <<'DINOMEM_NEURON_AGENTS_BODY'
   mandatory: after every step rewrite resume_state so note is self-sufficient; reliability linchpin
   driver: hybrid -- user may say continue; else Project Advancer cron auto-advances in_progress notes (unattended, announces progress, pauses on destructive/external steps)
   resolve: done_when met -> Daily Note Review (base) deletes/promotes via normal pipeline
-  awaiting_approval_reverify: a project parked at a safety-gated final step (git push / external action the Advancer cannot run unattended) is the classic orphan case — Advancer wont run it, so Advancer never marks it done. At session cold start (see base M_session_start) AND whenever such a note resurfaces, RE-VERIFY whether the gated artifact now exists (e.g. git -C <repo> rev-parse HEAD == @{u} means the push already happened). If yes, close the note (status: done) rather than re-asking the user to approve something already done. This closes the read-back loop so a human-completed gated step does not leave a zombie in_progress note.
-  done_when_verifiability: every step done_when (and the project done_when) must be LOCALLY checkable with no chat history / no network identity (file exists, grep match, command exit 0, git rev-parse HEAD==@{u}). Narrative done_when ("pushed", "told user") never auto-closes — see base memory_pin schema done_when_MUST_be_locally_verifiable.
+  awaiting_approval_reverify: safety-gated final step (push/external) → at cold start re-verify artifact exists (git -C <repo> rev-parse HEAD == @{u}); if done, close note instead of re-asking.
+  done_when_verifiability: every done_when must be locally checkable (file exists / grep / exit 0 / git rev-parse HEAD==@{u}). Narrative done_when never auto-closes.
 DINOMEM_NEURON_AGENTS_BODY
 )
 BLOCK="$BEGIN
