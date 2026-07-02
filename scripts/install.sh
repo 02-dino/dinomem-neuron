@@ -436,27 +436,9 @@ DINOMEM_BODY=$(cat <<'DINOMEM_NEURON_AGENTS_BODY'
   skip_if: no date/time implied | user says no calendar
 
 ## memory_tools
-  memory_search: simple recall — facts, preferences, decisions, context; default for most queries
+  # extends base memory_tools; adds neuron-specific tools
   session_search: python3 tools/session_search.py; when memory_search thin/uncertain AND session <7d old AND transcript detail needed
   graph_search: tools/graph_search.py; when complex relational query; fallback: memory_search; skip when relation_edges not yet populated
-
-## auto_note
-  triggers:
-    - self_commitment: own output implies deferred work → auto-write _note_
-    - completion_followup: task done but follow-up remains → auto-write _note_
-    - project_estimate: request trips project gate → auto-write project _note_ before starting
-  guardrail: only if concrete done_when is writable; personal/ambiguous → ask first
-  upgrade: steps listed → type: project; never task_bound when steps exist
-
-## investigate_before_act
-  triggers: bug_report | fix_request | refactor | cross_entity_claim | any assertion about file/git/version/config
-  rule:
-    inspect: read real artifact / run command before answering; memory is not a source
-    reproduce: get failure locally before fixing
-    verify: re-run after fix; assert symptom gone
-    cross_entity: shared lineage != shared bug; check target directly
-    stale_claim: prior "it's fixed" is not evidence; re-verify
-  enforce: mutable facts need live check every turn
 
 ## project_note
   purpose: context-bounded step-by-step executor; durable plan on disk survives context limits + new sessions
