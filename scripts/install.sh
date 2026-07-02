@@ -443,16 +443,6 @@ DINOMEM_BODY=$(cat <<'DINOMEM_NEURON_AGENTS_BODY'
   guardrail: only if concrete done_when is writable; personal/ambiguous → ask first
   upgrade: enumerate steps FIRST; if >1 digital/verifiable step → type: project; never skip enumeration; physical/non-verifiable tasks → task_bound
 
-## investigate_before_act
-  triggers: bug_report | fix_request | refactor | cross_entity_claim | any assertion about file/git/version/config
-  rule:
-    inspect: read real artifact / run command before answering; memory is not a source
-    reproduce: get failure locally before fixing
-    verify: re-run after fix; assert symptom gone
-    cross_entity: shared lineage != shared bug; check target directly
-    stale_claim: prior "it's fixed" is not evidence; re-verify
-  enforce: mutable facts need live check every turn
-
 ## memory_tools
   # extends base memory_tools; adds neuron-specific tools
   session_search: python3 tools/session_search.py; when memory_search thin/uncertain AND session <7d old AND transcript detail needed
