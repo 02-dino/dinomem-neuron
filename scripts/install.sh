@@ -367,11 +367,6 @@ if [ "$DO_CRON" = 1 ]; then
   CAL_CRON="0 7 * * * cd $WS && python3 procedures/calendar_sync.py >> logs/calendar_sync.log 2>&1"
   upsert_cron "calendar_sync.py" "dinomem-neuron: calendar sync auto-resolve _note_ (daily)" "$CAL_CRON" "calendar_sync cron (daily 7:00 UTC)"
 
-  # context_watchdog — every 5 min, zero LLM, pure REST
-  # Sends checkpoint wake events to sessions exceeding context threshold (60%/80%)
-  WATCHDOG_CRON="*/5 * * * * python3 $SKILL_DIR/scripts/context_watchdog.py >> $WS/logs/context_watchdog.log 2>&1"
-  upsert_cron "context_watchdog.py" "dinomem-neuron: context budget watchdog (every 5min, no LLM)" "$WATCHDOG_CRON" "context_watchdog cron (every 5min)"
-
   # project_advancer — OpenClaw agentTurn cron (NOT shell crontab): auto-advance type:project in_progress notes
   # one step per run, unattended, announces progress. Premium: only neuron installs this.
   PROJ_ADV_CHECK=$(python3 -c "
