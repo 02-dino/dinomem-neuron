@@ -79,7 +79,6 @@ memory/*.md + MEMORY.md + vector DB (TEI)
 | Daily 3:00 UTC | `memory_graph.py` | L2 |
 | Daily 3:30 UTC | `memory_synthesis.py` + `contradiction_check.py` | L3 |
 | Weekly Sun 4:00 UTC | `memory_promote.py` + `generate_topic_index.py` | L4 |
-| Daily 7:00 UTC | `calendar_sync.py` | Calendar (auto-resolve `_note_` from past events) |
 | Every 4h | Project Advancer (OpenClaw agentTurn cron) | Project executor (auto-advance `type: project` notes) |
 
 ## Premium Note Upgrades (extends dinomem base note system)

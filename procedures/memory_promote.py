@@ -19,8 +19,12 @@ single most dangerous action in the whole stack, every promotion runs on rails:
               stops recurring lives forever.
   RATE LIMIT  At most MAX_GRADUATIONS_PER_RUN graduate per run, so one bad run can
               never flood the behavior memory.
-  FIREWALL    Graduated insights are written to memory/auto_promoted.md, which
-              memory_graph.py skips (Stage-5 feedback-loop firewall) so synthesis
+  FIREWALL    Graduated insights are written to topics/PERSISTENT_AUTO.md (folded
+              into MEMORY.md's Persistent section by generate_topic_index.py).
+              memory_graph.py only scans memory/*.md non-recursively, so topics/
+              is never re-ingested — the directory separation is the Stage-5
+              feedback-loop firewall (FIREWALL_FILES + [[L4_PROMOTED]] marker are
+              belt-and-suspenders for anything that lands in memory/). Synthesis
               can never read its own conclusions back and inflate confidence.
   AUDIT       Every promote / reinforce / graduate / expire / demote action is
               appended to promotion_log.jsonl. Fully reconstructable, reversible.

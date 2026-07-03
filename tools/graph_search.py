@@ -69,26 +69,33 @@ def build_adjacency(graph: dict, min_confidence: float) -> dict[int, list[dict]]
 
     if has_relation_edges:
         for edge in graph.get("relation_edges", []):
-            src = edge.get("source")
-            tgt = edge.get("target")
+            # memory_graph.py writes endpoints as a/b, verb as label,
+            # and 'source' is provenance (explicit|spacy_svo), NOT an endpoint.
+            src = edge.get("a")
+            tgt = edge.get("b")
             conf = edge.get("confidence", 0.0)
-            label = edge.get("relation", "related_to")
-            if src is None or tgt is None:
+            label = edge.get("label", "related_to")
+            # -1 marks an unmatched endpoint; skip those.
+            if src is None or tgt is None or src < 0 or tgt < 0:
                 continue
             if conf >= min_confidence:
+                # relation edges are directed a -> b
                 adj[src].append({"target": tgt, "label": label, "confidence": conf, "edge_type": "relation"})
     else:
         print("Warning: relation_edges not yet available — run memory_graph.py to rebuild graph", file=sys.stderr)
 
-    # Secondary: high-confidence similarity edges (sim >= 0.80)
+    # Secondary: high-confidence similarity edges (>= 0.80).
+    # memory_graph.py writes endpoints as a/b and score as neural_score (composite) with sim fallback.
     for edge in graph.get("edges", []):
-        src = edge.get("source")
-        tgt = edge.get("target")
-        sim = edge.get("weight", edge.get("similarity", 0.0))
+        src = edge.get("a")
+        tgt = edge.get("b")
+        sim = edge.get("neural_score", edge.get("sim", edge.get("weight", edge.get("similarity", 0.0))))
         if src is None or tgt is None:
             continue
         if sim >= 0.80:
+            # similarity edges are undirected — add both directions
             adj[src].append({"target": tgt, "label": "similar_to", "confidence": sim, "edge_type": "similarity"})
+            adj[tgt].append({"target": src, "label": "similar_to", "confidence": sim, "edge_type": "similarity"})
 
     return adj
 

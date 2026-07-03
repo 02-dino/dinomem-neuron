@@ -295,7 +295,7 @@ fi
 
 # ── 2) Copy scripts ───────────────────────────────────────────────────────────
 hr "Copying scripts"
-for f in procedures/memory_graph.py procedures/memory_synthesis.py procedures/memory_promote.py procedures/contradiction_check.py procedures/generate_topic_index.py procedures/docs_ingest.py procedures/session_ingest.py procedures/calendar_sync.py tools/docs_search.py tools/session_search.py tools/cache_utils.py tools/calendar_tool.py scripts/calendar_oauth_setup.py; do
+for f in procedures/memory_graph.py procedures/memory_synthesis.py procedures/memory_promote.py procedures/contradiction_check.py procedures/generate_topic_index.py procedures/docs_ingest.py procedures/session_ingest.py tools/docs_search.py tools/session_search.py tools/cache_utils.py; do
   dst="$WS/$f"
   # license_check.py must sit beside procedures so the runtime guard can import it.
   true
@@ -363,10 +363,6 @@ if [ "$DO_CRON" = 1 ]; then
   # session_ingest is triggered automatically by auto_session_reset.py (every 15 min)
   # No separate cron needed.
 
-  # calendar_sync — daily at 7:00 UTC (auto-resolve _note_ from past calendar events)
-  CAL_CRON="0 7 * * * cd $WS && python3 procedures/calendar_sync.py >> logs/calendar_sync.log 2>&1"
-  upsert_cron "calendar_sync.py" "dinomem-neuron: calendar sync auto-resolve _note_ (daily)" "$CAL_CRON" "calendar_sync cron (daily 7:00 UTC)"
-
   # project_advancer — OpenClaw agentTurn cron (NOT shell crontab): auto-advance type:project in_progress notes
   # one step per run, unattended, announces progress. Premium: only neuron installs this.
   PROJ_ADV_CHECK=$(python3 -c "
@@ -393,7 +389,7 @@ job = {
         "message": "Project Advancer. Auto-advance step-by-step project notes unattended, announce progress.\n\nStep 0: PRE-CHECK (zero LLM cost gate). Run: bash $WS/scripts/check_projects.sh
 If exit code != 0 → no in_progress project notes exist. Stop immediately, no announce.
 
-Step 1: ls memory/_note_*.md in $WS/memory/. Read each. Select only notes with type: project AND status: in_progress.\n\nStep 1b — BUDGET CHECK (pre-task estimation): Before advancing any project, call session_status to get current context%. For each candidate project, estimate token cost: (number of files to read × 500) + (remaining steps × 1000). If estimated cost + current context% > 80% of budget, skip that project this run and announce it was skipped due to context budget. Only advance projects that fit within budget.\n\nStep 2 — CLAIM CHECK (atomic task claiming): For each in_progress note, read claimed_by and claimed_at fields. If claimed_by is set AND claimed_at is less than 10 minutes ago, SKIP this note entirely (another Advancer instance is working it). If claimed_at is older than 10 minutes, the claim is stale — clear claimed_by and claimed_at, then proceed. If claimed_by is absent, proceed.\n\nStep 3 — CLAIM WRITE: Before executing any step, write claimed_by: <this run's cron run_id or a short uuid> and claimed_at: <current ISO timestamp> to the note. Re-read the note immediately after writing to verify the claim was written correctly. If the re-read shows a different claimed_by (race condition), abort this note and move on.\n\nStep 4: For each claimed in_progress project note, pick the lowest unchecked step at current_step. Resume from resume_state ONLY (the note is self-sufficient; do not rely on chat history).\n\nStep 5: SAFETY GATE before executing the step. If the step is destructive or external (deletes data, git push, sends external messages, irreversible writes outside workspace, spends money, touches credentials), DO NOT execute it. Leave it pending, announce the project is paused awaiting user approval at step n/m — tag the owner in the announcement so they are notified (use platform-appropriate mention format), move to the next project.\n\nStep 6: Execute the one current step. After it: verify the step done_when. If met, mark [x], advance current_step, REWRITE resume_state with what the next step needs (paths, decisions, assumptions). If not met, leave pending and record why in resume_state.\n\nStep 7: Context guard. Check session_status context%. If over 60%, checkpoint (state already written), CLEAR claimed_by and claimed_at from the note, and stop advancing this run. Otherwise continue to the next step of the same project until done or context pressure.\n\nStep 8 — CLAIM RELEASE: After completing or checkpointing a project (step done, context limit hit, or safety gate pause), clear claimed_by and claimed_at from the note before moving to the next project.\n\nStep 9: When a project done_when (all steps [x] / final artifact) is met, flip status to done, clear claimed_by and claimed_at. Daily Note Review will delete/promote it.\n\nStep 10: ANNOUNCE only on state change. Rules:\n- Step advanced or completed → announce with progress bar\n- First time hitting safety gate → announce once, tag owner (use platform-appropriate mention)\n- Already paused (resume_state contains 'awaiting approval') → silent\n- Malformed or stalled → announce only if last_flagged not set in resume_state OR last_flagged > 24h ago; write last_flagged: <ISO timestamp> to resume_state after announcing\n- No state change → silent\nProgress bar: [████░░░░░░] 4/10 40% — project name, step n/m. Short, group-chat style.",
+Step 1: ls memory/_note_*.md in $WS/memory/. Read each. Select only notes with type: project AND status: in_progress.\n\nStep 1b — BUDGET CHECK (pre-task estimation): Before advancing any project, call session_status to get current context%. For each candidate project, estimate token cost: (number of files to read × 500) + (remaining steps × 1000). If estimated cost + current context% > 80% of budget, skip that project this run and announce it was skipped due to context budget. Only advance projects that fit within budget.\n\nStep 2 — CLAIM CHECK (atomic task claiming): For each in_progress note, read claimed_by and claimed_at fields. (G6 live-session guard) If claimed_by STARTS WITH 'live-session' AND claimed_at is less than 15 minutes ago, SKIP this note entirely — a human is actively working it in an interactive session; never fight a live session. If claimed_by is set (any other value) AND claimed_at is less than 10 minutes ago, SKIP this note entirely (another Advancer instance is working it). If claimed_at is older than its window (15min for live-session, 10min otherwise), the claim is stale — clear claimed_by and claimed_at, then proceed. If claimed_by is absent, proceed.\n\nStep 3 — CLAIM WRITE: Before executing any step, write claimed_by: <this run's cron run_id or a short uuid> and claimed_at: <current ISO timestamp> to the note. Re-read the note immediately after writing to verify the claim was written correctly. If the re-read shows a different claimed_by (race condition), abort this note and move on.\n\nStep 4: For each claimed in_progress project note, pick the lowest unchecked step at current_step. Resume from resume_state ONLY (the note is self-sufficient; do not rely on chat history).\n\nStep 5: SAFETY GATE before executing the step. If the step is destructive or external (deletes data, git push, sends external messages, irreversible writes outside workspace, spends money, touches credentials), DO NOT execute it. Leave it pending, announce the project is paused awaiting user approval at step n/m — tag the owner in the announcement so they are notified (use platform-appropriate mention format), move to the next project.\n\nStep 6: Execute the one current step. After it: verify the step done_when. If met, mark [x], advance current_step, REWRITE resume_state with what the next step needs (paths, decisions, assumptions). If not met, leave pending and record why in resume_state.\n\nStep 7: Context guard. Check session_status context%. If over 60%, checkpoint (state already written), CLEAR claimed_by and claimed_at from the note, and stop advancing this run. Otherwise continue to the next step of the same project until done or context pressure.\n\nStep 8 — CLAIM RELEASE: After completing or checkpointing a project (step done, context limit hit, or safety gate pause), clear claimed_by and claimed_at from the note before moving to the next project.\n\nStep 9: When a project done_when (all steps [x] / final artifact) is met, flip status to done, clear claimed_by and claimed_at. Daily Note Review will delete/promote it.\n\nStep 10: ANNOUNCE only on state change. Rules:\n- Step advanced or completed → announce with progress bar\n- First time hitting safety gate → announce once, tag owner (use platform-appropriate mention)\n- Already paused (resume_state contains 'awaiting approval') → silent\n- Malformed or stalled → announce only if last_flagged not set in resume_state OR last_flagged > 24h ago; write last_flagged: <ISO timestamp> to resume_state after announcing\n- No state change → silent\nProgress bar: [████░░░░░░] 4/10 40% — project name, step n/m. Short, group-chat style.",
         "timeoutSeconds": 600
     },
     "sessionTarget": "isolated",
@@ -430,11 +426,6 @@ DINOMEM_BODY=$(cat <<'DINOMEM_NEURON_AGENTS_BODY'
   media_path: inbound uploads at ~/.openclaw/media/inbound/<uuid> (from <media:...> placeholder); pass that path straight to --file
   note: ingest auto-extracts via pdftotext+pandoc (no manual convert); re-ingested daily 4:00 UTC; ready for docs_search after; never save long docs to memory/
 
-## calendar_integration
-  trigger: explicit date/time | deadline | appointment
-  workflow: save _note_<slug>.md → extract date/time → ask if missing → python3 tools/calendar_tool.py create "<title>" --date <YYYY-MM-DD> [--time HH:MM] --note _note_<slug>.md [--reminder popup:30] [--attendee email] → confirm
-  skip_if: no date/time implied | user says no calendar
-
 ## auto_note
   triggers:
     - self_commitment: own output implies deferred work → auto-write _note_
@@ -447,6 +438,9 @@ DINOMEM_BODY=$(cat <<'DINOMEM_NEURON_AGENTS_BODY'
   # extends base memory_tools; adds neuron-specific tools
   session_search: python3 tools/session_search.py; when memory_search thin/uncertain AND session <7d old AND transcript detail needed
   graph_search: tools/graph_search.py; when complex relational query; fallback: memory_search; skip when relation_edges not yet populated
+  # G2: session_search embeds queries too — the base M3_query_style rule applies to it as well:
+  #      prefer natural language, avoid technical identifiers/code terms/exact strings/variable names.
+  M3_query_style_extends: applies_to also includes session_search (same natural-language rule as memory_search)
 
 ## project_note
   purpose: context-bounded step-by-step executor; durable plan on disk survives context limits + new sessions
@@ -466,6 +460,14 @@ DINOMEM_BODY=$(cat <<'DINOMEM_NEURON_AGENTS_BODY'
     spawn: if over_60 AND remaining steps > 2 AND sessions_spawn available -> spawn subagent with task=remaining steps + resume_state; subagent works in clean context; parent waits for completion event
     resume: new session reads note, jumps to current_step, resumes from resume_state ONLY (no chat-history reliance)
   mandatory: after every step rewrite resume_state so note is self-sufficient; reliability linchpin
+  self_check: # G5
+    when: before stopping at ANY checkpoint while status in_progress
+    verify: type:project, status:in_progress, current_step matches lowest unchecked step, resume_state non-empty + concrete
+    on_fail: fix note THIS TURN before stopping; malformed note = silent death (Advancer skips it)
+  live_session_claim: # G6 rule -- makes claim automatic in interactive sessions, not just cron-vs-cron
+    when: a live interactive session actively executes a project note (not the Advancer cron)
+    action: write claimed_by=live-session-<agentid> + claimed_at=<now ISO> to the note BEFORE the first edit; refresh claimed_at each resuming turn; clear both on finish/pause
+    why: without this the 4h Advancer can wake mid-conversation and double-edit the same note; the claim lock is otherwise only honored cron-vs-cron
   driver: hybrid -- user may say continue; else Project Advancer cron auto-advances in_progress notes (unattended, announces progress, pauses on destructive/external steps)
   resolve: done_when met -> Daily Note Review (base) deletes/promotes via normal pipeline
   awaiting_approval_reverify: safety-gated final step (push/external) → at cold start re-verify artifact exists (git -C <repo> rev-parse HEAD == @{u}); if done, close note instead of re-asking.
@@ -621,45 +623,6 @@ TOOLS_BODY=$(cat <<'DINOMEM_NEURON_TOOLS_BODY'
       - langchain_chroma
       - langchain_huggingface
       - sentence-transformers (all-MiniLM-L6-v2, local)
-
-  calendar_tool:
-    path: tools/calendar_tool.py
-    type: exec
-    capabilities:
-      - google_calendar_create_event
-      - list_upcoming_events
-      - delete_event
-      - link_note_file
-    when_to_use: |
-      Create/list/delete Google Calendar events. See AGENTS.md
-      calendar_integration for the WHEN/policy (explicit date/time, deadline,
-      appointment). Skip when no date/time is implied or the user declines.
-    requirements:
-      auth: "Google Calendar OAuth (run scripts/calendar_oauth_setup.py once)."
-    subcommands:
-      create:
-        usage: "calendar_tool.py create <title> --date YYYY-MM-DD [--time HH:MM] [--desc TEXT] [--note _note_*.md] [--reminder METHOD:MINUTES] [--attendee EMAIL]"
-        inputs:
-          title:    { type: string,  required: true,  note: "Positional event title." }
-          date:     { type: string,  required: true,  note: "--date YYYY-MM-DD." }
-          time:     { type: string,  required: false, note: "--time HH:MM (24h); omit for all-day." }
-          desc:     { type: string,  required: false, note: "--desc event description." }
-          note:     { type: string,  required: false, note: "--note _note_*.md filename to link." }
-          reminder: { type: list,    required: false, note: "--reminder METHOD:MINUTES (repeatable), e.g. popup:30." }
-          attendee: { type: list,    required: false, note: "--attendee EMAIL (repeatable)." }
-      list:
-        usage: "calendar_tool.py list [--upcoming DAYS]"
-        inputs:
-          upcoming: { type: integer, required: false, default: 7, note: "--upcoming days ahead." }
-      delete:
-        usage: "calendar_tool.py delete <event_id>"
-        inputs:
-          event_id: { type: string, required: true, note: "Positional event ID to delete." }
-    constraints:
-      mode: exec
-    libraries:
-      - google-api-python-client
-      - google-auth-oauthlib
 DINOMEM_NEURON_TOOLS_BODY
 )
 TOOLS_BLOCK="$BEGIN
@@ -780,10 +743,6 @@ echo ""
 echo "  ⚠️  First run takes time"
 echo "  memory_graph.py and memory_synthesis.py can take several minutes on first run"
 echo "  depending on how many memory files exist. This is normal."
-echo ""
-echo "  ⚠️  Calendar integration (optional)"
-echo "  To link _note_ reminders to Google Calendar, OAuth setup is required."
-echo "  Guide: see '## Calendar setup' in README"
 echo ""
 echo "  License: Proprietary — unauthorized redistribution prohibited. https://t.me/dinotlgrm"
 echo "  Undo: bash $SKILL_DIR/scripts/uninstall.sh --workspace $WS --agent-id $AGENT_ID"

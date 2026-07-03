@@ -70,7 +70,6 @@ This insight is now injected every turn. Future investing discussions automatica
 | 📌 | **Knowledge Promotion** (L4) | Insights that pass multi-signal evaluation (confidence, reinforcement/recurrence, contradiction, insight lifecycle) → written into always-injected context → behavior change |
 | 🗺️ | **Enriched navigation index** | `MEMORY.md` serves dual roles: search navigation aid (like dinomem base) + always-present behavior layer. Promoted insights live here — active every turn without recall. |
 | 📚 | **RAG for long docs** | Semantic search over contracts, books, legal text — stored separately, never pollutes memory |
-| 📅 | **Calendar integration** | Links `_note_` reminders to Google Calendar — auto-deleted when the event passes |
 | 🤖 | **Automatic notes** | The agent writes `_note_` files from its own commitments ("next step", "TODO") and task follow-ups — not just when you ask |
 | 🏗️ | **Project executor** | Large builds become `type: project` notes: the agent estimates whether the work fits one turn, and if not writes an ordered step plan and executes one step per turn (checkpointing at 60% context) so nothing is lost across sessions. A Project Advancer cron auto-advances unfinished projects unattended and announces progress, pausing for approval on anything destructive. |
 | 🔍 | **Session deep recall** | When memory summary is thin, searches raw archived sessions (7-day window) for the exact exchange — sharper, more detailed recall for recent context |
@@ -244,10 +243,6 @@ Contracts, books, legal text, manuals — anything too long to live in memory. `
 
 **Seamless ingest.** You don't drop files in a folder or convert anything. Share a document in chat — PDF, Word (`.docx`), `.rtf`, `.odt`, HTML, EPUB, or plain text/markdown — and the agent detects the intent, extracts it to markdown, and ingests it automatically, ready for `docs_search`. This works on any chat channel that downloads attachments to OpenClaw's shared media store (Telegram, WhatsApp, Discord, Slack, and others), not just one. PDF extraction uses `pdftotext` and Office/HTML uses `pandoc`; the installer auto-installs both when possible, and if either is unavailable, text/markdown ingest still works while the affected formats degrade gracefully with a clear message.
 
-### Calendar integration
-
-Links `_note_` reminders to Google Calendar. When the agent saves a dated `_note_` (e.g. a deadline or appointment), `calendar_tool.py` creates the matching event; `calendar_sync.py` runs daily and auto-deletes the note once the event date has passed — so reminders clean themselves up. Requires a one-time OAuth setup (see [Calendar setup](#calendar-setup)).
-
 ### Automatic note creation
 
 Base note creation is user-driven ("remember to X"). Neuron makes it automatic on three triggers:
@@ -322,28 +317,6 @@ After the first full week, check `topics/PERSISTENT_AUTO.md` — promoted insigh
 
 ---
 
-## Calendar setup
-
-Calendar integration requires a one-time OAuth setup. Everything else — L2/L3/L4, RAG, contradiction detection — runs automatically after install.
-
-```bash
-# 1. Create OAuth2 credentials at https://console.cloud.google.com/
-#    APIs & Services → Credentials → Create → OAuth client ID → Desktop app
-#    Download as client_secret.json → place in <workspace>/
-
-# 2. Authorize
-python3 ~/.openclaw/workspace-myagent/scripts/calendar_oauth_setup.py
-```
-
-Once set up, just tell your agent:
-> "Remember to call the dentist before Friday"
-
-The agent detects the date, saves `_note_dentist.md`, and creates the calendar event automatically. When Friday passes, `calendar_sync.py` deletes the note.
-
-> Sound and vibration are device-level settings — not controllable via the Google Calendar API.
-
----
-
 ### Why multi-signal evaluation?
 
 A single observation can be noise. Neuron evaluates each insight across multiple dimensions before promotion: how confident the synthesis is, how often it recurs across synthesis runs, whether it contradicts existing knowledge, and how it behaves across its full lifecycle — including decay, recovery, and exceptions.
@@ -360,7 +333,6 @@ All signals must align. One-off or low-confidence insights stay in synthesis —
 | Daily 3:00 UTC | `memory_graph.py` | L2 — Relationship Discovery (graph rebuild) |
 | Daily 3:30 UTC | `memory_synthesis.py` + `contradiction_check.py` | L3 — Pattern Synthesis + contradiction check |
 | Daily 4:00 UTC | `docs_ingest.py` | Re-ingest new/changed docs |
-| Daily 7:00 UTC | `calendar_sync.py` | Auto-delete `_note_` files linked to past events |
 | Every 15 min | Project Advancer (OpenClaw cron) | Auto-advance `type: project` notes one step/run, unattended; zero LLM when idle (bash pre-check); state-change-only announcements |
 | Weekly Sun 4:00 UTC | `memory_promote.py` + `generate_topic_index.py` | L4 — Knowledge Promotion + MEMORY.md enrichment; triggers `skill_extract.py` after each run |
 | On project completion / L3 / L4 | `skill_extract.py` | Skill Promotion — extracts reusable procedures from completed projects, L3 clusters, and PERSISTENT.md best practices; promotes at convergence ≥ 3 |
@@ -402,16 +374,13 @@ All signals must align. One-off or low-confidence insights stay in synthesis —
 │   ├── contradiction_check.py  # L3 — contradiction detection
 │   ├── generate_topic_index.py # L4 — topic index + MEMORY.md enrichment
 │   ├── docs_ingest.py          # RAG — ingest long docs
-│   ├── calendar_sync.py        # Calendar — auto-resolve past _note_ files
 │   ├── skill_extract.py        # Skill Promotion — extract from completed projects, L3 clusters, PERSISTENT.md best practices
 │   └── run_log.py              # Per-run audit trail — append-only JSONL log for all cron scripts
 ├── tools/
 │   ├── docs_search.py          # RAG — semantic search over long docs (HyDE query expansion enabled by default)
-│   ├── cache_utils.py          # Shared cache utility
-│   └── calendar_tool.py        # Calendar — create/list/delete events
+│   └── cache_utils.py          # Shared cache utility
 ├── scripts/
-│   ├── context_watchdog.py     # Context budget watchdog — REST-only, no LLM, system cron every 5min
-│   └── calendar_oauth_setup.py # Calendar — one-time OAuth setup
+│   └── context_watchdog.py     # Context budget watchdog — REST-only, no LLM, system cron every 5min
 ├── topics/
 │   ├── INDEX.md                # Auto-generated topic tree (do not edit)
 │   ├── PERSISTENT.md           # Manually curated persistent topics
@@ -458,21 +427,6 @@ python3 <workspace>/procedures/docs_ingest.py
 tail -50 <workspace>/logs/docs_ingest.log
 ```
 
-**Calendar events not being created**
-```bash
-# Check OAuth token exists
-grep GOOGLE_CALENDAR_TOKEN <workspace>/.env
-# If missing: re-run OAuth setup
-python3 <workspace>/scripts/calendar_oauth_setup.py
-```
-
-**`_note_` files not being deleted after event passes**
-```bash
-tail -50 <workspace>/logs/calendar_sync.log
-# Run manually
-python3 <workspace>/procedures/calendar_sync.py --dry-run
-```
-
 **Cron not running**
 ```bash
 crontab -l | grep memory_graph
@@ -484,7 +438,7 @@ bash dinomem-neuron/scripts/install.sh --workspace <workspace> --agent-id <id>
 ## FAQ
 
 **How long until I see results?**
-L2 graph: next morning. L3 synthesis: a few days (needs memory clusters to form). L4 promotion: 1–2 weeks (insights must pass multi-signal evaluation across synthesis runs). Calendar: immediate after OAuth setup.
+L2 graph: next morning. L3 synthesis: a few days (needs memory clusters to form). L4 promotion: 1–2 weeks (insights must pass multi-signal evaluation across synthesis runs).
 
 **Does it modify my existing memory files?**
 No. L2/L3/L4 write to `kb/memory_neuron/` only. `memory_promote.py` appends to `_permanent.md` and `PERSISTENT_AUTO.md`. `generate_topic_index.py` overwrites `MEMORY.md` and `topics/INDEX.md` — both are auto-generated, not your raw memory files.
@@ -492,8 +446,8 @@ No. L2/L3/L4 write to `kb/memory_neuron/` only. `memory_promote.py` appends to `
 **What happens if synthesis finds a contradiction?**
 Blocking contradictions → insight blocked, queued in `contradiction_queue.jsonl`. Warnings → promoted but flagged. Both logged to `contradiction_log.jsonl`. Blocked insights are re-evaluated automatically when old insights decay. You can also trigger manually: `python3 procedures/contradiction_check.py --re-evaluate`.
 
-**Can I use RAG or calendar without L2/L3/L4?**
-Yes — both are fully independent. Just tell your agent — it handles ingestion and search automatically. Calendar requires one-time OAuth setup via `calendar_oauth_setup.py`.
+**Can I use RAG without L2/L3/L4?**
+Yes — RAG is fully independent. Just tell your agent — it handles ingestion and search automatically.
 
 **How much extra disk space?**
 Graph JSON: small. Synthesis files: minimal text. Docs vector DB: ~1–2MB per 1000 chunks.

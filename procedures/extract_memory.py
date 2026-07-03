@@ -419,23 +419,28 @@ def _make_llm_request(model, api_key, api_base, prompt, max_tokens, reasoning=Fa
         return False, str(e)
 
 
-def call_llm(prompt, max_tokens=None, reasoning=False):
-    """Call LLM via OpenClaw gateway. Falls back to OpenRouter."""
+def call_llm(prompt, max_tokens=None, reasoning=False, model=None):
+    """Call LLM via OpenClaw gateway. Falls back to OpenRouter.
+
+    model: optional explicit model override for this call. When set (and
+    reasoning is False) it takes precedence over the module-level CHEAP_MODEL.
+    """
     max_tokens = max_tokens or LLM_MAX_TOKENS
     full_prompt = prompt
     if max_tokens and max_tokens < 3000:
         full_prompt = f"[Respond in {max_tokens} tokens or less]\n\n{prompt}"
     # Route model by task type (opt-in, default = no change):
     #   reasoning=True  -> OpenClaw default model + thinking level (quality path)
-    #   reasoning=False -> DINOMEM_CHEAP_MODEL if set, else OpenClaw default
+    #   reasoning=False -> explicit model arg, else DINOMEM_CHEAP_MODEL, else OpenClaw default
     _gw_cmd = ["capability", "model", "run",
                "--prompt", full_prompt, "--gateway", "--json"]
+    _no_reason_model = model or CHEAP_MODEL
     if reasoning:
         _gw_cmd += ["--thinking", REASONING_THINKING]
         _route = f"default+thinking={REASONING_THINKING}"
-    elif CHEAP_MODEL:
-        _gw_cmd += ["--model", CHEAP_MODEL]
-        _route = f"cheap={CHEAP_MODEL}"
+    elif _no_reason_model:
+        _gw_cmd += ["--model", _no_reason_model]
+        _route = f"cheap={_no_reason_model}"
     else:
         _route = "default"
     # Try OpenClaw gateway first
@@ -469,12 +474,12 @@ def call_llm(prompt, max_tokens=None, reasoning=False):
     # dependency). Only fires if the gateway is unreachable.
     log(f"   🔄 Falling back to direct provider API...")
     fallback_model, fallback_key, fallback_base = get_fallback_config()
-    # No-reasoning + cheap model set: prefer cheap model on the fallback too.
-    if (not reasoning) and CHEAP_MODEL:
-        _ck = get_api_key_from_openclaw(CHEAP_MODEL)
-        _cb = get_api_base_from_model(CHEAP_MODEL)
+    # No-reasoning: prefer explicit model arg, else cheap model, on the fallback too.
+    if (not reasoning) and _no_reason_model:
+        _ck = get_api_key_from_openclaw(_no_reason_model)
+        _cb = get_api_base_from_model(_no_reason_model)
         if _ck and _cb:
-            fallback_model = CHEAP_MODEL
+            fallback_model = _no_reason_model
             fallback_key = _ck
             fallback_base = _cb
     if fallback_key and fallback_model and fallback_base:

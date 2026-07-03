@@ -4,6 +4,13 @@ All notable changes to dinomem-neuron are documented here.
 
 ---
 
+## Unreleased
+
+### Removed
+- **Calendar integration fully retired.** `calendar_sync.py`, `calendar_tool.py`, and `calendar_oauth_setup.py` deleted; calendar cron entry removed; AGENTS.md calendar block removed; all calendar references removed from docs.
+
+---
+
 ## 1.2.4 — 2026-06-29
 
 ### Added
