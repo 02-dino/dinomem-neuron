@@ -429,6 +429,7 @@ DINOMEM_BODY=$(cat <<'DINOMEM_NEURON_AGENTS_BODY'
 ## auto_note
   triggers:
     - self_commitment: own output implies deferred work → auto-write _note_
+    - external_commitment: own output commits to discrete external artifact (github issue/PR, external send) not done THIS turn → auto-write _note_ immediately with verifiable done_when
     - completion_followup: task done but follow-up remains → auto-write _note_
     - project_estimate: request trips project gate → auto-write project _note_ before starting
   guardrail: only if concrete done_when is writable; personal/ambiguous → ask first
@@ -437,6 +438,7 @@ DINOMEM_BODY=$(cat <<'DINOMEM_NEURON_AGENTS_BODY'
 ## memory_tools
   # extends base memory_tools; adds neuron-specific tools
   session_search: python3 tools/session_search.py; when memory_search thin/uncertain AND session <7d old AND transcript detail needed
+  session_start_recall: extends base M_session_start — at cold start, when opener names entity/feature/continuation absent from _note_ files, run session_search "<natural-language topic of opener>" over recent raw convo <7d and read hit BEFORE answering; glob + session_search both mandatory (neuron-only: base has no session_search tool)
   graph_search: tools/graph_search.py; when complex relational query; fallback: memory_search; skip when relation_edges not yet populated
   # G2: session_search embeds queries too — the base M3_query_style rule applies to it as well:
   #      prefer natural language, avoid technical identifiers/code terms/exact strings/variable names.
