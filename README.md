@@ -239,7 +239,15 @@ The L2/L3/L4 flow above is neuron's core: turning raw memory into validated, beh
 
 ### RAG for long documents
 
-Contracts, books, legal text, manuals — anything too long to live in memory. `docs_ingest.py` chunks and embeds them into a separate vector store (`kb/vector_db_docs/`), kept apart from memory so long docs never pollute the synthesis pipeline. The agent retrieves passages via `docs_search.py` (HyDE query expansion on by default). Re-ingested daily so new/changed files stay searchable.
+Contracts, books, legal text, manuals — anything too long to live in memory. `docs_ingest.py` chunks and embeds them into a separate vector store (`kb/vector_db_docs/`), kept apart from memory so long docs never pollute the synthesis pipeline. The agent retrieves passages via `docs_search.py`. Re-ingested daily so new/changed files stay searchable.
+
+**Hybrid retrieval — three complementary channels, all local, no cloud call:**
+
+1. **Semantic** — embedding similarity over the vector store, with **HyDE query expansion** on by default (the query is rewritten into document-style phrasing before embedding, pulling the vector toward how the answer is actually written).
+2. **Lexical (BM25 + RRF)** — a keyword channel over the same chunks, fused with the semantic ranking via Reciprocal Rank Fusion. Semantic embeddings are fuzzy on *exact tokens* — literal citations (`Pasal 1338`), defined terms, article numbers, proper nouns — which is exactly what legal/contract queries lean on. BM25 gives those a dedicated channel so an exact-citation hit the semantic arm blurred still surfaces. Zero extra dependency (stdlib Okapi BM25 over the existing corpus), and parameter-free in practice (RRF constant defaults to the standard `60`). Disable with `DOCS_BM25=0`; tune the fusion constant with `DOCS_RRF_K`.
+3. **Structural** — entity-graph augmentation appends chunks that share named entities with the top hits, surfacing related passages the query never named.
+
+The three are additive: turning any one off leaves the others intact.
 
 **Seamless ingest.** You don't drop files in a folder or convert anything. Share a document in chat — PDF, Word (`.docx`), `.rtf`, `.odt`, HTML, EPUB, or plain text/markdown — and the agent detects the intent, extracts it to markdown, and ingests it automatically, ready for `docs_search`. This works on any chat channel that downloads attachments to OpenClaw's shared media store (Telegram, WhatsApp, Discord, Slack, and others), not just one. PDF extraction uses `pdftotext` and Office/HTML uses `pandoc`; the installer auto-installs both when possible, and if either is unavailable, text/markdown ingest still works while the affected formats degrade gracefully with a clear message.
 

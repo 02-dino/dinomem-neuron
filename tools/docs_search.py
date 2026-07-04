@@ -1,9 +1,18 @@
 #!/usr/bin/env python3
 """
-docs_search.py — Semantic search over long-form documents (RAG).
+docs_search.py — Hybrid search over long-form documents (RAG).
 
 Searches kb/vector_db_docs/ — the structure-aware document store
 populated by procedures/docs_ingest.py.
+
+Retrieval channels (all additive, all local, no cloud call):
+  1. Semantic — all-MiniLM cosine over Chroma, optionally HyDE-expanded.
+  2. Lexical  — zero-dependency Okapi BM25 over the same chunk corpus, fused
+                with the semantic ranking via Reciprocal Rank Fusion (RRF).
+                Gives exact tokens ("Pasal 1338", defined terms, citations)
+                a dedicated channel where pure semantic is weak. Disable with
+                DOCS_BM25=0; tune fusion constant with DOCS_RRF_K (default 60).
+  3. Structural — entity-graph augmentation appends chunks sharing entities.
 
 Usage (CLI):
   python3 tools/docs_search.py "pasal ketenagakerjaan" --k 5
@@ -19,11 +28,13 @@ Usage (import):
 
 import os
 import sys
+import re
 import json
+import math
 import argparse
 import hashlib
 from pathlib import Path
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple
 
 os.environ['HF_HUB_OFFLINE'] = '1'
 os.environ['TRANSFORMERS_OFFLINE'] = '1'
@@ -102,6 +113,158 @@ def _cached_search(cache_key: str, query: str, fetch_k: int):
         {"page_content": doc.page_content, "metadata": doc.metadata, "score": float(score)}
         for doc, score in raw
     ]
+
+# ── BM25 lexical arm (zero-dependency Okapi BM25) ─────────────────────────────
+# Semantic (all-MiniLM cosine) is fuzzy on exact tokens: literal "Pasal 42",
+# defined terms, article refs, proper nouns. For legal/UU/contract corpora the
+# user very often queries by exact citation, which is precisely where a pure
+# semantic vector is weakest. BM25 adds a dedicated LEXICAL channel; its ranking
+# is fused with the semantic ranking via Reciprocal Rank Fusion (RRF). This is
+# ADDITIVE — HyDE query expansion and entity-graph augmentation are untouched;
+# BM25+RRF is a third, complementary retrieval channel.
+#
+# No new dependency: BM25 is ~40 lines of stdlib math over the same Chroma
+# chunk corpus (single source of truth). The corpus is loaded once and cached,
+# keyed on the Chroma collection count so it rebuilds only when the DB changes.
+#
+# Toggle: DOCS_BM25=0 disables the lexical arm entirely (semantic-only path,
+# byte-identical to the pre-BM25 behavior). RRF constant via DOCS_RRF_K
+# (default 60 — the near-universal literature default, needs no tuning).
+
+_TOKEN_RE = re.compile(r"[a-z0-9]+", re.IGNORECASE)
+
+_bm25_cache = None          # (count, docs, metas, idf, doc_len, avg_len, tf_list)
+
+
+def _tokenize(text: str) -> List[str]:
+    return _TOKEN_RE.findall((text or "").lower())
+
+
+def _chunk_key(meta: dict) -> str:
+    return f"{meta.get('source_file','')}::{meta.get('chunk_index',0)}"
+
+
+def _build_bm25():
+    """Build (or reuse cached) BM25 corpus from the Chroma chunk store.
+
+    Cache invalidates on Chroma document count change (any ingest/rebuild). BM25
+    over the full corpus is cheap here — thousands of chunks, precomputed idf +
+    per-doc term frequencies, scored in pure Python at query time.
+    """
+    global _bm25_cache
+    vs = _get_vectorstore()
+    all_data = vs.get()
+    docs = all_data.get("documents", []) or []
+    metas = all_data.get("metadatas", []) or []
+    count = len(docs)
+
+    if _bm25_cache is not None and _bm25_cache[0] == count:
+        return _bm25_cache
+
+    tf_list: List[Dict[str, int]] = []
+    df: Dict[str, int] = {}
+    doc_len: List[int] = []
+    for text in docs:
+        toks = _tokenize(text)
+        doc_len.append(len(toks))
+        tf: Dict[str, int] = {}
+        for t in toks:
+            tf[t] = tf.get(t, 0) + 1
+        tf_list.append(tf)
+        for t in tf:
+            df[t] = df.get(t, 0) + 1
+
+    n = max(count, 1)
+    avg_len = (sum(doc_len) / n) if count else 0.0
+    # Okapi BM25 idf with +1 smoothing (always positive).
+    idf = {t: math.log(1 + (n - dfi + 0.5) / (dfi + 0.5)) for t, dfi in df.items()}
+
+    _bm25_cache = (count, docs, metas, idf, doc_len, avg_len, tf_list)
+    return _bm25_cache
+
+
+def _bm25_rank(query: str, top_n: int, k1: float = 1.5, b: float = 0.75) -> List[Tuple[str, dict, str, float]]:
+    """Return top_n chunks by BM25 score as (chunk_key, metadata, content, score)."""
+    try:
+        count, docs, metas, idf, doc_len, avg_len, tf_list = _build_bm25()
+    except Exception:
+        return []
+    if not count:
+        return []
+    q_terms = [t for t in _tokenize(query) if t in idf]
+    if not q_terms:
+        return []
+
+    scored: List[Tuple[float, int]] = []
+    for i in range(count):
+        tf = tf_list[i]
+        dl = doc_len[i] or 1
+        s = 0.0
+        for t in q_terms:
+            f = tf.get(t)
+            if not f:
+                continue
+            denom = f + k1 * (1 - b + b * (dl / (avg_len or 1)))
+            s += idf[t] * (f * (k1 + 1)) / denom
+        if s > 0.0:
+            scored.append((s, i))
+
+    scored.sort(key=lambda x: (-x[0], x[1]))
+    out = []
+    for s, i in scored[:top_n]:
+        meta = metas[i] if i < len(metas) else {}
+        out.append((_chunk_key(meta), meta, docs[i], s))
+    return out
+
+
+def _rrf_fuse(semantic: List[dict], lexical: List[Tuple[str, dict, str, float]],
+              k: int, rrf_k: int = 60) -> List[dict]:
+    """Reciprocal Rank Fusion of the semantic list (result dicts) and the BM25
+    list. RRF score = sum over channels of 1/(rrf_k + rank). Parameter-free in
+    practice: rrf_k=60 is the standard literature default and needs no tuning.
+
+    Semantic result dicts are the canonical carriers (they hold the already-
+    normalized metadata shape). A BM25-only hit (exact-token match the semantic
+    arm missed — the whole point) is materialized into the same dict shape and
+    appended so it can win on fusion.
+    """
+    fused: Dict[str, dict] = {}
+    scores: Dict[str, float] = {}
+
+    for rank, r in enumerate(semantic, start=1):
+        ck = _chunk_key({
+            'source_file': r['metadata'].get('source_file', ''),
+            'chunk_index': r['metadata'].get('chunk_index', 0),
+        })
+        fused[ck] = r
+        scores[ck] = scores.get(ck, 0.0) + 1.0 / (rrf_k + rank)
+
+    for rank, (ck, meta, content, _bm) in enumerate(lexical, start=1):
+        scores[ck] = scores.get(ck, 0.0) + 1.0 / (rrf_k + rank)
+        if ck not in fused:
+            fused[ck] = {
+                'content': content,
+                'score': 0.0,          # no semantic score; ranked via fusion
+                'lexical_retrieved': True,
+                'metadata': {
+                    'doc_title': meta.get('title', ''),
+                    'section_title': meta.get('section_title', ''),
+                    'section_level': meta.get('section_level', 0),
+                    'chunk_index': meta.get('chunk_index', 0),
+                    'source_file': meta.get('source_file', ''),
+                    'date': meta.get('date', ''),
+                    'doc_type': meta.get('doc_type', 'document'),
+                },
+            }
+
+    ordered = sorted(fused.keys(), key=lambda c: (-scores[c],))
+    out = []
+    for ck in ordered[:k]:
+        item = fused[ck]
+        item['rrf_score'] = round(scores[ck], 6)
+        out.append(item)
+    return out
+
 
 # ── Search ────────────────────────────────────────────────────────────────────
 def _hyde_expand(query: str) -> str:
@@ -242,6 +405,37 @@ def docs_search(
         results = _collect(raw_wider)
         if len(raw_wider) < fetch_k:
             break  # corpus exhausted — no more chunks to fetch
+
+    # ── BM25 lexical arm + RRF fusion (additive; HyDE/graph untouched) ────────
+    # BM25 runs on the ORIGINAL query (literal tokens), not the HyDE'd prose —
+    # the lexical channel exists precisely to catch exact citations/terms the
+    # semantic vector blurs. Fuse the two rankings via RRF, then hand off to the
+    # entity-graph expansion exactly as before. Disable with DOCS_BM25=0.
+    bm25_on = os.environ.get('DOCS_BM25', '1') not in ('0', 'false', 'False', '')
+    if bm25_on:
+        try:
+            rrf_k = int(os.environ.get('DOCS_RRF_K', '60'))
+        except Exception:
+            rrf_k = 60
+        # Over-fetch the lexical arm so RRF has real depth to fuse against.
+        lex_raw = _bm25_rank(query, top_n=max(k * 4, 20))
+        # Apply the same doc/section filters to lexical hits (filters are a hard
+        # constraint, not a ranking signal).
+        lex = []
+        for lk, meta, content, score in lex_raw:
+            if doc_filter:
+                title = meta.get('title', '').lower()
+                src = meta.get('source_file', '').lower()
+                if doc_filter.lower() not in title and doc_filter.lower() not in src:
+                    continue
+            if section_filter:
+                if section_filter.lower() not in meta.get('section_title', '').lower():
+                    continue
+            if max_chars:
+                content = content[:max_chars]
+            lex.append((lk, meta, content, score))
+        if lex:
+            results = _rrf_fuse(results, lex, k=k, rrf_k=rrf_k)
 
     # Graph-augmented retrieval: find related chunks via entity/relation edges
     if graph and results:
