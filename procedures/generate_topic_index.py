@@ -78,6 +78,21 @@ def _guard_memory_size(memory_content: str) -> str:
     limit = _resolve_max_index_chars()
     if len(memory_content) <= limit:
         return memory_content
+    # Safety net (Fix B): before trimming Searchable, collapse any single
+    # over-long line anywhere in the content. The Previous Session keyword blob
+    # lives ABOVE ## Searchable, so line-trimming Searchable alone can't shrink
+    # it. Any line longer than _MAX_SINGLE_LINE_CHARS is truncated in place.
+    _MAX_SINGLE_LINE_CHARS = 800
+    if any(len(ln) > _MAX_SINGLE_LINE_CHARS for ln in memory_content.splitlines()):
+        _fixed = []
+        for ln in memory_content.splitlines():
+            if len(ln) > _MAX_SINGLE_LINE_CHARS:
+                ln = ln[:_MAX_SINGLE_LINE_CHARS].rsplit(' ', 1)[0] + ' …'
+            _fixed.append(ln)
+        memory_content = "\n".join(_fixed) + ("\n" if memory_content.endswith("\n") else "")
+        log(f"⚠️  MEMORY.md had an over-long line (> {_MAX_SINGLE_LINE_CHARS} chars) — collapsed in place.")
+        if len(memory_content) <= limit:
+            return memory_content
     marker = "## Searchable"
     idx = memory_content.find(marker)
     if idx == -1:
@@ -892,7 +907,18 @@ def get_previous_session_topics() -> Optional[str]:
         if not topics:
             return None
 
+        # Cap the Previous Session keyword line. The slug path (above) has no
+        # per-item limit — a heavy work-day produces hundreds of dated memory
+        # files -> hundreds of slugs -> one multi-KB line that _guard_memory_size
+        # can't trim (it trims whole lines, not within a single line). Cap here:
+        # keep at most _PREV_SESSION_MAX_TOPICS items AND hard-ceil the joined
+        # string length so this block can never dominate the injected MEMORY.md.
+        _PREV_SESSION_MAX_TOPICS = 15
+        _PREV_SESSION_MAX_CHARS = 600
+        topics = topics[:_PREV_SESSION_MAX_TOPICS]
         topics_str = ', '.join(topics)
+        if len(topics_str) > _PREV_SESSION_MAX_CHARS:
+            topics_str = topics_str[:_PREV_SESSION_MAX_CHARS].rsplit(', ', 1)[0] + ', …'
         return f'## Previous Session ({session_date}) — search if relevant\n{topics_str}'
 
     except Exception as e:

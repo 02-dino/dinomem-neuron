@@ -4,6 +4,19 @@ All notable changes to dinomem-neuron are documented here.
 
 ---
 
+## 1.2.5
+
+Memory reliability fixes. **Recommended for all users.**
+
+### Fixed
+- **MEMORY.md bloat on heavy work-days (`generate_topic_index.py`).** The "Previous Session" keyword line was built from the slug path with no per-item cap — a day with many dated memory files produced hundreds of slugs joined into one multi-KB line that the size guard couldn't trim (it trims whole lines, not within a line). Result: MEMORY.md could balloon well past the bootstrap char cap and get silently truncated on injection. Fix A: cap the slug path (15 items / 600 chars), symmetric with the already-capped LLM/word-freq paths. Fix B: `_guard_memory_size` now also collapses any single over-long line as a safety net, not just the `## Searchable` section.
+- **Silent extraction failure on multi-Node hosts / permanent loss on transient LLM failure** (shared with dinomem base). Node resolved at runtime (>= 22.19), failed extractions retry instead of being marked processed, tolerant JSON parsing of gateway stdout. Ensure dinomem base is also updated (>= 1.2.9).
+
+### Upgrade
+Unzip the new archive over your install and run `scripts/install.sh --force`. Also update dinomem base to >= 1.2.9.
+
+---
+
 ## Unreleased
 
 ### Removed

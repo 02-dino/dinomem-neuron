@@ -282,7 +282,7 @@ resume_state: <paths / decisions the next turn needs to resume blind>
 - **Execution loop** — do the current step, then read context usage via `session_status`. Below 60% used: mark `[x]`, rewrite `resume_state`, advance, continue. At/over 60% used with >2 remaining steps: spawn a subagent to continue (keeps main session light). At/over 60% used otherwise: checkpoint and stop cleanly, reporting `step n/m done`. This 60%-used reactive checkpoint is the *fallback*; the primary gate is the proactive upfront estimate above (the two are consistent — ~40% headroom either way, one expressed as budget-remaining, one as context-used). Resumption reads `resume_state` **only** — never chat history — so a blind fresh session continues from the note alone.
 - **Driver (hybrid)** — the user can say "continue", or the **Project Advancer** cron (every 15 min) sweeps `in_progress` projects and advances them unattended. Pre-check: a zero-LLM bash script runs first — if no `in_progress` notes exist, the LLM is never invoked (zero idle cost). A safety gate keeps autonomy honest: destructive or external steps (delete data, git push, external messages, spend money, credentials) are **not** run unattended — the project pauses and tags the owner for approval (platform-appropriate mention). Read/build/local-file steps proceed on their own. Announcements are state-change only — no repeat spam; malformed/stalled alerts rate-limited to once per 24h.
 - **Atomic task claiming** — before executing any step, the Advancer writes `claimed_by` + `claimed_at` to the note. If two Advancer instances overlap, the second sees the claim and skips. Claims older than 10 minutes are stale and auto-released.
-- **Two distinct crons, don't conflate them** — the **Project Advancer** (every 15 min) drives *progress*: it advances `in_progress` project steps. The **context watchdog** (`context_watchdog.py`, every 5 min, zero LLM) is a separate *overflow rescue*: it checks all active sessions via REST, and if context usage exceeds 60% it sends a checkpoint wake event to that session — catching overflow the upfront estimate missed. One moves projects forward; the other prevents any session from blowing its context mid-step.
+- **Project Advancer drives progress** — the **Project Advancer** (every 15 min) advances `in_progress` project steps unattended. Context overflow is handled natively by OpenClaw's safeguard compaction, so no separate context watchdog is needed (the former `context_watchdog.py` was removed as redundant).
 
 Resolution is unchanged: once `done_when` is met, the base Daily Note Review cron deletes or promotes the note. See [`references/architecture.md`](references/architecture.md) for the full spec.
 
@@ -344,7 +344,6 @@ All signals must align. One-off or low-confidence insights stay in synthesis —
 | Every 15 min | Project Advancer (OpenClaw cron) | Auto-advance `type: project` notes one step/run, unattended; zero LLM when idle (bash pre-check); state-change-only announcements |
 | Weekly Sun 4:00 UTC | `memory_promote.py` + `generate_topic_index.py` | L4 — Knowledge Promotion + MEMORY.md enrichment; triggers `skill_extract.py` after each run |
 | On project completion / L3 / L4 | `skill_extract.py` | Skill Promotion — extracts reusable procedures from completed projects, L3 clusters, and PERSISTENT.md best practices; promotes at convergence ≥ 3 |
-| Every 5 min | `context_watchdog.py` | Context budget watchdog — REST-only, no LLM; sends checkpoint wake to sessions >60% context |
 
 ---
 
@@ -387,8 +386,6 @@ All signals must align. One-off or low-confidence insights stay in synthesis —
 ├── tools/
 │   ├── docs_search.py          # RAG — semantic search over long docs (HyDE query expansion enabled by default)
 │   └── cache_utils.py          # Shared cache utility
-├── scripts/
-│   └── context_watchdog.py     # Context budget watchdog — REST-only, no LLM, system cron every 5min
 ├── topics/
 │   ├── INDEX.md                # Auto-generated topic tree (do not edit)
 │   ├── PERSISTENT.md           # Manually curated persistent topics
