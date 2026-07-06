@@ -1,10 +1,16 @@
 #!/usr/bin/env bash
 # dinomem-neuron — install script
 # Extends dinomem with L2 graph, L3 synthesis, L4 promotion, contradiction check, topic index.
-# Requires dinomem base installed first.
+# Requires dinomem base installed first. If the base is MISSING this installer
+# auto-installs it (git clone + base install.sh) and then BLOCKS (hard fail) if
+# the base still cannot be provisioned. Pass --no-auto-base to skip auto-install
+# and hard-fail immediately when the base is absent.
 #
 # Usage:
-#   bash scripts/install.sh [--workspace DIR] [--agent-id ID] [--no-cron] [--force] [--agree]
+#   bash scripts/install.sh [--workspace DIR] [--agent-id ID] [--no-cron] [--force] [--agree] [--no-auto-base]
+#
+# Env:
+#   DINOMEM_BASE_REPO   override base repo URL (default https://github.com/02-dino/dinomem)
 set -euo pipefail
 
 SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -12,6 +18,8 @@ WS="${OPENCLAW_WORKSPACE:-$HOME/.openclaw/workspace}"
 AGENT_ID=""
 DO_CRON=1
 FORCE=0
+NO_AUTO_BASE=0
+DINOMEM_BASE_REPO="${DINOMEM_BASE_REPO:-https://github.com/02-dino/dinomem}"
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -20,6 +28,7 @@ while [ $# -gt 0 ]; do
     --no-cron)        DO_CRON=0; shift ;;
     --force)          FORCE=1; shift ;;
     --agree)          LICENSE_AGREED=1; shift ;;
+    --no-auto-base)   NO_AUTO_BASE=1; shift ;;
     -h|--help)        grep -E '^#( |$)' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
@@ -67,15 +76,82 @@ hr()   { printf '\033[1m== %s ==\033[0m\n' "$*"; }
 
 [ -d "$WS" ] || fail "Workspace not found: $WS  (pass --workspace DIR)"
 
-# Check dinomem is installed
-[ -f "$WS/procedures/session_reset.py" ] || fail "dinomem base not found in $WS. Install dinomem first: https://github.com/02-dino/dinomem"
-
+# AGENT_ID resolution (kept MANUAL by design — never auto-detected from OpenClaw
+# config). Three tiers, tracked so the auto-base path can refuse to guess:
+#   AGENT_ID_SOURCE=flag        --agent-id was passed explicitly (authoritative)
+#   AGENT_ID_SOURCE=convention  derived from a workspace-<id> directory name
+#   AGENT_ID_SOURCE=guess       neither — basename of a non-conventional workspace
+AGENT_ID_SOURCE="flag"
 if [ -z "$AGENT_ID" ]; then
-  AGENT_ID="$(basename "$WS")"
-  AGENT_ID="${AGENT_ID#workspace-}"
+  _WS_BASE="$(basename "$WS")"
+  case "$_WS_BASE" in
+    workspace-?*) AGENT_ID="${_WS_BASE#workspace-}"; AGENT_ID_SOURCE="convention" ;;
+    *)            AGENT_ID="$_WS_BASE";              AGENT_ID_SOURCE="guess" ;;
+  esac
 fi
 
 OPENCLAW_DIR="$(dirname "$WS")"
+
+# ── dinomem base dependency: auto-install, then BLOCK ────────────────────────
+# neuron is a strict extension of the dinomem base. Base marker files
+# (procedures/session_reset.py AND procedures/extract_memory.py) MUST exist.
+# If missing, the installer provisions the base ITSELF (git clone + base
+# install.sh) rather than telling the human to run commands by hand. If the
+# base still isn't present afterwards, we HARD FAIL — install is blocked, not
+# merely warned. --no-auto-base skips the clone and fails immediately.
+base_installed() { [ -f "$WS/procedures/session_reset.py" ] && [ -f "$WS/procedures/extract_memory.py" ]; }
+
+auto_install_base() {
+  # Clones DINOMEM_BASE_REPO next to the workspace and runs its install.sh with
+  # the SAME --workspace/--agent-id, non-interactively. Returns nonzero on any
+  # failure so the caller can hard-fail.
+  local clone_dir base_install
+  command -v git >/dev/null 2>&1 || { warn "git not found — cannot auto-install dinomem base"; return 1; }
+  clone_dir="$OPENCLAW_DIR/dinomem"
+  if [ -d "$clone_dir/.git" ]; then
+    ok "dinomem base repo already cloned at $clone_dir — pulling latest"
+    git -C "$clone_dir" pull --ff-only >/dev/null 2>&1 || warn "git pull failed — using existing clone"
+  elif [ -e "$clone_dir" ]; then
+    warn "$clone_dir exists but is not a git repo — using it as-is"
+  else
+    ok "cloning dinomem base: $DINOMEM_BASE_REPO -> $clone_dir"
+    git clone --depth 1 "$DINOMEM_BASE_REPO" "$clone_dir" >/dev/null 2>&1 || { warn "git clone failed: $DINOMEM_BASE_REPO"; return 1; }
+  fi
+  base_install="$clone_dir/scripts/install.sh"
+  [ -f "$base_install" ] || { warn "base install.sh not found at $base_install"; return 1; }
+  ok "running dinomem base installer (non-interactive)"
+  # Base install is dependency provisioning, not the neuron license gate — run it
+  # unattended. Omit --no-cron: we WANT the base crons registered.
+  bash "$base_install" --workspace "$WS" --agent-id "$AGENT_ID" ${LICENSE_AGREED:+--agree} || { warn "dinomem base installer exited nonzero"; return 1; }
+  return 0
+}
+
+if ! base_installed; then
+  if [ "$NO_AUTO_BASE" = 1 ]; then
+    fail "dinomem base not found in $WS and --no-auto-base set. Install it first: $DINOMEM_BASE_REPO"
+  fi
+  # Do NOT auto-provision the base under a GUESSED agent id. When --agent-id was
+  # not given and the workspace dir doesn't follow the workspace-<id> convention,
+  # basename is only a guess — handing it to the base installer would silently
+  # create a base bound to the wrong id. agent id is a manual decision by design,
+  # so BLOCK and make the human/agent state it explicitly. (If the base already
+  # existed we would not be here, so this only gates fresh base provisioning.)
+  if [ "$AGENT_ID_SOURCE" = "guess" ]; then
+    fail "Cannot auto-install dinomem base: agent id is ambiguous.
+  --agent-id was not passed, and workspace '$WS' does not match the
+  workspace-<id> convention, so '$AGENT_ID' is only a guess. Provisioning the
+  base under a guessed id could bind it to the wrong agent.
+  Re-run stating the id explicitly:
+    bash scripts/install.sh --workspace $WS --agent-id <your-agent-id> --agree"
+  fi
+  warn "dinomem base not detected in $WS — auto-installing it now (required dependency, agent id: $AGENT_ID [$AGENT_ID_SOURCE])"
+  auto_install_base || fail "dinomem base auto-install failed. Install it manually then re-run:
+    git clone $DINOMEM_BASE_REPO
+    bash dinomem/scripts/install.sh --workspace $WS --agent-id $AGENT_ID
+  then re-run this neuron installer."
+  base_installed || fail "dinomem base still not present after auto-install (markers missing in $WS/procedures/). Install blocked."
+  ok "dinomem base provisioned"
+fi
 OPENCLAW_MEMORY_DIR="$OPENCLAW_DIR/memory"
 # Agent sessions dir — where session_reset.py archives *.archived.*.jsonl in
 # place. session_ingest.py reads from here (same path the base dinomem installer
@@ -133,9 +209,11 @@ fi
 # (silently degraded — no thinking budget). Enforce the floor so install order
 # (base first, often an old base) can't quietly weaken reasoning quality.
 DINOMEM_MIN_VERSION="1.2.0"
-if [ ! -f "$WS/procedures/extract_memory.py" ]; then
-  warn "dinomem base not detected (extract_memory.py missing) — install dinomem first."
-  warn "  bash dinomem/scripts/install.sh --workspace $WS --agent-id $AGENT_ID"
+# By this point the top-of-script dependency gate has guaranteed the base is
+# present (or auto-installed it, or hard-failed). This is a defensive re-check
+# plus the VERSION floor enforcement.
+if ! base_installed; then
+  fail "dinomem base markers missing (session_reset.py/extract_memory.py). Install blocked."
 else
   ok "dinomem base detected"
   # Check VERSION file
@@ -144,20 +222,38 @@ else
     # Try SKILL_DIR sibling
     DINOMEM_VERSION_FILE="$(dirname "$SKILL_DIR")/dinomem/VERSION"
   fi
+  # Simple semver compare (major.minor.patch): true when $1 >= $2.
+  # Sort both ascending; if the smaller line equals $2, then $1 >= $2.
+  version_gte() {
+    [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | head -n1)" = "$2" ]
+  }
   if [ -f "$DINOMEM_VERSION_FILE" ]; then
     DINOMEM_VERSION=$(cat "$DINOMEM_VERSION_FILE" | tr -d '[:space:]')
-    # Simple semver compare (major.minor.patch)
-    version_gte() {
-      printf '%s\n%s' "$1" "$2" | sort -V -C
-    }
     if version_gte "$DINOMEM_VERSION" "$DINOMEM_MIN_VERSION"; then
       ok "dinomem version $DINOMEM_VERSION (>= $DINOMEM_MIN_VERSION required)"
     else
-      warn "dinomem version $DINOMEM_VERSION is below minimum required $DINOMEM_MIN_VERSION — update dinomem first."
-      warn "  bash dinomem/scripts/update.sh --workspace $WS --agent-id $AGENT_ID"
+      warn "dinomem version $DINOMEM_VERSION is below minimum required $DINOMEM_MIN_VERSION — attempting auto-update."
+      DINOMEM_UPDATE="$(dirname "$DINOMEM_VERSION_FILE")/scripts/update.sh"
+      if [ "$NO_AUTO_BASE" != 1 ] && [ -f "$DINOMEM_UPDATE" ]; then
+        bash "$DINOMEM_UPDATE" --workspace "$WS" --agent-id "$AGENT_ID" ${LICENSE_AGREED:+--agree} \
+          || warn "dinomem base update.sh exited nonzero"
+        DINOMEM_VERSION=$(cat "$DINOMEM_VERSION_FILE" 2>/dev/null | tr -d '[:space:]')
+      elif [ "$NO_AUTO_BASE" != 1 ]; then
+        # No update.sh in this base checkout — refresh the clone and rerun base install.
+        auto_install_base || warn "dinomem base auto-update failed"
+        DINOMEM_VERSION=$(cat "$DINOMEM_VERSION_FILE" 2>/dev/null | tr -d '[:space:]')
+      fi
+      # Re-check the floor — if STILL below, BLOCK.
+      if version_gte "${DINOMEM_VERSION:-0.0.0}" "$DINOMEM_MIN_VERSION"; then
+        ok "dinomem version $DINOMEM_VERSION (>= $DINOMEM_MIN_VERSION required, updated)"
+      else
+        fail "dinomem version ${DINOMEM_VERSION:-unknown} is below required $DINOMEM_MIN_VERSION and could not be auto-updated. Update it manually:
+    bash dinomem/scripts/update.sh --workspace $WS --agent-id $AGENT_ID
+  then re-run this neuron installer. Install blocked."
+      fi
     fi
   else
-    warn "dinomem VERSION file not found — cannot verify version. Ensure dinomem >= $DINOMEM_MIN_VERSION is installed."
+    warn "dinomem VERSION file not found — cannot verify version floor ($DINOMEM_MIN_VERSION). Proceeding, but reasoning scripts may be silently degraded on an old base."
   fi
 fi
 # Existing neuron data
