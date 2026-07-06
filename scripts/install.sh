@@ -1,10 +1,15 @@
 #!/usr/bin/env bash
 # dinomem-neuron — install script
 # Extends dinomem with L2 graph, L3 synthesis, L4 promotion, contradiction check, topic index.
-# Requires dinomem base installed first. If the base is MISSING this installer
-# auto-installs it (git clone + base install.sh) and then BLOCKS (hard fail) if
-# the base still cannot be provisioned. Pass --no-auto-base to skip auto-install
-# and hard-fail immediately when the base is absent.
+# Requires dinomem base. This installer ALWAYS installs/refreshes the base FIRST
+# on every run (git clone/pull + base install.sh) so the user automatically gets
+# the latest base — no separate update step. If the base is MISSING and cannot be
+# provisioned, it BLOCKS (hard fail). If a base was already present and the
+# refresh fails (e.g. offline), it warns and continues with the existing base.
+# ORDER MATTERS: base installs BEFORE neuron copies its files, because neuron is
+# a strict extension that overwrites a subset of base files with enhanced
+# versions — base-after-neuron would nullify the upgrade. Pass --no-auto-base to
+# skip touching the base entirely (then the base must already exist, or fail).
 #
 # Usage:
 #   bash scripts/install.sh [--workspace DIR] [--agent-id ID] [--no-cron] [--force] [--agree] [--no-auto-base]
@@ -92,13 +97,13 @@ fi
 
 OPENCLAW_DIR="$(dirname "$WS")"
 
-# ── dinomem base dependency: auto-install, then BLOCK ────────────────────────
+# ── dinomem base: helper + installer (always run — see block below) ──────────
 # neuron is a strict extension of the dinomem base. Base marker files
 # (procedures/session_reset.py AND procedures/extract_memory.py) MUST exist.
-# If missing, the installer provisions the base ITSELF (git clone + base
-# install.sh) rather than telling the human to run commands by hand. If the
-# base still isn't present afterwards, we HARD FAIL — install is blocked, not
-# merely warned. --no-auto-base skips the clone and fails immediately.
+# base_installed() checks their presence; auto_install_base() clones/pulls the
+# base repo and runs its (idempotent) installer. The driver block further down
+# runs this on EVERY install so users always get the latest base, and enforces
+# base-before-neuron ordering.
 base_installed() { [ -f "$WS/procedures/session_reset.py" ] && [ -f "$WS/procedures/extract_memory.py" ]; }
 
 auto_install_base() {
@@ -126,31 +131,63 @@ auto_install_base() {
   return 0
 }
 
-if ! base_installed; then
-  if [ "$NO_AUTO_BASE" = 1 ]; then
-    fail "dinomem base not found in $WS and --no-auto-base set. Install it first: $DINOMEM_BASE_REPO"
-  fi
-  # Do NOT auto-provision the base under a GUESSED agent id. When --agent-id was
-  # not given and the workspace dir doesn't follow the workspace-<id> convention,
-  # basename is only a guess — handing it to the base installer would silently
-  # create a base bound to the wrong id. agent id is a manual decision by design,
-  # so BLOCK and make the human/agent state it explicitly. (If the base already
-  # existed we would not be here, so this only gates fresh base provisioning.)
-  if [ "$AGENT_ID_SOURCE" = "guess" ]; then
+# ── ALWAYS install/refresh dinomem base FIRST (dependency + auto-update) ──────
+# Design decision (dino): run the base installer on EVERY neuron install, not
+# only when the base is missing. Reason: if we shipped a newer base, the user
+# gets it automatically here — they stay up to date without a separate step.
+# The base installer is idempotent, so re-running on an already-installed base
+# just refreshes it to the latest clone.
+#
+# ORDERING INVARIANT (critical): base install MUST happen BEFORE neuron copies
+# its own files (the "Copying scripts" section far below). neuron is a strict
+# extension that OVERWRITES a subset of base files with enhanced versions. If the
+# base installer ran AFTER neuron, base would clobber neuron's overrides and
+# silently nullify the upgrade. So: base first (here), neuron second (later).
+# Do not move this block below the copy section.
+HAD_BASE_BEFORE=0
+if base_installed; then HAD_BASE_BEFORE=1; fi
+
+if [ "$NO_AUTO_BASE" = 1 ]; then
+  # Opt-out of auto-base: never touch the base. But it MUST already exist.
+  base_installed || fail "dinomem base not found in $WS and --no-auto-base set. Install it first: $DINOMEM_BASE_REPO"
+  ok "dinomem base present (--no-auto-base: skipping base install/refresh)"
+else
+  # Guess-guard applies ONLY to FRESH provisioning. When the base is MISSING and
+  # the agent id is only a guess (no --agent-id, non-conventional workspace),
+  # provisioning a NEW base under a wrong id is dangerous → BLOCK. When the base
+  # ALREADY exists we are merely refreshing it with its established id, so a
+  # guessed basename is harmless and we proceed.
+  if [ "$HAD_BASE_BEFORE" != 1 ] && [ "$AGENT_ID_SOURCE" = "guess" ]; then
     fail "Cannot auto-install dinomem base: agent id is ambiguous.
   --agent-id was not passed, and workspace '$WS' does not match the
-  workspace-<id> convention, so '$AGENT_ID' is only a guess. Provisioning the
+  workspace-<id> convention, so '$AGENT_ID' is only a guess. Provisioning a NEW
   base under a guessed id could bind it to the wrong agent.
   Re-run stating the id explicitly:
     bash scripts/install.sh --workspace $WS --agent-id <your-agent-id> --agree"
   fi
-  warn "dinomem base not detected in $WS — auto-installing it now (required dependency, agent id: $AGENT_ID [$AGENT_ID_SOURCE])"
-  auto_install_base || fail "dinomem base auto-install failed. Install it manually then re-run:
+
+  if [ "$HAD_BASE_BEFORE" = 1 ]; then
+    ok "dinomem base present — refreshing to latest (agent id: $AGENT_ID [$AGENT_ID_SOURCE])"
+  else
+    warn "dinomem base not detected in $WS — installing it now (required dependency, agent id: $AGENT_ID [$AGENT_ID_SOURCE])"
+  fi
+
+  if auto_install_base; then
+    base_installed || fail "dinomem base markers missing after install (in $WS/procedures/). Install blocked."
+    ok "dinomem base $([ "$HAD_BASE_BEFORE" = 1 ] && echo refreshed || echo provisioned)"
+  else
+    # Install/refresh failed. If base was ALREADY present, degrade to a warning
+    # and continue with the existing base (don't break neuron over a failed
+    # refresh — e.g. offline). If base was MISSING, this is fatal.
+    if [ "$HAD_BASE_BEFORE" = 1 ]; then
+      warn "dinomem base refresh failed (offline?) — continuing with existing base. It may not be the latest."
+    else
+      fail "dinomem base install failed. Install it manually then re-run:
     git clone $DINOMEM_BASE_REPO
     bash dinomem/scripts/install.sh --workspace $WS --agent-id $AGENT_ID
   then re-run this neuron installer."
-  base_installed || fail "dinomem base still not present after auto-install (markers missing in $WS/procedures/). Install blocked."
-  ok "dinomem base provisioned"
+    fi
+  fi
 fi
 OPENCLAW_MEMORY_DIR="$OPENCLAW_DIR/memory"
 # Agent sessions dir — where session_reset.py archives *.archived.*.jsonl in
