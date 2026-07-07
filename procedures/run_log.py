@@ -29,7 +29,10 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
-BASE = Path(os.environ.get("OPENCLAW_WORKSPACE", "/root/.openclaw/workspace-analyst"))
+_WS_DEFAULT = "DINOMEM_WORKSPACE_PLACEHOLDER"
+if _WS_DEFAULT.startswith("DINOMEM_"):  # sed did not run (ran from ZIP/skill dir)
+    _WS_DEFAULT = str(Path(__file__).resolve().parent.parent)
+BASE = Path(os.environ.get("DINOMEM_WORKSPACE", _WS_DEFAULT))
 LOG_DIR = BASE / "logs"
 LOG_FILE = LOG_DIR / "run_history.jsonl"
 

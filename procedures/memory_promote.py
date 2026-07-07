@@ -55,7 +55,10 @@ try:
 except ImportError:
     HAS_LLM = False
 
-BASE = Path(os.environ.get("OPENCLAW_WORKSPACE", "/root/.openclaw/workspace-analyst"))
+_WS_DEFAULT = "DINOMEM_WORKSPACE_PLACEHOLDER"
+if _WS_DEFAULT.startswith("DINOMEM_"):  # sed did not run (ran from ZIP/skill dir)
+    _WS_DEFAULT = str(Path(__file__).resolve().parent.parent)
+BASE = Path(os.environ.get("DINOMEM_WORKSPACE", _WS_DEFAULT))
 L3_DIR = BASE / "kb/memory_neuron/l3_synthesis"
 L4_DIR = BASE / "kb/memory_neuron/l4_promoted"
 TOPICS_DIR = BASE / "topics"

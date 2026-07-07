@@ -30,7 +30,10 @@ from datetime import datetime, timedelta
 from difflib import SequenceMatcher
 from pathlib import Path
 
-BASE = Path(os.environ.get("OPENCLAW_WORKSPACE", "/root/.openclaw/workspace-analyst"))
+_WS_DEFAULT = "DINOMEM_WORKSPACE_PLACEHOLDER"
+if _WS_DEFAULT.startswith("DINOMEM_"):  # sed did not run (ran from ZIP/skill dir)
+    _WS_DEFAULT = str(Path(__file__).resolve().parent.parent)
+BASE = Path(os.environ.get("DINOMEM_WORKSPACE", _WS_DEFAULT))
 MEMORY_DIR = BASE / "memory"
 SKILLS_DIR = BASE / "skills"
 CANDIDATES_DIR = BASE / "kb/memory_neuron/skill_candidates"
