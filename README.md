@@ -162,6 +162,20 @@ Disk barely moves (graph JSON is small; docs vector DB is ~1–2 MB per 1000 chu
 
 > **Verify dinomem is working first.** Run `python3 <workspace>/procedures/auto_session_reset.py` and confirm `memory/*.md` files exist before installing neuron.
 
+### Token usage
+
+Recurring cost is LLM tokens only. Figures below are **cumulative — dinomem base included** (neuron runs on top of base, not instead of it). Estimated tokens/month (input+output), grounded in the actual batch caps:
+
+| Usage | Cheap-eligible (base) | Default-only (neuron L3/L4) | Total |
+| ----------------------- | --------------------- | --------------------------- | ------- |
+| Low — ~2–3 sessions/day | ~1–2M                 | ~1–2M                       | ~2–4M   |
+| Moderate — ~8–12/day    | ~5–9M                 | ~4–7M                       | ~9–16M  |
+| High — ~30+/day         | ~18–30M               | ~10–15M                     | ~28–45M |
+
+**Cheap-eligible** = base bulk (extraction, review) — routes to [`DINOMEM_CHEAP_MODEL`](#model-selection) if set. **Default-only** = neuron's L3 synthesis + L4 promotion, which run on your **default** (reasoning) model by design — the cheap lever can't touch these. Graph/L2 = **0 tokens** (pure local cosine).
+
+_Grounding: extract ~26k tok / 3 sessions · review ~4k/day · synthesis `nodes//10` clusters/day (cap 40) × ~1.2k tok · order-of-magnitude, scales with sessions/day + corpus size._
+
 ---
 
 ## How it all works
