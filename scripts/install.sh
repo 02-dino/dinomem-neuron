@@ -522,7 +522,7 @@ job = {
         "message": "Project Advancer. Auto-advance step-by-step project notes unattended, announce progress.\n\nStep 0: PRE-CHECK (zero LLM cost gate). Run: bash $WS/scripts/check_projects.sh
 If exit code != 0 → no in_progress project notes exist. Stop immediately, no announce.
 
-Step 1: ls memory/_note_*.md in $WS/memory/. Read each. Select only notes with type: project AND status: in_progress.\n\nStep 1b — BUDGET CHECK (pre-task estimation): Before advancing any project, call session_status to get current context%. For each candidate project, estimate token cost: (number of files to read × 500) + (remaining steps × 1000). If estimated cost + current context% > 80% of budget, skip that project this run and announce it was skipped due to context budget. Only advance projects that fit within budget.\n\nStep 2 — CLAIM CHECK (atomic task claiming): For each in_progress note, read claimed_by and claimed_at fields. (G6 live-session guard) If claimed_by STARTS WITH 'live-session' AND claimed_at is less than 15 minutes ago, SKIP this note entirely — a human is actively working it in an interactive session; never fight a live session. If claimed_by is set (any other value) AND claimed_at is less than 10 minutes ago, SKIP this note entirely (another Advancer instance is working it). If claimed_at is older than its window (15min for live-session, 10min otherwise), the claim is stale — clear claimed_by and claimed_at, then proceed. If claimed_by is absent, proceed.\n\nStep 3 — CLAIM WRITE: Before executing any step, write claimed_by: <this run's cron run_id or a short uuid> and claimed_at: <current ISO timestamp> to the note. Re-read the note immediately after writing to verify the claim was written correctly. If the re-read shows a different claimed_by (race condition), abort this note and move on.\n\nStep 4: For each claimed in_progress project note, pick the lowest unchecked step at current_step. Resume from resume_state ONLY (the note is self-sufficient; do not rely on chat history).\n\nStep 5: SAFETY GATE before executing the step. If the step is destructive or external (deletes data, git push, sends external messages, irreversible writes outside workspace, spends money, touches credentials), DO NOT execute it. Leave it pending, announce the project is paused awaiting user approval at step n/m — tag the owner in the announcement so they are notified (use platform-appropriate mention format), move to the next project.\n\nStep 6: Execute the one current step. After it: verify the step done_when. If met, mark [x], advance current_step, REWRITE resume_state with what the next step needs (paths, decisions, assumptions). If not met, leave pending and record why in resume_state.\n\nStep 7: Context guard. Check session_status context%. If over 60%, checkpoint (state already written), CLEAR claimed_by and claimed_at from the note, and stop advancing this run. Otherwise continue to the next step of the same project until done or context pressure.\n\nStep 8 — CLAIM RELEASE: After completing or checkpointing a project (step done, context limit hit, or safety gate pause), clear claimed_by and claimed_at from the note before moving to the next project.\n\nStep 9: When a project done_when (all steps [x] / final artifact) is met, flip status to done, clear claimed_by and claimed_at. Daily Note Review will delete/promote it.\n\nStep 10: ANNOUNCE only on state change. Rules:\n- Step advanced or completed → announce with progress bar\n- First time hitting safety gate → announce once, tag owner (use platform-appropriate mention)\n- Already paused (resume_state contains 'awaiting approval') → silent\n- Malformed or stalled → announce only if last_flagged not set in resume_state OR last_flagged > 24h ago; write last_flagged: <ISO timestamp> to resume_state after announcing\n- No state change → silent\nProgress bar: [████░░░░░░] 4/10 40% — project name, step n/m. Short, group-chat style.",
+Step 1: ls memory/_note_*.md in $WS/memory/. Read each. Select only notes with type: project AND status: in_progress.\n\nStep 1b — BUDGET CHECK (pre-task estimation): Before advancing any project, call session_status to get current context%. For each candidate project, estimate token cost: (number of files to read × 500) + (remaining steps × 1000). If estimated cost + current context% > 80% of budget, skip that project this run and announce it was skipped due to context budget. Only advance projects that fit within budget.\n\nStep 2 — CLAIM CHECK (atomic task claiming). ALL timestamps are UTC ISO8601; compute claim age in UTC. For each in_progress note, read claimed_by and claimed_at fields. (G6 live-session guard) If claimed_by STARTS WITH 'live-session' AND claimed_at is less than 120 minutes (2 hours) ago, SKIP this note entirely — a human is actively working it in an interactive session; never fight a live session. If claimed_by is set (any other value) AND claimed_at is less than 30 minutes ago, SKIP this note entirely (another Advancer instance is working it). If claimed_at is older than its window (120min for live-session, 30min otherwise), the claim is stale — clear claimed_by and claimed_at, then proceed. If claimed_at is in the FUTURE (clock/timezone error), treat the claim as INVALID/stale and clear it. If claimed_by is absent, proceed.\n\nStep 3 — CLAIM WRITE: Before executing any step, write claimed_by: <this run's cron run_id or a short uuid> and claimed_at: <current time as UTC ISO8601 with trailing Z, e.g. 2026-07-07T00:55:00Z> to the note. Re-read the note immediately after writing to verify the claim was written correctly. If the re-read shows a different claimed_by (race condition), abort this note and move on.\n\nStep 4: For each claimed in_progress project note, pick the lowest unchecked step at current_step. Resume from resume_state ONLY (the note is self-sufficient; do not rely on chat history).\n\nStep 5: SAFETY GATE before executing the step. If the step is destructive or external (deletes data, git push, sends external messages, irreversible writes outside workspace, spends money, touches credentials), DO NOT execute it. Leave it pending, announce the project is paused awaiting user approval at step n/m — tag the owner in the announcement so they are notified (use platform-appropriate mention format), move to the next project.\n\nStep 6: Execute the one current step. After it: verify the step done_when. If met, mark [x], advance current_step, REWRITE resume_state with what the next step needs (paths, decisions, assumptions). If not met, leave pending and record why in resume_state.\n\nStep 7: Context guard. Check session_status context%. If over 60%, checkpoint (state already written), CLEAR claimed_by and claimed_at from the note, and stop advancing this run. Otherwise continue to the next step of the same project until done or context pressure.\n\nStep 8 — CLAIM RELEASE: After completing or checkpointing a project (step done, context limit hit, or safety gate pause), clear claimed_by and claimed_at from the note before moving to the next project.\n\nStep 9: When a project done_when (all steps [x] / final artifact) is met, flip status to done, clear claimed_by and claimed_at. Daily Note Review will delete/promote it.\n\nStep 10: ANNOUNCE only on state change. Rules:\n- Step advanced or completed → announce with progress bar\n- First time hitting safety gate → announce once, tag owner (use platform-appropriate mention)\n- Already paused (resume_state contains 'awaiting approval') → silent\n- Malformed or stalled → announce only if last_flagged not set in resume_state OR last_flagged > 24h ago; write last_flagged: <ISO timestamp> to resume_state after announcing\n- No state change → silent\nProgress bar: [████░░░░░░] 4/10 40% — project name, step n/m. Short, group-chat style.",
         "timeoutSeconds": 600
     },
     "sessionTarget": "isolated",
@@ -535,6 +535,127 @@ else:
     print(f"  \033[33m[warn]\033[0m Could not register project_advancer cron: {r.stderr[:100]}")
 PYEOF
   fi
+fi
+
+# ── project_improver (Component 2) — OpenClaw agentTurn cron ──────────────────
+# Self-improving closer, half 1 of 2: LLM improves COMPLETED-but-unverified
+# project notes (behavior-preserving, all domains), then stamps verified: true.
+# Zero-LLM pre-gate (check_improvable.sh) guards cost. Premium: neuron only.
+PROJ_IMP_CHECK=$(python3 -c "
+import subprocess, json, sys
+try:
+    r = subprocess.run(['openclaw', 'cron', 'list', '--json'], capture_output=True, text=True, timeout=10)
+    jobs = json.loads(r.stdout) if r.returncode == 0 else []
+    exists = any('project' in j.get('name','').lower() and 'improver' in j.get('name','').lower() for j in (jobs if isinstance(jobs, list) else jobs.get('jobs', {}).get('jobs', [])))
+    print('exists' if exists else 'missing')
+except: print('skip')
+" 2>/dev/null)
+if [ "$PROJ_IMP_CHECK" = "exists" ]; then
+  skip "project_improver OpenClaw cron (exists)"
+elif [ "$PROJ_IMP_CHECK" = "skip" ]; then
+  warn "Could not check OpenClaw cron — add Project Improver cron manually via OpenClaw"
+else
+  python3 - <<PYEOF
+import subprocess, json
+job = {
+    "name": "Project Improver (Component 2)",
+    "schedule": {"kind": "cron", "expr": "20,50 * * * *", "tz": "UTC", "staggerMs": 60000},
+    "payload": {
+        "kind": "agentTurn",
+        "message": "Project Improver (Component 2). You improve COMPLETED-but-unverified project notes, then stamp them verified so Component 1 can retire them. Autonomous, behavior-preserving, all domains. Hold the safety gate HARD — you edit real artifacts unattended.\n\nStep 0 — ZERO-LLM PRE-GATE: Run: bash $WS/scripts/check_improvable.sh\nIf exit code != 0 → nothing to improve. STOP IMMEDIATELY. No further tool calls, no announce.\n\nStep 1 — SELECT: ls memory/_note_*.md in $WS/memory/. Read each. Pick notes with type: project AND status: done AND NOT verified: true. Handle ONE note this run (the oldest by date). If none, stop silently.\n\nStep 2 — CLAIM CHECK (respect the shared claim protocol; never fight another job). ALL timestamps are UTC ISO8601; compute age in UTC. Read claimed_by / claimed_at. If claimed_by STARTS WITH 'live-session' AND claimed_at < 120 minutes (2h) ago → SKIP (a human is working it live; never fight a live session). If claimed_by is any other value AND claimed_at < 30 min ago → SKIP (Advancer or another improver instance owns it). If claimed_at older than its window → stale, clear and proceed. If claimed_at is in the FUTURE (clock/timezone error) → treat as invalid/stale, clear and proceed. If absent → proceed.\n\nStep 3 — CLAIM WRITE: Write claimed_by: component2-improver AND claimed_at: <current time as UTC ISO8601 with trailing Z, e.g. 2026-07-07T00:55:00Z> into the note frontmatter. Re-read immediately to confirm your claim stuck. If a different claimed_by appears (lost a race) → abort this note, stop.\n\nStep 4 — UNDERSTAND: Read the project's done_when and resume_state, and inspect the actual artifact(s) it produced (scripts, deliverables, reports, config — whatever the project made). Establish what the project DOES and how you'll verify it still does that after any change (its behavior contract = its done_when).\n\nStep 5 — ASSESS (principle, NOT a checklist): Ask 'can this be made cheaper, faster, clearer, or more reliable — AND does that even make sense for THIS project?' There is NO prescribed action. Do not force caching/logging/locks/dedup or any technique. The right move is whatever fits this specific project — possibly a technique nobody would list, possibly NOTHING. 'Already efficient, nothing needed' is a valid, common, correct outcome.\n\nStep 6 — IMPROVE (behavior-preserving ONLY): If there is a worthwhile improvement, make it. You MUST NOT change WHAT the project does — only how efficiently/reliably/clearly it does it. Back up any file before editing (bash $SKILL_DIR/scripts/file-backup.sh <file>). Keep changes minimal and targeted.\n\nStep 7 — VALIDATE / DEBUG until reliable: After improving, verify the artifact STILL satisfies the project's done_when — for code: it runs / tests pass / compiles; for a deliverable: it is coherent, complete, and verifiably correct against done_when. If your change broke behavior, debug and fix, or REVERT to the backup. Do not proceed until the behavior contract holds again. If you cannot make it hold, revert fully and treat as 'no safe improvement'.\n\nStep 8 — SAFETY GATE (non-negotiable): You may do LOCAL, reversible work only. If improving/validating would require an EXTERNAL or DESTRUCTIVE action — git push, deleting data, sending external messages, spending money, touching credentials, irreversible writes outside the workspace — DO NOT do it. Do the local part, then STOP before the external action. Do NOT stamp verified. Clear your claim (Step 10), and in Step 11 report the project is 'improved locally, paused awaiting approval for <the external step>', tag the owner. Record in resume_state that it is awaiting approval so the next run does not re-loop on it endlessly.\n\nStep 9 — STAMP VERIFIED: Only if the project is validated behavior-preserving AND no external step is blocking, write verified: true into the note frontmatter. This is the signal Component 1 uses to delete it. (If you determined 'nothing needed', still stamp verified: true — you reviewed and confirmed it's already sound.)\n\nStep 10 — CLAIM RELEASE: Clear claimed_by and claimed_at from the note (whether you stamped verified, paused at the safety gate, or aborted). Never leave a dead claim.\n\nStep 11 — REPORT to the owner via the message tool, using the agent's default owner channel (platform-appropriate mention; do not hardcode a chat id). One short message: project name + what you did. Formats:\n- Improved: 'Improved <project>: <one-line what+why>. Validated behavior-preserving, verified.'\n- Nothing needed: 'Reviewed <project>: already efficient, nothing to change. Verified.'\n- Safety-gated: 'Improved <project> locally: <what>. Paused — needs your approval for <external step> before I finish.' (tag owner)\nKeep it terse. No report if Step 0 gated out or you skipped on a claim (those are silent).\n\nHARD RULES: behavior-preserving only, never change what a project does; local+reversible only, external/destructive → stop+report; one note per run; always release your claim; respect live-session and advancer claims; 'nothing needed' is a valid outcome — never invent busywork.",
+        "timeoutSeconds": 900
+    },
+    "sessionTarget": "isolated",
+    "delivery": {"mode": "none"}
+}
+r = subprocess.run(['openclaw', 'cron', 'add', '--json', json.dumps(job)], capture_output=True, text=True, timeout=15)
+if r.returncode == 0:
+    print("  \033[32m[ok]\033[0m   project_improver OpenClaw cron registered (:20/:50)")
+else:
+    print(f"  \033[33m[warn]\033[0m Could not register project_improver cron: {r.stderr[:100]}")
+PYEOF
+fi
+
+# ── verified_note_deleter (Component 1) — OpenClaw agentTurn cron ─────────────
+# Self-improving closer, half 2 of 2: thin wrapper over resolve_done_notes.py.
+# Deterministically deletes notes carrying verified: true (snapshot + _pin_
+# promote + non-blocking lock + claim-respect). Premium: neuron only.
+NOTE_DEL_CHECK=$(python3 -c "
+import subprocess, json, sys
+try:
+    r = subprocess.run(['openclaw', 'cron', 'list', '--json'], capture_output=True, text=True, timeout=10)
+    jobs = json.loads(r.stdout) if r.returncode == 0 else []
+    exists = any('verified' in j.get('name','').lower() and 'deleter' in j.get('name','').lower() for j in (jobs if isinstance(jobs, list) else jobs.get('jobs', {}).get('jobs', [])))
+    print('exists' if exists else 'missing')
+except: print('skip')
+" 2>/dev/null)
+if [ "$NOTE_DEL_CHECK" = "exists" ]; then
+  skip "verified_note_deleter OpenClaw cron (exists)"
+elif [ "$NOTE_DEL_CHECK" = "skip" ]; then
+  warn "Could not check OpenClaw cron — add Verified Note Deleter cron manually via OpenClaw"
+else
+  python3 - <<PYEOF
+import subprocess, json
+job = {
+    "name": "Verified Note Deleter (Component 1)",
+    "schedule": {"kind": "cron", "expr": "25,55 * * * *", "tz": "UTC", "staggerMs": 30000},
+    "payload": {
+        "kind": "agentTurn",
+        "message": "Verified Note Deleter (Component 1). Deterministic janitor: delete project/task notes that carry verified: true, so the workspace stays clean after Component 2 has improved+validated them. This is a THIN wrapper around a script that does all the real work (zero-LLM gate, claim-respect, snapshot, _pin_ promote, non-blocking lock).\n\nStep 1: Run exactly this command: python3 $WS/scripts/resolve_done_notes.py\n\nStep 2: Read its output. The script self-gates: if no status:done note exists it exits immediately (no work). It deletes ONLY notes with verified: true that are NOT freshly claimed by another job; it snapshots each before deleting and promotes any note tagged promote: pin to _pin_ first.\n\nStep 3: ANNOUNCE only if it actually deleted or promoted something (grep the output for 'deleted verified note' or 'promoted'). If so, send ONE terse line to the owner via the message tool using the agent's default owner channel (platform-appropriate; do not hardcode a chat id): e.g. 'Retired N verified note(s): <names>.' If it deleted nothing (gate exit, lock busy, or no verified notes), stay SILENT — no message.\n\nDo nothing else. Do not edit notes, do not re-check done_when, do not stamp verified — that is Component 2's job. You are the janitor.",
+        "timeoutSeconds": 120
+    },
+    "sessionTarget": "isolated",
+    "delivery": {"mode": "none"}
+}
+r = subprocess.run(['openclaw', 'cron', 'add', '--json', json.dumps(job)], capture_output=True, text=True, timeout=15)
+if r.returncode == 0:
+    print("  \033[32m[ok]\033[0m   verified_note_deleter OpenClaw cron registered (:25/:55)")
+else:
+    print(f"  \033[33m[warn]\033[0m Could not register verified_note_deleter cron: {r.stderr[:100]}")
+PYEOF
+fi
+
+# ── daily_note_review — OpenClaw agentTurn cron (general note janitor) ────────
+# Retires ALL note types once resolvable: task_bound notes whose done_when is met,
+# type:project notes finished out-of-band or parked at a safety-gated final step,
+# and abandoned notes past stale_after. Complements the Advancer/Improver/Deleter
+# (which only handle project step-advance + verified deletion). Claim-aware:
+# never touches a freshly-claimed note (live-session <120m / other <30m).
+# Premium: neuron only. Without this, done task_bound + non-verified done notes
+# would never auto-retire on a buyer install.
+NOTE_REV_CHECK=$(python3 -c "
+import subprocess, json, sys
+try:
+    r = subprocess.run(['openclaw', 'cron', 'list', '--json'], capture_output=True, text=True, timeout=10)
+    jobs = json.loads(r.stdout) if r.returncode == 0 else []
+    exists = any('daily' in j.get('name','').lower() and 'note review' in j.get('name','').lower() for j in (jobs if isinstance(jobs, list) else jobs.get('jobs', {}).get('jobs', [])))
+    print('exists' if exists else 'missing')
+except: print('skip')
+" 2>/dev/null)
+if [ "$NOTE_REV_CHECK" = "exists" ]; then
+  skip "daily_note_review OpenClaw cron (exists)"
+elif [ "$NOTE_REV_CHECK" = "skip" ]; then
+  warn "Could not check OpenClaw cron — add Daily Note Review cron manually via OpenClaw"
+else
+  python3 - <<PYEOF
+import subprocess, json
+job = {
+    "name": "Daily Note Review",
+    "schedule": {"kind": "cron", "expr": "0 6 * * *", "tz": "UTC"},
+    "payload": {
+        "kind": "agentTurn",
+        "message": "Scan all memory/_note_*.md files in $WS/memory/. Resolve each note (today = current UTC date). FIRST, for every note read claimed_by and claimed_at (UTC ISO8601): if claimed_by STARTS WITH 'live-session' AND claimed_at < 120 minutes ago, OR claimed_by is any other value AND claimed_at < 30 minutes ago, SKIP that note entirely this run (another job or a live human owns it). Stale or future-dated claims are ignored (proceed). Then: 1) SKIP any note with an expires: field — those are time_bound/calendar-linked; delete a time_bound note only once today > expires. 2) task_bound notes (have done_when:): verify the done_when condition against workspace state (file exists, feature shipped, grep, exit 0). If verified, flip status to done and delete the note (promote to _pin_*.md if it has lasting value). Else leave pending. 3) type:project notes: these are normally advanced/closed by the Project Advancer and improved+retired by the Project Improver + Verified Note Deleter, BUT a project can be finished out-of-band by a human-driven session and left status:in_progress, or parked at a safety-gated final step (git push / external action) the Advancer is forbidden to run — so it would otherwise orphan here. For any type:project note, verify its done_when the SAME way as task_bound (run the locally-checkable condition; e.g. for a git-push done_when run git -C <repo> rev-parse HEAD vs @{u}). If done_when verifies and/or all steps are [x], flip status to done and delete/promote it. If still in_progress with unchecked non-gated steps remaining, leave it for the Advancer. Never delete a project whose done_when does not verify. 4) stale_after GC: if a note is still pending/in_progress AND done_when was never met AND today > stale_after (default date+30d, or date+7d for reminder/quick-todo notes), delete it as abandoned. 5) Legacy notes with no schema fields: infer the task from content, delete if clearly resolved, else leave. Report what resolved, what was GC'd, what remains, and what was skipped (including claim-skips).",
+        "timeoutSeconds": 120
+    },
+    "sessionTarget": "isolated",
+    "delivery": {"mode": "none"}
+}
+r = subprocess.run(['openclaw', 'cron', 'add', '--json', json.dumps(job)], capture_output=True, text=True, timeout=15)
+if r.returncode == 0:
+    print("  \033[32m[ok]\033[0m   daily_note_review OpenClaw cron registered (06:00 UTC)")
+else:
+    print(f"  \033[33m[warn]\033[0m Could not register daily_note_review cron: {r.stderr[:100]}")
+PYEOF
 fi
 
 # ── Wire AGENTS.md ───────────────────────────────────────────────────────────
@@ -581,8 +702,8 @@ DINOMEM_BODY=$(cat <<'DINOMEM_NEURON_AGENTS_BODY'
   purpose: context-bounded step-by-step executor; durable plan on disk survives context limits + new sessions
   type: project (extends base _note_ schema)
   format: '# Project <name>\ntype: project\nstatus: in_progress | done\ndate: YYYY-MM-DD\ndone_when: <final artifact / all steps [x]>\nstale_after: YYYY-MM-DD\ncurrent_step: <n>\nclaimed_by: <run_id or blank>\nclaimed_at: <ISO timestamp or blank>\nsteps:\n  - [ ] 1. <step> -- done_when: <check>\n  - [ ] 2. ...\nresume_state: <paths/decisions/assumptions next turn needs to resume blind>'
-  claimed_by: set by Project Advancer on claim; cleared on step complete, checkpoint, or safety-gate pause; stale if claimed_at > 10min ago
-  claimed_at: ISO timestamp of claim write; used to detect stale claims (>10min = auto-release)
+  claimed_by: set by Project Advancer / Project Improver on claim; cleared on step complete, checkpoint, or safety-gate pause; stale if claimed_at older than its window (live-session 120min / other 30min)
+  claimed_at: UTC ISO8601 timestamp (trailing Z) of claim write; used to detect stale claims. Windows: live-session 120min, other claimant 30min. Future-dated = invalid/stale.
   estimate:
     when: at request time, before starting
     gate: '>3 files OR >5 sequential tool-steps OR research-then-build OR user says project/build'
@@ -595,6 +716,14 @@ DINOMEM_BODY=$(cat <<'DINOMEM_NEURON_AGENTS_BODY'
     spawn: if over_60 AND remaining steps > 2 AND sessions_spawn available -> spawn subagent with task=remaining steps + resume_state; subagent works in clean context; parent waits for completion event
     resume: new session reads note, jumps to current_step, resumes from resume_state ONLY (no chat-history reliance)
   mandatory: after every step rewrite resume_state so note is self-sufficient; reliability linchpin
+  note_edit_safety: # G5b -- guards against silently losing a resume_state/status write
+    why: the edit tool applies a multi-edit batch ATOMICALLY -- if ANY one oldText fails to match, the WHOLE batch rolls back and NOTHING changes; the tool returns an error but a note claimed 'updated' before reading that result is silently stale (=> Advancer resumes from wrong step, or a done note never closes)
+    trap: chaining edits where a later oldText anchor overlaps/depends on text an earlier edit in the SAME batch already changed, or re-using an anchor a prior applied edit consumed -> stale anchor -> full rollback
+    rules:
+      - NEVER treat a note write as done until you have READ the tool's success/error result; an error = zero changes applied
+      - after any batch of >1 edit to a note, grep/re-read the changed lines (status, current_step, resume_state, claimed_at) to CONFIRM before advancing or announcing
+      - keep batch edits to DISJOINT independent regions; if edits overlap or depend on each other, split into sequential calls and verify between them
+      - on rollback: re-read the note FRESH (anchors may reflect a partial earlier success), rebuild oldText from current content, retry
   self_check: # G5
     when: before stopping at ANY checkpoint while status in_progress
     verify: type:project, status:in_progress, current_step matches lowest unchecked step, resume_state non-empty + concrete
@@ -604,7 +733,7 @@ DINOMEM_BODY=$(cat <<'DINOMEM_NEURON_AGENTS_BODY'
     action: write claimed_by=live-session-<agentid> + claimed_at=<now ISO> to the note BEFORE the first edit; refresh claimed_at each resuming turn; clear both on finish/pause
     why: without this the 4h Advancer can wake mid-conversation and double-edit the same note; the claim lock is otherwise only honored cron-vs-cron
   driver: hybrid -- user may say continue; else Project Advancer cron auto-advances in_progress notes (unattended, announces progress, pauses on destructive/external steps)
-  resolve: done_when met -> Daily Note Review (base) deletes/promotes via normal pipeline
+  resolve: done_when met -> Daily Note Review cron (neuron, 06:00 UTC, claim-aware) deletes/promotes via normal pipeline
   awaiting_approval_reverify: safety-gated final step (push/external) → at cold start re-verify artifact exists (git -C <repo> rev-parse HEAD == @{u}); if done, close note instead of re-asking.
   done_when_verifiability: every done_when must be locally checkable (file exists / grep / exit 0 / git rev-parse HEAD==@{u}). Narrative done_when never auto-closes.
 DINOMEM_NEURON_AGENTS_BODY

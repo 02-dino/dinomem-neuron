@@ -72,6 +72,8 @@ This insight is now injected every turn. Future investing discussions automatica
 | 📚 | **RAG for long docs** | Semantic search over contracts, books, legal text — stored separately, never pollutes memory |
 | 🤖 | **Automatic notes** | The agent writes `_note_` files from its own commitments ("next step", "TODO") and task follow-ups — not just when you ask |
 | 🏗️ | **Project executor** | Large builds become `type: project` notes: the agent estimates token cost upfront and splits the work if it won't fit the remaining budget, then executes one step per turn (with a reactive context checkpoint as a safety net) so nothing is lost across sessions. A Project Advancer cron auto-advances unfinished projects unattended and announces progress, pausing for approval on anything destructive. |
+| ♻️ | **Self-improving project closer** | When a project finishes, a Project Improver cron reviews the completed work and — if it makes sense for *that* project — makes a behavior-preserving improvement (cheaper/faster/clearer/more reliable; "nothing needed" is a valid outcome), validates it, then stamps the note `verified`. A Verified Note Deleter then retires verified notes (snapshotting first). External/destructive improvements stay gated for owner approval. |
+| 🧹 | **Daily Note Review** | A daily janitor cron retires *any* resolved note — `task_bound` notes whose `done_when` is met, projects finished out-of-band, and abandoned notes past `stale_after` — so completed work doesn't pile up. Claim-aware: never touches a note another job or a live session is actively editing. |
 | 🔍 | **Session deep recall** | When memory summary is thin, searches raw archived sessions (7-day window) for the exact exchange — sharper, more detailed recall for recent context |
 
 ---
@@ -270,8 +272,8 @@ type: project
 status: in_progress | done
 done_when: <final artifact / all steps [x]>
 current_step: <n>
-claimed_by: <run_id>          # set by Project Advancer on claim; blank when idle
-claimed_at: <ISO timestamp>   # stale if >10min ago (auto-released)
+claimed_by: <run_id>          # set by Advancer/Improver on claim; blank when idle
+claimed_at: <ISO timestamp>   # UTC ISO8601; stale after its window (live-session 120min / other 30min), then auto-released
 steps:
   - [ ] 1. <step> -- done_when: <check>
   - [ ] 2. ...
@@ -281,10 +283,12 @@ resume_state: <paths / decisions the next turn needs to resume blind>
 - **Estimate gate** — at request time the agent classifies scope: `>3 files OR >5 sequential tool-steps OR research-then-build OR user says "project/build"`. Trip it → write a project note; else execute normally in one turn. Before starting, the agent estimates token cost `(files × 500) + (steps × 1000) + current_context_tokens` — if over 40% of remaining budget, the task is split into sub-tasks upfront.
 - **Execution loop** — do the current step, then read context usage via `session_status`. Below 60% used: mark `[x]`, rewrite `resume_state`, advance, continue. At/over 60% used with >2 remaining steps: spawn a subagent to continue (keeps main session light). At/over 60% used otherwise: checkpoint and stop cleanly, reporting `step n/m done`. This 60%-used reactive checkpoint is the *fallback*; the primary gate is the proactive upfront estimate above (the two are consistent — ~40% headroom either way, one expressed as budget-remaining, one as context-used). Resumption reads `resume_state` **only** — never chat history — so a blind fresh session continues from the note alone.
 - **Driver (hybrid)** — the user can say "continue", or the **Project Advancer** cron (every 15 min) sweeps `in_progress` projects and advances them unattended. Pre-check: a zero-LLM bash script runs first — if no `in_progress` notes exist, the LLM is never invoked (zero idle cost). A safety gate keeps autonomy honest: destructive or external steps (delete data, git push, external messages, spend money, credentials) are **not** run unattended — the project pauses and tags the owner for approval (platform-appropriate mention). Read/build/local-file steps proceed on their own. Announcements are state-change only — no repeat spam; malformed/stalled alerts rate-limited to once per 24h.
-- **Atomic task claiming** — before executing any step, the Advancer writes `claimed_by` + `claimed_at` to the note. If two Advancer instances overlap, the second sees the claim and skips. Claims older than 10 minutes are stale and auto-released.
+- **Atomic task claiming** — before executing any step, a job writes `claimed_by` + `claimed_at` (UTC ISO8601) to the note. Any other job — a second Advancer, the Improver, the Deleter, or the daily review — sees a fresh claim and skips that note. Windows: **live-session claims 120 min** (a human working in an interactive session is never fought), **other-job claims 30 min**; stale or future-dated claims are auto-cleared. This is what stops two jobs (or a cron and a live session) from double-editing the same note.
 - **Project Advancer drives progress** — the **Project Advancer** (every 15 min) advances `in_progress` project steps unattended. Context overflow is handled natively by OpenClaw's safeguard compaction, so no separate context watchdog is needed (the former `context_watchdog.py` was removed as redundant).
 
-Resolution is unchanged: once `done_when` is met, the base Daily Note Review cron deletes or promotes the note. See [`references/architecture.md`](references/architecture.md) for the full spec.
+- **Self-improving closer** — when a project reaches `status: done`, a **Project Improver** cron (`:20`/`:50`) reviews the finished work. It is domain-agnostic and behavior-preserving: it asks whether *this specific* project can be made cheaper/faster/clearer/more reliable and does only that — no prescribed checklist, and "already efficient, nothing to change" is a valid, common outcome. It validates the artifact still meets its `done_when`, then stamps `verified: true` and reports what it did. A zero-LLM pre-gate skips the whole thing when there's nothing to improve. External/destructive improvement steps (git push, sends, spend, credentials) stay gated for owner approval. A **Verified Note Deleter** cron (`:25`/`:55`) then retires `verified` notes — snapshotting each first, promoting any `promote: pin` note — via a deterministic, non-blocking, claim-aware script.
+
+Resolution: once `done_when` is met, the neuron's **Daily Note Review** cron (06:00 UTC, installed by this skill) deletes or promotes the note — covering *all* note types, including `task_bound` notes and projects finished out-of-band, plus `stale_after` garbage collection. It is claim-aware (skips freshly-claimed notes). See [`references/architecture.md`](references/architecture.md) for the full spec.
 
 ### Skill Promotion
 
@@ -342,6 +346,9 @@ All signals must align. One-off or low-confidence insights stay in synthesis —
 | Daily 3:30 UTC | `memory_synthesis.py` + `contradiction_check.py` | L3 — Pattern Synthesis + contradiction check |
 | Daily 4:00 UTC | `docs_ingest.py` | Re-ingest new/changed docs |
 | Every 15 min | Project Advancer (OpenClaw cron) | Auto-advance `type: project` notes one step/run, unattended; zero LLM when idle (bash pre-check); state-change-only announcements |
+| `:20` / `:50` hourly | Project Improver (OpenClaw cron) | Self-improving closer: review a completed-but-unverified project, make a behavior-preserving improvement (or confirm none needed), validate, stamp `verified`; zero LLM when idle (bash pre-gate); external steps gated |
+| `:25` / `:55` hourly | Verified Note Deleter (OpenClaw cron) | Deterministic janitor: delete notes tagged `verified: true` (snapshot first, `promote: pin` support, non-blocking lock, claim-aware) |
+| Daily 6:00 UTC | Daily Note Review (OpenClaw cron) | General note janitor: retire `task_bound` notes whose `done_when` is met, projects finished out-of-band, and abandoned notes past `stale_after`; claim-aware |
 | Weekly Sun 4:00 UTC | `memory_promote.py` + `generate_topic_index.py` | L4 — Knowledge Promotion + MEMORY.md enrichment; triggers `skill_extract.py` after each run |
 | On project completion / L3 / L4 | `skill_extract.py` | Skill Promotion — extracts reusable procedures from completed projects, L3 clusters, and PERSISTENT.md best practices; promotes at convergence ≥ 3 |
 
@@ -386,6 +393,10 @@ All signals must align. One-off or low-confidence insights stay in synthesis —
 ├── tools/
 │   ├── docs_search.py          # RAG — semantic search over long docs (HyDE query expansion enabled by default)
 │   └── cache_utils.py          # Shared cache utility
+├── scripts/
+│   ├── check_projects.sh       # zero-LLM pre-gate for Project Advancer (any in_progress project?)
+│   ├── check_improvable.sh     # zero-LLM pre-gate for Project Improver (any done-unverified project?)
+│   └── resolve_done_notes.py   # deterministic verified-note deleter (snapshot + promote + claim-aware lock)
 ├── topics/
 │   ├── INDEX.md                # Auto-generated topic tree (do not edit)
 │   ├── PERSISTENT.md           # Manually curated persistent topics

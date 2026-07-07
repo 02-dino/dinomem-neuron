@@ -4,6 +4,21 @@ All notable changes to dinomem-neuron are documented here.
 
 ---
 
+## 1.3.0
+
+Self-improving project closer. **New feature. Recommended for all users.**
+
+### Added
+- **Self-improving done-project closer (two cooperating crons).** Completed project notes are now automatically improved and retired without cluttering the workspace:
+  - **Project Improver (Component 2)** — LLM cron (`:20`/`:50`). Fires only on `status: done` project notes not yet stamped `verified: true`. Domain-agnostic and behavior-preserving: it assesses whether the project can be made cheaper / faster / clearer / more reliable, makes only that improvement (no prescribed checklist — "nothing needed" is a valid outcome), validates the artifact still satisfies its `done_when`, then stamps `verified: true`. A zero-LLM pre-gate (`scripts/check_improvable.sh`) skips the LLM entirely when there is nothing to improve. A hard safety gate blocks external/destructive steps (git push, sends, spend, credentials) unattended — it does the local work, then pauses for owner approval.
+  - **Verified Note Deleter (Component 1)** — deterministic janitor cron (`:25`/`:55`), a thin wrapper over `scripts/resolve_done_notes.py`. Deletes ONLY notes carrying `verified: true`, snapshotting each first and promoting any `promote: pin` note to `_pin_`. Non-blocking `flock` so it never races the Advancer/Improver.
+- **Shared claim protocol across all note jobs.** Advancer, Improver, and Deleter honor `claimed_by` / `claimed_at` (UTC ISO8601): live-session claims are respected for 120 min (2h), other-claimant claims for 30 min; stale and future-dated claims are cleared. This prevents concurrent `_note_*.md` mutation — including a cron waking mid-conversation and double-editing a note a human is actively working.
+
+### Upgrade
+Unzip the new archive over your install and run `scripts/install.sh --force`. The two new crons register idempotently.
+
+---
+
 ## 1.2.5
 
 Memory reliability fixes. **Recommended for all users.**
