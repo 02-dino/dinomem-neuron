@@ -4,6 +4,17 @@ All notable changes to dinomem-neuron are documented here.
 
 ---
 
+## 1.3.3
+
+Base-dependency upgrade. **Recommended for all users** — pulls in two dinomem base fixes that recover memory silently lost on manual `/new` / `/reset`. No neuron feature change; re-running the neuron installer refreshes the base automatically.
+
+### Changed (via base refresh)
+- **dinomem base 1.2.11 — silent permanent memory loss on manual `/new` / `/reset` FIXED.** OpenClaw core archives a manually-reset session in real time to `<session>.jsonl.reset.<ISOms>Z`, but the memory pipeline only globbed `*.archived.*.jsonl` and explicitly skipped any `.reset.` name — so **any session you `/new` or `/reset` had its transcript archived but never extracted into `memory/` (permanent loss).** Base now adopts core's reset-archives into the pipeline-visible namespace (new `adopt_core_reset_archives()` step) so `extract_memory` (and neuron `session_ingest`) pick them up. First run after upgrade **backfills** every historical stranded reset-archive.
+- **dinomem base 1.2.12 — 0-delay extraction on manual reset.** New `dinomem-reset-extract` internal hook (`command:new` / `command:reset`) fires the memory pipeline the instant you `/new`, instead of waiting up to 15 min for the next cron tick.
+
+### Upgrade
+Re-run the neuron installer (`bash scripts/install.sh`). It refreshes the dinomem base first (git pull + base install), so both base fixes land automatically — no separate base step. The first base cron run after upgrade backfills any historical manual-reset sessions.
+
 ## 1.3.0
 
 Self-improving project closer. **New feature. Recommended for all users.**
