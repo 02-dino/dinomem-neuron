@@ -231,6 +231,39 @@ if [ "$PY_MAJOR" -lt 3 ] || { [ "$PY_MAJOR" -eq 3 ] && [ "$PY_MINOR" -lt 8 ]; };
 else
   ok "Python $PY_VERSION"
 fi
+# ── System resource check (warn-only; base already pulled the TEI image) ─────
+# Neuron adds daily L2 graph build + L3 synthesis. Recommended floor:
+#   base + neuron : 2 vCPU / 3 GB RAM. No large local install here, so no disk block.
+NEURON_MIN_RAM_MB=3072
+NEURON_MIN_CPU=2
+PREFLIGHT_WARN=""   # accumulator: machine-readable below-spec signal for agent-driven installs
+if [ "$(uname)" = "Darwin" ]; then
+  TOTAL_RAM_MB=$(( $(sysctl -n hw.memsize 2>/dev/null || echo 0) / 1024 / 1024 ))
+  CPU_COUNT=$(sysctl -n hw.ncpu 2>/dev/null || echo 0)
+else
+  TOTAL_RAM_MB=$(( $(awk '/MemTotal/{print $2}' /proc/meminfo 2>/dev/null || echo 0) / 1024 ))
+  CPU_COUNT=$(nproc 2>/dev/null || echo 0)
+fi
+if [ "$TOTAL_RAM_MB" -gt 0 ] && [ "$TOTAL_RAM_MB" -lt "$NEURON_MIN_RAM_MB" ]; then
+  warn "RAM ${TOTAL_RAM_MB}MB is below recommended ${NEURON_MIN_RAM_MB}MB for base+neuron — graph build/synthesis may be tight. Continuing."
+  PREFLIGHT_WARN="${PREFLIGHT_WARN}ram=${TOTAL_RAM_MB}MB<${NEURON_MIN_RAM_MB}MB "
+elif [ "$TOTAL_RAM_MB" -gt 0 ]; then
+  ok "RAM ${TOTAL_RAM_MB}MB"
+else
+  warn "Could not detect RAM — ensure >= ${NEURON_MIN_RAM_MB}MB for base+neuron."
+fi
+if [ "$CPU_COUNT" -gt 0 ] && [ "$CPU_COUNT" -lt "$NEURON_MIN_CPU" ]; then
+  warn "CPU ${CPU_COUNT} core(s) is below recommended ${NEURON_MIN_CPU} — daily graph rebuild will be slow. Continuing."
+  PREFLIGHT_WARN="${PREFLIGHT_WARN}cpu=${CPU_COUNT}<${NEURON_MIN_CPU} "
+elif [ "$CPU_COUNT" -gt 0 ]; then
+  ok "CPU ${CPU_COUNT} core(s)"
+fi
+# Agent-installer contract: machine-readable, hard-to-skim below-spec signal so an
+# automated caller cannot silently blur past the warnings above.
+if [ -n "$PREFLIGHT_WARN" ]; then
+  printf '\033[1;33m[AGENT-NOTICE]\033[0m below-recommended spec detected. If this install is agent-driven, surface this to the user before continuing:\n'
+  printf 'DINOMEM_NEURON_PREFLIGHT_WARN=%s\n' "$PREFLIGHT_WARN"
+fi
 # Workspace writable check
 if [ ! -d "$WS" ]; then
   warn "Workspace '$WS' does not exist — create it first or pass correct --workspace path."

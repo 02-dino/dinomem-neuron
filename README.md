@@ -146,6 +146,20 @@ That's it. Crons handle everything from here.
 - [ ] At least a few sessions already extracted (`memory/*.md` files exist)
 - [ ] Python 3.8+
 
+### Minimum spec
+
+Neuron rides on the dinomem base (TEI already installed) and adds a daily L2 graph build + L3 synthesis. L3 calls an LLM via your agent's model — a remote API, so no local GPU/RAM burden. The only local bump over base is headroom for graph traversal + embedding churn during synthesis runs.
+
+| Resource | Minimum (base + neuron) | Comfortable |
+| -------- | ----------------------- | ----------- |
+| CPU      | 2 vCPU                  | 4 vCPU      |
+| RAM      | 3 GB                    | 4–8 GB      |
+| Disk     | 5 GB free               | 10 GB       |
+
+Disk barely moves (graph JSON is small; docs vector DB is ~1–2 MB per 1000 chunks). The installer preflight **warns** on below-minimum RAM/CPU and continues — no disk block here, since neuron adds no large local download.
+
+**Agent-driven installs.** Because a stdout warning is easy for an automated caller to skim past, the preflight also emits a machine-readable `DINOMEM_NEURON_PREFLIGHT_WARN=...` line and an `[AGENT-NOTICE]` marker when spec is below recommended. An agent running the installer should **surface this to the user before proceeding** rather than silently continuing.
+
 > **Verify dinomem is working first.** Run `python3 <workspace>/procedures/auto_session_reset.py` and confirm `memory/*.md` files exist before installing neuron.
 
 ---
