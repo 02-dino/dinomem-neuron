@@ -39,6 +39,7 @@ Usage:
 
 import argparse
 import json
+import os
 import hashlib
 import re
 import sys
@@ -54,7 +55,7 @@ try:
 except ImportError:
     HAS_LLM = False
 
-BASE = Path("/root/.openclaw/workspace-analyst")
+BASE = Path(os.environ.get("OPENCLAW_WORKSPACE", "/root/.openclaw/workspace-analyst"))
 L3_DIR = BASE / "kb/memory_neuron/l3_synthesis"
 L4_DIR = BASE / "kb/memory_neuron/l4_promoted"
 TOPICS_DIR = BASE / "topics"

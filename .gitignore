@@ -13,3 +13,11 @@ logs/
 # Per-buyer release builds + private buyer ledger (NEVER commit / ship)
 releases/
 buyers_manifest.csv
+
+# Internal operator docs — never commit, never ship in buyer ZIP
+# (make_release.sh also rsync/cp-excludes _INTERNAL_* so it can't leak)
+_INTERNAL_*
+
+# Local file-backup safety copies — never commit / ship
+.backups/
+*.bak

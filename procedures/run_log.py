@@ -29,7 +29,7 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
-BASE = Path("/root/.openclaw/workspace-analyst")
+BASE = Path(os.environ.get("OPENCLAW_WORKSPACE", "/root/.openclaw/workspace-analyst"))
 LOG_DIR = BASE / "logs"
 LOG_FILE = LOG_DIR / "run_history.jsonl"
 

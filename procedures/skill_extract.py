@@ -23,13 +23,14 @@ Decay:
 
 import argparse
 import json
+import os
 import re
 import sys
 from datetime import datetime, timedelta
 from difflib import SequenceMatcher
 from pathlib import Path
 
-BASE = Path("/root/.openclaw/workspace-analyst")
+BASE = Path(os.environ.get("OPENCLAW_WORKSPACE", "/root/.openclaw/workspace-analyst"))
 MEMORY_DIR = BASE / "memory"
 SKILLS_DIR = BASE / "skills"
 CANDIDATES_DIR = BASE / "kb/memory_neuron/skill_candidates"
