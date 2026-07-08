@@ -35,8 +35,6 @@ Usage:
   distill_done_note.py <path> --dry-run               # show what would be written
 Exit codes: 0 = distilled (or nothing memorable), 2 = LLM failed, 1 = bad args.
 """
-import os
-import re
 import sys
 from pathlib import Path
 
