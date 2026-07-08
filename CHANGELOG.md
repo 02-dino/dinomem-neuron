@@ -4,6 +4,23 @@ All notable changes to dinomem-neuron are documented here.
 
 ---
 
+## 1.3.4
+
+Memory-quality + reliability pass. **Recommended for all users.** Sharpens the done-note lifecycle so retiring notes enrich normal memory instead of piling up frozen pins, adds an atomic note-claim writer to close the cron/live-session race, and biases the memory pruner to keep well-connected hub facts.
+
+### Added
+- **Done-note distiller.** When a verified `status: done` note is retired, its knowledge is now distilled into proper schema memory entries (via `extract_from_text`, seeded `verdict: valid`) BEFORE the note file is deleted — so the build stays retrievable and enters the normal retention review like everything else. Runs as a separate cheap no-reasoning subprocess; `resolve_done_notes.py` stays zero-LLM. Best-effort (a distill failure still deletes the note, same as before). Toggle with `DINOMEM_DISTILL_DONE_NOTES=0`.
+- **Atomic note-claim writer (`scripts/claim_note.sh`).** Closes the one-sided claim handshake: the Advancer/Improver/Deleter crons already READ `claimed_by`/`claimed_at` and back off, but nothing WROTE a live-session claim — so a cron could grab a note mid-conversation and double-edit it. The live agent now stamps a claim before editing (atomic temp-file + `mv` + `flock`; `live-session-*` claims honored 120 min, others 30 min, future-dated treated as stale). Installer wires the `note_claim_protocol` into the managed `AGENTS.md`.
+- **Memory connectivity keep-bias.** The neuron memory pruner now soft-rescues cross-file “hub” entries (facts referenced from multiple memory files) when they are only marginally-valid/uncertain — preventing well-connected context from being culled just because any single mention scored low.
+
+### Changed
+- **`promote: pin` hatch REMOVED from note retirement.** Retiring notes now ALWAYS distill → regular memory (freeze on merit), never copy the whole note into a `_pin_`. The hatch predated verdict-based retention (when distill-to-regular meant eventual decay, so pinning was the only way to keep anything); now regular memory freezes if it keeps earning `valid`, so the hatch only produced junk pins. Genuine pins (credentials, architecture, do-not-repeat findings) are authored DIRECTLY as `_pin_` files — never born as `_note_` then promoted — so removing it blocks nothing real and closes the primary junk-pin source. Deleter + Daily Note Review cron prompts updated to match.
+
+### Upgrade
+Unzip the new archive over your install and run `bash scripts/install.sh`. The installer refreshes the dinomem base first (dependency), then re-registers crons and redeploys the helper scripts idempotently — one step covers base + neuron.
+
+---
+
 ## 1.3.3
 
 Base-dependency upgrade. **Recommended for all users** — pulls in two dinomem base fixes that recover memory silently lost on manual `/new` / `/reset`. No neuron feature change; re-running the neuron installer refreshes the base automatically.
