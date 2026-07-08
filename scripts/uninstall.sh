@@ -1,33 +1,45 @@
 #!/usr/bin/env bash
 # dinomem-neuron — uninstall script
 # Removes: cron jobs added by neuron.
-# Does NOT touch dinomem base config or memory data.
+# Does NOT touch dinomem base config or memory data, UNLESS --with-base is passed.
 #
 # Usage:
 #   bash scripts/uninstall.sh --workspace DIR
 #   bash scripts/uninstall.sh --workspace DIR --purge          # also remove scripts
 #   bash scripts/uninstall.sh --workspace DIR --purge-data     # remove kb/, topics/ (NOT memory)
 #   bash scripts/uninstall.sh --workspace DIR --purge-memory   # ⚠️  WIPES memory/_permanent.md — irreversible
+#   bash scripts/uninstall.sh --workspace DIR --with-base      # ALSO uninstall the dinomem base (neuron is an upgrade layer on top of it)
 #   bash scripts/uninstall.sh --workspace DIR --force          # skip all confirmation prompts (for AI agent use)
+#
+# --with-base: neuron install auto-installs the base first, so a full teardown of
+# neuron may reasonably want the base gone too. Opt-in (not default) so users who
+# still want plain dinomem keep it. Any --purge/--purge-data/--purge-memory/--force
+# flags are forwarded to the base uninstaller.
 set -euo pipefail
 
 WS="${OPENCLAW_WORKSPACE:-$HOME/.openclaw/workspace}"
+AGENT_ID=""
 PURGE=0
 PURGE_DATA=0
 PURGE_MEMORY=0
+WITH_BASE=0
 FORCE=0
+DINOMEM_BASE_REPO="${DINOMEM_BASE_REPO:-https://github.com/02-dino/dinomem}"
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --workspace)     WS="$2"; shift 2 ;;
-    --agent-id)      shift 2 ;;  # accepted, not needed
+    --agent-id)      AGENT_ID="$2"; shift 2 ;;
     --purge)         PURGE=1; shift ;;
     --purge-data)    PURGE_DATA=1; shift ;;
     --purge-memory)  PURGE_MEMORY=1; shift ;;
+    --with-base)     WITH_BASE=1; shift ;;
     --force)         FORCE=1; shift ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
 done
+
+OPENCLAW_DIR="$(dirname "$WS")"
 
 ok()   { printf '  \033[32m[ok]\033[0m   %s\n' "$*"; }
 skip() { printf '  \033[33m[skip]\033[0m %s\n' "$*"; }
@@ -129,5 +141,39 @@ else
   skip "AGENTS.md neuron block not found"
 fi
 
+# -- Base uninstall (opt-in) --------------------------------------------------
+if [ "$WITH_BASE" = 1 ]; then
+  hr "dinomem base uninstall (--with-base)"
+  NEURON_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+  BASE_UNINSTALL=""
+  for cand in "$OPENCLAW_DIR/dinomem/scripts/uninstall.sh" "$(dirname "$NEURON_DIR")/dinomem/scripts/uninstall.sh"; do
+    [ -f "$cand" ] && { BASE_UNINSTALL="$cand"; break; }
+  done
+  if [ -z "$BASE_UNINSTALL" ] && command -v git >/dev/null 2>&1; then
+    clone_dir="$OPENCLAW_DIR/dinomem"
+    if [ ! -e "$clone_dir" ]; then
+      git clone --depth 1 "$DINOMEM_BASE_REPO" "$clone_dir" >/dev/null 2>&1 \
+        && ok "cloned base repo for its uninstaller -> $clone_dir" || warn "could not clone base repo"
+    fi
+    [ -f "$clone_dir/scripts/uninstall.sh" ] && BASE_UNINSTALL="$clone_dir/scripts/uninstall.sh"
+  fi
+  if [ -n "$BASE_UNINSTALL" ]; then
+    base_args=(--workspace "$WS")
+    [ -n "$AGENT_ID" ] && base_args+=(--agent-id "$AGENT_ID")
+    [ "$PURGE" = 1 ]        && base_args+=(--purge)
+    [ "$PURGE_DATA" = 1 ]   && base_args+=(--purge-data)
+    [ "$PURGE_MEMORY" = 1 ] && base_args+=(--purge-memory)
+    [ "$FORCE" = 1 ]        && base_args+=(--force)
+    ok "running dinomem base uninstaller: $BASE_UNINSTALL"
+    bash "$BASE_UNINSTALL" "${base_args[@]}" || warn "base uninstaller exited nonzero"
+  else
+    warn "base uninstaller not found (looked in $OPENCLAW_DIR/dinomem) -- base left as-is"
+  fi
+fi
+
 echo; hr "done"
-echo "  dinomem base remains installed. Run 'openclaw gateway restart' if needed."
+if [ "$WITH_BASE" = 1 ]; then
+  echo "  dinomem neuron + base removed. Run 'openclaw gateway restart' if needed."
+else
+  echo "  dinomem base remains installed (pass --with-base to remove it too). Run 'openclaw gateway restart' if needed."
+fi
