@@ -4,6 +4,23 @@ All notable changes to dinomem-neuron are documented here.
 
 ---
 
+## 1.4.0
+
+Performance + install-correctness pass. **Recommended for everyone — especially larger memory corpora.** Makes the L2 graph build effectively instant, bounds L3 synthesis cost as memory grows, and fixes a first-install crash for the schema adapter.
+
+### Fixed
+- **Fresh installs could crash L2/L3 with `ModuleNotFoundError: _schema_adapter`.** `memory_graph.py` and `memory_synthesis.py` both import `_schema_adapter.py` (the schema-drift shim added in 1.3.5), but the installer's file-copy loop never shipped it — so a clean install left the two most important cron scripts unable to import. `graph_search.py` was missing from the same loop. Both are now copied by `install.sh`. Existing installs that already had the file are unaffected.
+
+### Changed
+- **L2 `build_graph` vectorized — ~461x faster, byte-identical output.** The former pure-Python O(n^2) double loop (cosine per pair) is replaced by a single BLAS `M @ M.T` cosine matrix + `lexsort` top-k selection. On the 3,017-chunk reference corpus this returns the exact same edge set (same pairs, same `sim`, same `rank_strength`) in ~0.57s vs ~265s. The full L2 run (including forward-refs gating below) drops from ~99s to ~1.5s of graph-build time. numpy is now a hard dependency (previously only transitive via pandas) and `install.sh` installs it explicitly.
+- **`forward_refs` scan is now node-count gated (`--forward-refs-max-nodes`, default 1500).** The forward-reference report is O(terms x nodes) pure-Python fuzzy matching with no clean fast+exact form, so above the threshold it would dominate an otherwise-instant build for a secondary report. Below the threshold it runs the identical original algorithm (zero fidelity change); above it, the scan is skipped with a note and the graph is unaffected. `0` = always run, large value = never skip.
+- **L3 synthesis cost is now bounded as the corpus grows.** Added `--cluster-batch N` (rotating `.cluster_cursor.json`, full sweep every `ceil(total/N)` runs) plus per-cluster dirty-skip (`.cluster_cache.json` content-hash; unchanged clusters skip the LLM, default on, cache auto-prunes to the live cluster set). `--cluster-batch 0` (default) preserves the exact legacy behavior — every cluster every run.
+
+### Upgrade
+Unzip the new archive over your install and run `bash scripts/install.sh`. No config changes required; new flags default to prior behavior.
+
+---
+
 ## 1.3.5
 
 Compatibility fix. **Recommended for anyone whose L2 graph / L3 synthesis crons error out.** Makes neuron tolerant of OpenClaw memory-index schema drift so `memory_graph.py` and `memory_synthesis.py` keep working across OpenClaw versions.
