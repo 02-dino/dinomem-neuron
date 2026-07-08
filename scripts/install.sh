@@ -24,6 +24,10 @@ AGENT_ID=""
 DO_CRON=1
 FORCE=0
 NO_AUTO_BASE=0
+# Neuron has no --dry-run flag of its own, but the bootstrap-cap patch below
+# references $DRY_RUN; under `set -u` an undefined var aborts the whole install.
+# Default it to 0 (no dry-run) so real installs don't crash at that phase.
+DRY_RUN=0
 DINOMEM_BASE_REPO="${DINOMEM_BASE_REPO:-https://github.com/02-dino/dinomem}"
 
 while [ $# -gt 0 ]; do
@@ -464,11 +468,24 @@ fi
 
 # ── 2) Copy scripts ───────────────────────────────────────────────────────────
 hr "Copying scripts"
-for f in procedures/memory_graph.py procedures/memory_synthesis.py procedures/memory_promote.py procedures/contradiction_check.py procedures/generate_topic_index.py procedures/docs_ingest.py procedures/session_ingest.py procedures/_schema_adapter.py tools/docs_search.py tools/session_search.py tools/graph_search.py tools/cache_utils.py scripts/claim_note.sh; do
+# NOTE: procedures/extract_memory.py is the NEURON SUPERSET (adds extract_from_text()
+# + explicit no-reasoning routing). Base's installer already placed base's version,
+# so this MUST overwrite even without --force — otherwise the upgrade silently ships
+# base's older engine and neuron's distill_done_note.py (which imports
+# extract_memory.extract_from_text) crashes. It is listed in ALWAYS_OVERWRITE below.
+#
+# The scripts/*.sh + resolve_done_notes.py + distill_done_note.py helpers are the
+# cron targets referenced in the cron prompts; without them a fresh neuron install
+# registers crons whose scripts are missing (Step-0 pre-gate fails).
+for f in procedures/extract_memory.py procedures/memory_graph.py procedures/memory_synthesis.py procedures/memory_promote.py procedures/contradiction_check.py procedures/generate_topic_index.py procedures/docs_ingest.py procedures/session_ingest.py procedures/_schema_adapter.py tools/docs_search.py tools/session_search.py tools/graph_search.py tools/cache_utils.py scripts/claim_note.sh scripts/check_projects.sh scripts/check_improvable.sh scripts/resolve_done_notes.py scripts/distill_done_note.py; do
   dst="$WS/$f"
+  # extract_memory.py is the neuron superset over base's copy — always overwrite it,
+  # even without --force, or the upgrade ships base's older engine.
+  always_overwrite=0
+  case "$f" in procedures/extract_memory.py) always_overwrite=1 ;; esac
   # license_check.py must sit beside procedures so the runtime guard can import it.
   true
-  if [ -f "$dst" ] && [ "$FORCE" = 0 ]; then
+  if [ -f "$dst" ] && [ "$FORCE" = 0 ] && [ "$always_overwrite" = 0 ]; then
     skip "$f (exists, use --force to overwrite)"
   else
     mkdir -p "$(dirname "$dst")"
