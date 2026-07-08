@@ -414,6 +414,9 @@ python3 -c "import langchain_huggingface" 2>/dev/null && skip "langchain-hugging
 python3 -c "import langchain_core" 2>/dev/null && skip "langchain-core (installed)" || (
   pip install -q langchain-core && ok "langchain-core" || warn "langchain-core install failed"
 )
+python3 -c "import numpy" 2>/dev/null && skip "numpy (installed)" || (
+  pip install -q numpy && ok "numpy" || warn "numpy install failed"
+)
 python3 -c "import pandas" 2>/dev/null && skip "pandas (installed)" || (
   pip install -q pandas && ok "pandas" || warn "pandas install failed"
 )
@@ -461,7 +464,7 @@ fi
 
 # ── 2) Copy scripts ───────────────────────────────────────────────────────────
 hr "Copying scripts"
-for f in procedures/memory_graph.py procedures/memory_synthesis.py procedures/memory_promote.py procedures/contradiction_check.py procedures/generate_topic_index.py procedures/docs_ingest.py procedures/session_ingest.py tools/docs_search.py tools/session_search.py tools/cache_utils.py scripts/claim_note.sh; do
+for f in procedures/memory_graph.py procedures/memory_synthesis.py procedures/memory_promote.py procedures/contradiction_check.py procedures/generate_topic_index.py procedures/docs_ingest.py procedures/session_ingest.py procedures/_schema_adapter.py tools/docs_search.py tools/session_search.py tools/graph_search.py tools/cache_utils.py scripts/claim_note.sh; do
   dst="$WS/$f"
   # license_check.py must sit beside procedures so the runtime guard can import it.
   true

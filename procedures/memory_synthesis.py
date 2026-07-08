@@ -72,6 +72,8 @@ MIN_CLUSTER = 3   # need >=3 memories to claim a cross-cutting pattern
 
 LOCK_FILE = OUT_DIR / ".synth.lock"          # single-instance guard (flock)
 STATE_FILE = OUT_DIR / ".synth_state.json"  # {sig, last_run} for the run-gate
+CURSOR_FILE = OUT_DIR / ".cluster_cursor.json"  # {offset,total} rolling batch window (scale)
+CLUSTER_CACHE_FILE = OUT_DIR / ".cluster_cache.json"  # {cluster_hash: last_seen} dirty-skip (scale)
 SYNTH_FILE = OUT_DIR / "SYNTHESIS.md"        # single living snapshot (overwritten)
 HISTORY_FILE = OUT_DIR / "insight_history.jsonl"  # append-only first-seen log
 CURRENT_INSIGHTS_FILE = OUT_DIR / "current_insights.json"  # structured handoff → L4 promoter
@@ -96,6 +98,61 @@ CLUSTERS_CEIL = 40
 
 def adaptive_cap(node_count):
     return max(CLUSTERS_FLOOR, min(CLUSTERS_CEIL, node_count // NODES_PER_CLUSTER))
+
+
+def cluster_hash(cluster, texts):
+    """Content hash of a cluster: its member chunk-ids + their text. Two runs
+    produce the same hash iff the cluster's membership AND underlying text are
+    unchanged. Lets us SKIP re-synthesizing clusters that did not move — the key
+    to bounded per-run LLM cost as the corpus grows (most clusters are stable
+    day-to-day; only the freshly-touched ones need a new synthesis)."""
+    import hashlib
+
+    parts = []
+    for idx in sorted(cluster):
+        node = NODE_BY_IDX.get(idx)
+        if not node:
+            continue
+        cid = node["id"]
+        _, text = texts.get(cid, (node.get("file", ""), node.get("snippet", "")))
+        parts.append(f"{cid}:{(text or '')[:400]}")
+    return hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()
+
+
+def _load_json(path, default):
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return default
+
+
+def select_cluster_window(clusters, cap, batch):
+    """Choose which clusters to synthesize this run.
+
+    batch<=0 (default): legacy behaviour — the first `cap` clusters, no rotation.
+    batch>0            : process `batch` clusters per run, rotating a cursor over
+                         ALL clusters across successive runs (full sweep every
+                         ceil(total/batch) runs). Bounds per-run LLM cost while
+                         still covering the whole graph over time — same rolling
+                         pattern memory_review.py uses for large corpora.
+    Returns (selected_clusters, cursor_state_or_None).
+    """
+    total = len(clusters)
+    if batch <= 0:
+        return clusters[:cap], None
+    window = min(batch, total)
+    cur = _load_json(CURSOR_FILE, {"offset": 0, "total": 0})
+    offset = cur.get("offset", 0)
+    if cur.get("total") != total or offset >= total:
+        offset = 0  # cluster set changed materially or cursor overran -> restart sweep
+    end = offset + window
+    if end <= total:
+        selected = clusters[offset:end]
+        next_offset = end if end < total else 0
+    else:  # wrap around the end of the list
+        selected = clusters[offset:] + clusters[: end - total]
+        next_offset = end - total
+    return selected, {"offset": next_offset, "total": total}
 
 
 def memory_signature():
@@ -543,6 +600,14 @@ def main():
     ap.add_argument("--dry-run", action="store_true", help="show clusters, no LLM")
     ap.add_argument("--max-clusters", type=int, default=None,
                     help="override the adaptive cap (default: scales with node count)")
+    ap.add_argument("--cluster-batch", type=int, default=0,
+                    help="process at most N clusters per run, rotating a cursor over ALL "
+                         "clusters across runs (full sweep every ceil(total/N) runs). "
+                         "0 = legacy: first `cap` clusters, no rotation. Use at scale to "
+                         "bound per-run LLM cost.")
+    ap.add_argument("--no-dirty-skip", action="store_true",
+                    help="disable skipping clusters whose content is unchanged since last "
+                         "run (dirty-skip is on by default and cuts LLM cost at scale).")
     ap.add_argument("--force", action="store_true", help="ignore change-gate + throttle")
     ap.add_argument("--min-interval-hours", type=float, default=MIN_INTERVAL_HOURS)
     ap.add_argument("--cluster-method", choices=["ego", "louvain"], default="ego",
@@ -604,8 +669,13 @@ def main():
         return
     cap = args.max_clusters if args.max_clusters else adaptive_cap(len(graph["nodes"]))
     total = len(clusters)
-    clusters = clusters[:cap]
-    print(f"{total} cluster(s) found · cap={cap} ({len(graph['nodes'])} nodes) → processing {len(clusters)}")
+    # Scale: pick this run's window (legacy first-`cap`, or rotating batch cursor).
+    clusters, cursor_next = select_cluster_window(clusters, cap, args.cluster_batch)
+    if args.cluster_batch > 0:
+        print(f"{total} cluster(s) found · batch={args.cluster_batch} (rotating cursor) "
+              f"({len(graph['nodes'])} nodes) → this run: {len(clusters)}")
+    else:
+        print(f"{total} cluster(s) found · cap={cap} ({len(graph['nodes'])} nodes) → processing {len(clusters)}")
 
     if args.dry_run:
         for i, c in enumerate(clusters, 1):
@@ -616,15 +686,49 @@ def main():
     all_ids = {NODE_BY_IDX[idx]["id"] for c in clusters for idx in c}
     texts = load_chunk_texts(all_ids)
 
+    # Dirty-skip: hash each selected cluster; skip synthesis for clusters whose
+    # content is byte-identical to a prior run. Bounds LLM cost at scale — only
+    # freshly-changed clusters pay for an LLM call. On by default; --no-dirty-skip
+    # or --force re-synthesizes everything.
+    cluster_cache = {} if (args.no_dirty_skip or args.force) else _load_json(CLUSTER_CACHE_FILE, {})
+    cache_updated = dict(cluster_cache)
+    skipped_unchanged = 0
+
     kept = []
     cluster_raw = []
     for i, c in enumerate(clusters, 1):
+        chash = cluster_hash(c, texts)
+        if chash in cluster_cache:
+            skipped_unchanged += 1
+            cache_updated[chash] = datetime.now().isoformat(timespec="seconds")
+            continue
         print(f"  synthesizing cluster {i}/{len(clusters)} ({len(c)} nodes)...")
+        cache_updated[chash] = datetime.now().isoformat(timespec="seconds")
         res = synthesize(c, texts)
         if res and res.get("verdict") == "KEEP" and res.get("pattern"):
             res["_cluster"] = list(c)
             kept.append(res)
             cluster_raw.append((c, res))
+
+    if skipped_unchanged:
+        print(f"  ⏭️  dirty-skip: {skipped_unchanged} unchanged cluster(s) skipped (no LLM call)")
+
+    # Persist scale state: rotating cursor + dirty-skip cache. The cache is
+    # pruned to only the hashes seen THIS run (current cluster set) so it cannot
+    # grow unbounded as the corpus churns — stale hashes for clusters that no
+    # longer exist are dropped automatically.
+    if cursor_next is not None:
+        try:
+            CURSOR_FILE.write_text(json.dumps(cursor_next), encoding="utf-8")
+        except Exception:
+            pass
+    if not args.no_dirty_skip:
+        current_hashes = {cluster_hash(c, texts) for c in clusters}
+        pruned = {h: t for h, t in cache_updated.items() if h in current_hashes}
+        try:
+            CLUSTER_CACHE_FILE.write_text(json.dumps(pruned), encoding="utf-8")
+        except Exception:
+            pass
 
     raw_count = len(kept)
 
