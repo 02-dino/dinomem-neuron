@@ -186,37 +186,31 @@ def main() -> int:
                 log(f"skip (actively claimed): {os.path.basename(f)}")
                 continue
             base = os.path.basename(f)
-            # Promote to _pin_ if the note asks to be kept as a durable insight.
-            promote = False
-            try:
-                with open(f, "r", encoding="utf-8") as pfh:
-                    promote = "promote: pin" in pfh.read().lower()
-            except OSError:
-                pass
             if dry:
-                log(f"DRY-RUN would delete verified note: {base}"
-                    + (" (+promote to _pin_)" if promote else ""))
+                log(f"DRY-RUN would delete verified note: {base}")
                 deleted += 1
                 continue
             snap = snapshot(f)
-            if promote:
-                pin = os.path.join(MEM_DIR, base.replace("_note_", "_pin_", 1))
-                try:
-                    shutil.copy2(f, pin)
-                    log(f"promoted {base} -> {os.path.basename(pin)}")
-                except OSError as e:
-                    log(f"promote failed for {base}: {e}")
-            else:
-                # DISTILL before delete (Phase 2): turn the retiring note's
-                # knowledge into proper schema memory entries so the build is
-                # retrievable later. SEPARATE cheap no-reasoning step (keeps THIS
-                # script zero-LLM) run as its own process. Best-effort: on any
-                # failure we still delete the note (same as pre-distiller). Only
-                # non-promoted notes are distilled (promote:pin keeps the whole
-                # note as a pin, so no distillation needed). Toggle off via
-                # DINOMEM_DISTILL_DONE_NOTES=0.
-                if os.environ.get("DINOMEM_DISTILL_DONE_NOTES", "1") != "0":
-                    _run_distiller(f, base)
+            # DISTILL before delete: turn the retiring note's knowledge into
+            # proper schema memory entries (via extract_from_text, cheap
+            # no-reasoning) so the build stays retrievable, then delete the note.
+            # The distilled entries enter the NORMAL retention pipeline and
+            # FREEZE ON MERIT if they keep scoring [valid] — no manual pin needed.
+            # SEPARATE subprocess keeps THIS script zero-LLM. Best-effort: on any
+            # distill failure we still delete the note (same as pre-distiller).
+            # Toggle off via DINOMEM_DISTILL_DONE_NOTES=0.
+            #
+            # NOTE: the old `promote: pin` hatch (copy _note_ -> _pin_ instead of
+            # distilling) was REMOVED 2026-07-08. It predated verdict-based
+            # retention, when distill-to-regular meant death@180d, so pinning was
+            # the only way to keep anything. Now regular memory freezes on merit,
+            # so that hatch only produced junk pins (5/14 pins were mis-pinned
+            # done/brainstorm LOGS taken through it). Genuine pins (credentials,
+            # architecture, do-not-repeat findings) are authored DIRECTLY as
+            # _pin_ files, never born as _note_ then promoted. So removing the
+            # hatch blocks nothing real and closes the primary junk-pin source.
+            if os.environ.get("DINOMEM_DISTILL_DONE_NOTES", "1") != "0":
+                _run_distiller(f, base)
             os.remove(f)
             deleted += 1
             log(f"deleted verified note: {base} (snapshot: {snap})")
