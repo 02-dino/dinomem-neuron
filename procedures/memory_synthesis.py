@@ -37,6 +37,21 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 from extract_memory import call_llm  # noqa: E402
 
+# Schema adapter: tolerate OpenClaw memory-index schema drift (see memory_graph.py).
+from _schema_adapter import resolve as _resolve_schema_raw, SchemaUnsupported  # noqa: E402
+
+_SCHEMA_CACHE = {}
+
+
+def _resolve_schema(db_path):
+    key = str(db_path)
+    if key not in _SCHEMA_CACHE:
+        try:
+            _SCHEMA_CACHE[key] = _resolve_schema_raw(db_path)
+        except SchemaUnsupported as e:
+            sys.exit(f"memory index schema not supported:\n{e}")
+    return _SCHEMA_CACHE[key]
+
 DB_PATH = Path("DINOMEM_SQLITE_PLACEHOLDER")
 # Workspace resolution (priority): DINOMEM_WORKSPACE env var > install-time sed
 # substitution > self-locate from this file's location (safety net if sed was
@@ -88,8 +103,10 @@ def memory_signature():
     L2 graph's signature scheme so 'changed?' means the same thing in both."""
     import hashlib
 
+    schema = _resolve_schema(DB_PATH)
+    sql = schema.signature_sql() or schema.chunk_signature_sql()
     con = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
-    rows = con.execute("SELECT path, hash FROM files ORDER BY path").fetchall()
+    rows = con.execute(sql).fetchall()
     con.close()
     blob = "\n".join(f"{p}:{h}" for p, h in rows)
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
@@ -103,11 +120,9 @@ def load_graph():
 
 def load_chunk_texts(ids):
     """Map chunk id -> full text from the live index."""
+    schema = _resolve_schema(DB_PATH)
     con = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
-    qmarks = ",".join("?" * len(ids))
-    rows = con.execute(
-        f"SELECT id, path, text FROM chunks WHERE id IN ({qmarks})", list(ids)
-    ).fetchall()
+    rows = con.execute(schema.chunk_text_sql(len(ids)), list(ids)).fetchall()
     con.close()
     return {cid: (path, text) for cid, path, text in rows}
 

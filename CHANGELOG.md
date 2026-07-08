@@ -4,6 +4,18 @@ All notable changes to dinomem-neuron are documented here.
 
 ---
 
+## 1.3.5
+
+Compatibility fix. **Recommended for anyone whose L2 graph / L3 synthesis crons error out.** Makes neuron tolerant of OpenClaw memory-index schema drift so `memory_graph.py` and `memory_synthesis.py` keep working across OpenClaw versions.
+
+### Fixed
+- **OpenClaw memory-index schema drift broke L2/L3.** `memory_graph.py` and `memory_synthesis.py` read the sqlite index OpenClaw's native memory search builds at `~/.openclaw/memory/<agent-id>.sqlite`. That schema is owned by OpenClaw, not dinomem, and some builds expose different table/column names (e.g. `memory_index_chunks` instead of `chunks`). The hard-coded `SELECT ... FROM chunks` then threw `no such table` / `no such column` and L2/L3 went dark while every other cron kept running. Both scripts now resolve the real table/column names at runtime via a new `_schema_adapter.py`, which introspects `sqlite_master` + `PRAGMA table_info` against a table of known aliases. Verified column-for-column identical to the previous SQL on the reference schema (files/chunks) with zero regression, and resilient to virtual FTS/vec tables. Unknown schemas now fail loud with a full schema dump for one-shot diagnosis instead of a cryptic sqlite error.
+
+### Upgrade
+Unzip the new archive over your install and run `bash scripts/install.sh`.
+
+---
+
 ## 1.3.4
 
 Memory-quality + reliability pass. **Recommended for all users.** Sharpens the done-note lifecycle so retiring notes enrich normal memory instead of piling up frozen pins, adds an atomic note-claim writer to close the cron/live-session race, and biases the memory pruner to keep well-connected hub facts.

@@ -31,6 +31,23 @@ from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 
+# Schema adapter: resolves OpenClaw memory-index table/column names at runtime so
+# neuron survives OpenClaw schema drift (files/chunks vs memory_index_chunks).
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _schema_adapter import resolve as _resolve_schema_raw, SchemaUnsupported  # noqa: E402
+
+_SCHEMA_CACHE = {}
+
+
+def _resolve_schema(db_path):
+    key = str(db_path)
+    if key not in _SCHEMA_CACHE:
+        try:
+            _SCHEMA_CACHE[key] = _resolve_schema_raw(db_path)
+        except SchemaUnsupported as e:
+            sys.exit(f"memory index schema not supported:\n{e}")
+    return _SCHEMA_CACHE[key]
+
 # Optional spaCy for SVO triple extraction (graceful fallback if not installed)
 try:
     import spacy
@@ -60,9 +77,12 @@ OUT_DIR = _WS / "kb/memory_neuron/l2_graph"
 def compute_signature(db_path):
     """Content signature of the indexed memory corpus: sorted (path, hash) from
     the files table. Changes only when memory content actually changes — immune
-    to WAL/checkpoint mtime churn."""
+    to WAL/checkpoint mtime churn. Schema-tolerant via _schema_adapter (falls
+    back to a chunks-based signature when the index has no files table)."""
+    schema = _resolve_schema(db_path)
+    sql = schema.signature_sql() or schema.chunk_signature_sql()
     con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
-    rows = con.execute("SELECT path, hash FROM files ORDER BY path").fetchall()
+    rows = con.execute(sql).fetchall()
     con.close()
     blob = "\n".join(f"{p}:{h}" for p, h in rows)
     import hashlib
@@ -91,10 +111,9 @@ def load_chunks(db_path):
     """
     if not db_path.exists():
         sys.exit(f"index not found: {db_path}")
+    schema = _resolve_schema(db_path)
     con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
-    rows = con.execute(
-        "SELECT id, path, start_line, end_line, text, embedding FROM chunks"
-    ).fetchall()
+    rows = con.execute(schema.load_chunks_sql()).fetchall()
     con.close()
     chunks = []
     firewalled = 0
