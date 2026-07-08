@@ -461,7 +461,7 @@ fi
 
 # ── 2) Copy scripts ───────────────────────────────────────────────────────────
 hr "Copying scripts"
-for f in procedures/memory_graph.py procedures/memory_synthesis.py procedures/memory_promote.py procedures/contradiction_check.py procedures/generate_topic_index.py procedures/docs_ingest.py procedures/session_ingest.py tools/docs_search.py tools/session_search.py tools/cache_utils.py; do
+for f in procedures/memory_graph.py procedures/memory_synthesis.py procedures/memory_promote.py procedures/contradiction_check.py procedures/generate_topic_index.py procedures/docs_ingest.py procedures/session_ingest.py tools/docs_search.py tools/session_search.py tools/cache_utils.py scripts/claim_note.sh; do
   dst="$WS/$f"
   # license_check.py must sit beside procedures so the runtime guard can import it.
   true
@@ -476,6 +476,7 @@ for f in procedures/memory_graph.py procedures/memory_synthesis.py procedures/me
     sed -i "s|DINOMEM_HF_CACHE_PLACEHOLDER|$HOME/.cache/huggingface|g" "$dst"
     sed -i "s|DINOMEM_AGENT_ID_PLACEHOLDER|$AGENT_ID|g" "$dst"
     sed -i "s|DINOMEM_AGENT_SESSIONS_PLACEHOLDER|$SESSIONS_DIR|g" "$dst"
+    case "$f" in *.sh) chmod +x "$dst" 2>/dev/null || true;; esac
     ok "$f"
   fi
 done
@@ -721,6 +722,16 @@ DINOMEM_BODY=$(cat <<'DINOMEM_NEURON_AGENTS_BODY'
     - project_estimate: request trips project gate → auto-write project _note_ before starting
   guardrail: only if concrete done_when is writable; personal/ambiguous → ask first
   upgrade: enumerate steps FIRST; if >1 digital/verifiable step → type: project; never skip enumeration; physical/non-verifiable tasks → task_bound
+
+## note_claim_protocol
+  when: a LIVE interactive session is about to EDIT/write a project or task _note_ (_note_*.md) that a cron (Advancer/Improver/Deleter) could also touch
+  why: the crons READ claimed_by/claimed_at and back off a fresh claim (live-session 120min window), but nothing writes the claim for the live agent. Unclaimed => a cron can grab the same note mid-edit and double-write / re-nag. The live agent is the write side of the protocol.
+  action:
+    - BEFORE the first edit: bash $WS/scripts/claim_note.sh claim <note> live-session-<agent-id>   # exit 3 = another job holds it fresh -> do not fight; pick another or tell the user
+    - each later turn resuming the SAME note: bash $WS/scripts/claim_note.sh refresh <note> live-session-<agent-id>
+    - when done / paused / abandoning: bash $WS/scripts/claim_note.sh release <note>
+  skip_when: read-only note lookups; _pin_ files; a note created+finished in one edit with no cron overlap
+  enforce: mandatory before multi-turn or build-related note edits; this makes the claim protocol enforceable instead of documentation-only
 
 ## memory_tools
   # extends base memory_tools; adds neuron-specific tools
