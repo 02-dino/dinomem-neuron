@@ -119,6 +119,31 @@ def snapshot(path: str) -> str:
     return dest
 
 
+def _run_distiller(note_path: str, base: str) -> None:
+    """Invoke the done-note distiller as a separate process. Best-effort:
+    logs + swallows all failures so retirement never blocks on distillation."""
+    distiller = os.path.join(os.path.dirname(os.path.abspath(__file__)), "distill_done_note.py")
+    if not os.path.exists(distiller):
+        log(f"distiller not found ({distiller}); skipping distill for {base}")
+        return
+    try:
+        import subprocess
+        env = dict(os.environ)
+        env.setdefault("OPENCLAW_WORKSPACE", WS)
+        r = subprocess.run(
+            [sys.executable, distiller, note_path],
+            capture_output=True, text=True, timeout=150, env=env,
+        )
+        if r.returncode == 0:
+            log(f"distilled {base} before delete")
+        elif r.returncode == 2:
+            log(f"distill LLM-failed for {base}; deleting without distill (non-fatal)")
+        else:
+            log(f"distill exited {r.returncode} for {base}: {r.stderr.strip()[:200]}")
+    except Exception as e:
+        log(f"distill invocation error for {base}: {e}; deleting anyway")
+
+
 def main() -> int:
     dry = "--dry-run" in sys.argv
 
@@ -181,6 +206,17 @@ def main() -> int:
                     log(f"promoted {base} -> {os.path.basename(pin)}")
                 except OSError as e:
                     log(f"promote failed for {base}: {e}")
+            else:
+                # DISTILL before delete (Phase 2): turn the retiring note's
+                # knowledge into proper schema memory entries so the build is
+                # retrievable later. SEPARATE cheap no-reasoning step (keeps THIS
+                # script zero-LLM) run as its own process. Best-effort: on any
+                # failure we still delete the note (same as pre-distiller). Only
+                # non-promoted notes are distilled (promote:pin keeps the whole
+                # note as a pin, so no distillation needed). Toggle off via
+                # DINOMEM_DISTILL_DONE_NOTES=0.
+                if os.environ.get("DINOMEM_DISTILL_DONE_NOTES", "1") != "0":
+                    _run_distiller(f, base)
             os.remove(f)
             deleted += 1
             log(f"deleted verified note: {base} (snapshot: {snap})")

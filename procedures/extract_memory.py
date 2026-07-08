@@ -863,6 +863,118 @@ Rules:
         return None
 
 
+def extract_from_text(text, source_label="text", model=None):
+    """Extract a memory summary dict from an ARBITRARY TEXT BLOB (not a session
+    archive). Reuses the exact same schema + cheap no-reasoning LLM call as
+    process_single_archive, so the output is graph-ready (topics/relations/
+    entities/classification) and feeds write_memory_file() unchanged.
+
+    Used by the done-note distiller: pass the retiring _note_ body here to turn
+    it into proper schema memory entries before the note is deleted.
+
+    Returns a summary dict, None (nothing memorable), or "LLM_FAILED".
+    """
+    if not LLM_ENABLED:
+        return None
+    if not text or not text.strip():
+        return None
+
+    prompt = f"""You are an AI agent writing your own memory notes.
+Below is the content of a COMPLETED project/task note that is being retired.
+Extract ONLY the durable knowledge worth recalling later: what was built, the
+durable structural facts (repo names, file paths, tool names, pipeline design,
+config values), decisions made, and lessons learned. Distinguish the one-time
+EVENT ("we built X on this date") from durable FACTS ("X lives at path Y and
+works like Z") — emit each as its own entry so they can have different lifespans.
+
+Retiring note content:
+{text}
+
+If the note contains nothing worth remembering beyond "a task happened", return
+EMPTY arrays for all fields (a bare event with no reusable knowledge is fine to
+drop).
+
+Required JSON structure:
+{{
+  "context": "1-2 sentence overview of what this project/note accomplished, or empty string if nothing memorable",
+  "insights": [
+    "[factual] Verifiable structural fact or principle that holds true beyond this task",
+    "[pattern] Reusable relationship or mechanism that applies beyond this specific case",
+    "[lesson] Something learned from a mistake, outcome, or experiment during this build"
+  ],
+  "decisions": [
+    "[decision] Explicit choice made: what was chosen, what was rejected, and why"
+  ],
+  "operational": [
+    "[operational] Critical fact needed to act correctly later: repo names, file paths, tool names, config values, pipeline structure. Include the behavioral default where relevant."
+  ],
+  "topics": ["#hashtag topics covered, lowercase, no spaces"],
+  "relations": ["Subject → verb → Object"],
+  "entities": ["Name | type: person|project|tool|concept|org"]
+}}
+
+Rules:
+- EVERY insight MUST start with one of: [factual], [pattern], [lesson]
+- [factual]/[operational] = durable structural truths (paths, names, design), NOT the one-time event of building it
+- Capture the build EVENT itself as a single [factual] or context line ("built <feature> — <what it does>"), separate from the durable facts
+- [decision] items MUST capture what was chosen AND what was rejected
+- EVERY [operational], [decision] item MUST end with a [ctx:...] tag (max 5 words). Example: [ctx:{source_label}]
+- [relation] = "Subject → verb → Object", only clear non-trivial relationships. Max 4.
+- [entity] = "Name | type: ...", proper nouns / named tools / projects only. Max 6.
+- Return empty arrays if nothing is worth remembering
+- No markdown inside JSON values, plain text only
+- JSON only, no explanation outside the JSON"""
+
+    log(f"   🔄 Distilling note content ({source_label})...")
+    success, response = call_llm(prompt, max_tokens=1500, reasoning=False,
+                                model=model or NO_REASONING_MODEL)
+    if not success:
+        log(f"   ⚠️  LLM failed for {source_label}: {response}")
+        return "LLM_FAILED"
+    try:
+        clean = response.strip()
+        if clean.startswith("```json"):
+            clean = clean[7:]
+        if clean.startswith("```"):
+            clean = clean[3:]
+        if clean.endswith("```"):
+            clean = clean[:-3]
+        clean = clean.strip()
+        llm_output = json.loads(clean)
+        today = datetime.now().strftime("%Y-%m-%d")
+        summary = {
+            "type": "agent_memory",
+            "date": today,
+            "context": llm_output.get("context", ""),
+            "insights": llm_output.get("insights", []),
+            "source_scores": [],
+            "decisions": llm_output.get("decisions", []),
+            "corrections": [],
+            "operational": llm_output.get("operational", []),
+            "user_preferences": [],
+            "topics": llm_output.get("topics", []),
+            "relations": llm_output.get("relations", []),
+            "entities": llm_output.get("entities", []),
+        }
+        has_content = (
+            summary["context"].strip()
+            or summary["insights"]
+            or summary["decisions"]
+            or summary["operational"]
+        )
+        if not has_content:
+            log(f"   ℹ️  Nothing memorable in {source_label}, skipping distill")
+            return None
+        log(f"   ✅ Distilled {len(summary['insights'])} insights, {len(summary['decisions'])} decisions, {len(summary['operational'])} operational from {source_label}")
+        return summary
+    except json.JSONDecodeError as e:
+        log(f"   ⚠️  JSON parse failed for {source_label}: {e}")
+        return None
+    except Exception as e:
+        log(f"   ⚠️  Error distilling {source_label}: {e}")
+        return None
+
+
 def _strip_meta_tags(text):
     """Strip [ctx:...] and [expires:...] tags for clean comparison/embedding."""
     return re.sub(r'\s*\[(ctx|expires):[^\]]*\]', '', text).strip()
@@ -1005,8 +1117,15 @@ def _slugify(text, max_len=40):
     text = text.strip('-')
     return text[:max_len]
 
-def _write_item_file(memory_dir, date_str, item_type, item_text, topics, context_snippet):
-    """Write a single memory item as its own .md file with YAML frontmatter."""
+def _write_item_file(memory_dir, date_str, item_type, item_text, topics, context_snippet, seed_verdict=None):
+    """Write a single memory item as its own .md file with YAML frontmatter.
+
+    seed_verdict: optional review verdict to stamp in frontmatter (e.g. "valid").
+    Used by the done-note distiller: a freshly-distilled entry has no review
+    verdict until its first 7d bucket; seeding `verdict: valid` protects it from
+    the deterministic deleter (which treats no-verdict as not-valid) until
+    review naturally re-judges it. It was JUST verified true = legitimately valid.
+    """
     # Build slug from first 40 chars of item text (strip tags first)
     clean_text = re.sub(r'\s*\[(ctx|expires|\w+):[^\]]*\]', '', item_text).strip()
     clean_text = re.sub(r'^\[(\w+)\]\s*', '', clean_text)  # strip leading [type] tag
@@ -1038,6 +1157,8 @@ def _write_item_file(memory_dir, date_str, item_type, item_text, topics, context
         frontmatter_lines.append(f"ctx: {ctx}")
     if topic_str:
         frontmatter_lines.append(f"topics: {topic_str}")
+    if seed_verdict:
+        frontmatter_lines.append(f"verdict: {seed_verdict}")
     if context_snippet:
         frontmatter_lines.append(f"session_ctx: {context_snippet[:80].replace(chr(10), ' ')}")
     frontmatter_lines.append("---")
@@ -1047,8 +1168,12 @@ def _write_item_file(memory_dir, date_str, item_type, item_text, topics, context
     filepath.write_text('\n'.join(frontmatter_lines), encoding='utf-8')
     return True, filepath
 
-def write_memory_file(summary, dedup=True):
-    """Write memory summary as per-item files: memory/YYYY-MM-DD_<type>_<slug>.md"""
+def write_memory_file(summary, dedup=True, seed_verdict=None):
+    """Write memory summary as per-item files: memory/YYYY-MM-DD_<type>_<slug>.md
+
+    seed_verdict: passed through to each item file's frontmatter (see
+    _write_item_file). Used by the distiller to stamp `verdict: valid`.
+    """
     today = summary.get('date', datetime.now().strftime("%Y-%m-%d"))
     context = summary.get('context', '').strip()
     insights = summary.get('insights', [])
@@ -1107,7 +1232,7 @@ def write_memory_file(summary, dedup=True):
     skipped = 0
     for item_type, items in item_groups:
         for item in items:
-            ok, fpath = _write_item_file(MEMORY_DIR, today, item_type, item, topics, ctx_snippet)
+            ok, fpath = _write_item_file(MEMORY_DIR, today, item_type, item, topics, ctx_snippet, seed_verdict=seed_verdict)
             if ok:
                 written += 1
                 log(f"   ✅ [{item_type}] → {fpath.name}")
