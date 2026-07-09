@@ -4,7 +4,7 @@ All notable changes to dinomem-neuron are documented here.
 
 ---
 
-## Unreleased
+## 1.6.0 — 2026-07-09
 
 Auto-refresh for the note-claim protocol — the live session no longer has to remember `claim_note.sh refresh`. **Recommended for everyone; it closes a real race that lets a background cron overwrite a note you're mid-edit.** A new `after_tool_call` hook plugin (`plugins/note-claim-refresh/`) runs the claim refresh **as a consequence of editing a note**, so the claim the Advancer/Improver/Deleter crons read to back off can never go stale from a forgotten manual refresh.
 
