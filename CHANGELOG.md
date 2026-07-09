@@ -6,6 +6,11 @@ All notable changes to dinomem-neuron are documented here.
 
 ## Unreleased
 
+Auto-refresh for the note-claim protocol — the live session no longer has to remember `claim_note.sh refresh`. **Recommended for everyone; it closes a real race that lets a background cron overwrite a note you're mid-edit.** A new `after_tool_call` hook plugin (`plugins/note-claim-refresh/`) runs the claim refresh **as a consequence of editing a note**, so the claim the Advancer/Improver/Deleter crons read to back off can never go stale from a forgotten manual refresh.
+
+### Added
+- **`note-claim-refresh` hook plugin — automatic claim refresh on note edits.** The `note_claim_protocol` (in `AGENTS.md`) tells the live agent to run `claim_note.sh refresh` every turn it keeps editing a `memory/_note_*.md`; that is documentation-only, and a forgotten refresh lets a cron grab the note mid-edit and double-write it (proven race). This ships an `after_tool_call` plugin that fires on any `edit`/`write`/`apply_patch` to a `memory/_note_*.md` and runs `claim_note.sh refresh` fire-and-forget — **observe-only, never blocks or mutates the tool result**, and `claim_note.sh` self-guards (no-op if the note isn't yours). Workspace is resolved **dynamically at runtime** (plugin config `workspaceDir` → `$OPENCLAW_WORKSPACE` → derived from the target note's own absolute path → ctx), so it works for any install with no hardcoded path; it no-ops silently if no `scripts/claim_note.sh` is found. `install.sh` copies the plugin into `<workspace>/plugins/note-claim-refresh/` and wires `openclaw.json` (`plugins.allow` + `plugins.load.paths` + `plugins.config.note-claim-refresh.workspaceDir`), idempotently; `uninstall.sh` removes the dir and unwires the config. A gateway restart loads it (`onStartup`).
+
 Multilingual embeddings for neuron's Python semantic tools. **Recommended for anyone whose docs/sessions/data aren't purely English.** `docs_search`, `session_search`, the structured-data `--semantic` path, and their ingest procedures now embed with `intfloat/multilingual-e5-small` (multilingual EN/ID + majors, 384-dim, 512-token context) instead of the English-centric `all-MiniLM-L6-v2`. Same 384-dim, same footprint.
 
 ### Changed

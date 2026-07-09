@@ -1153,6 +1153,88 @@ else:
 PYEOF
 fi
 
+# ── Install note-claim-refresh hook plugin (auto-refresh live-session claims) ──
+# The note_claim_protocol (wired into AGENTS.md above) tells the live agent to run
+# `claim_note.sh refresh` each turn it keeps editing a note. That is documentation-
+# only — an agent that forgets lets a cron (Advancer/Improver/Deleter) grab the note
+# mid-edit and double-write. This plugin makes the refresh AUTOMATIC: an
+# after_tool_call hook runs `claim_note.sh refresh` as a CONSEQUENCE of any
+# edit/write/apply_patch to a memory/_note_*.md the live session holds. Observe-only,
+# never blocks a tool. Workspace is resolved dynamically at runtime; we ALSO pin it in
+# plugin config here for robustness on multi-workspace hosts.
+hr "Note-claim-refresh hook plugin"
+PLUGIN_SRC="$SKILL_DIR/plugins/note-claim-refresh"
+PLUGIN_DST="$WS/plugins/note-claim-refresh"
+if [ ! -d "$PLUGIN_SRC" ]; then
+  warn "plugin source $PLUGIN_SRC missing — skipping (claim refresh stays manual)"
+else
+  mkdir -p "$PLUGIN_DST"
+  cp "$PLUGIN_SRC/openclaw.plugin.json" "$PLUGIN_SRC/package.json" "$PLUGIN_SRC/index.ts" "$PLUGIN_DST/"
+  ok "plugin files -> $PLUGIN_DST"
+  if [ ! -f "$OPENCLAW_JSON" ]; then
+    warn "openclaw.json not found — plugin copied but NOT wired. Add id 'note-claim-refresh' to plugins.allow + its path to plugins.load.paths, then restart."
+  else
+    DINOMEM_DRY_RUN="$DRY_RUN" DINOMEM_OPENCLAW_JSON="$OPENCLAW_JSON" DINOMEM_PLUGIN_DST="$PLUGIN_DST" DINOMEM_WS="$WS" python3 - <<'PYEOF'
+import json, os
+
+path = os.environ["DINOMEM_OPENCLAW_JSON"]
+plugin_dst = os.environ["DINOMEM_PLUGIN_DST"]
+ws = os.environ["DINOMEM_WS"]
+PID = "note-claim-refresh"
+with open(path) as f:
+    cfg = json.load(f)
+
+changed = []
+plugins = cfg.setdefault("plugins", {})
+
+# 1) allowlist (only if an allow list is enforced; create it if absent so the
+#    plugin is explicitly permitted)
+allow = plugins.get("allow")
+if not isinstance(allow, list):
+    allow = []
+    plugins["allow"] = allow
+if PID not in allow:
+    allow.append(PID)
+    changed.append(f"plugins.allow += {PID}")
+
+# 2) load.paths -> abs plugin dir (dedup)
+load = plugins.setdefault("load", {})
+paths = load.get("paths")
+if not isinstance(paths, list):
+    paths = []
+    load["paths"] = paths
+if plugin_dst not in paths:
+    paths.append(plugin_dst)
+    changed.append(f"plugins.load.paths += {plugin_dst}")
+
+# 3) per-plugin config.workspaceDir (robustness on multi-workspace hosts)
+pconf = plugins.get("config")
+if not isinstance(pconf, dict):
+    pconf = {}
+    plugins["config"] = pconf
+entry = pconf.get(PID)
+if not isinstance(entry, dict):
+    entry = {}
+    pconf[PID] = entry
+if entry.get("workspaceDir") != ws:
+    entry["workspaceDir"] = ws
+    changed.append(f"plugins.config.{PID}.workspaceDir -> {ws}")
+
+if changed and os.environ.get("DINOMEM_DRY_RUN") == "1":
+    for c in changed:
+        print(f"  \033[36m[plan]\033[0m wire openclaw.json: {c}")
+elif not changed:
+    print("  \033[33m[skip]\033[0m note-claim-refresh already wired in openclaw.json")
+else:
+    with open(path, "w") as f:
+        json.dump(cfg, f, indent=2)
+    for c in changed:
+        print(f"  \033[32m[ok]\033[0m   wired: {c}")
+    print("  \033[33m[warn]\033[0m Restart OpenClaw to load the plugin: openclaw gateway restart")
+PYEOF
+  fi
+fi
+
 echo
 hr "done"
 echo "  dinomem-neuron installed for agent: $AGENT_ID"

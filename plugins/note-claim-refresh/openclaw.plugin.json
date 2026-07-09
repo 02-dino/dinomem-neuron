@@ -1,0 +1,20 @@
+{
+  "id": "note-claim-refresh",
+  "name": "Note Claim Refresh",
+  "description": "Auto-refresh the live-session claim on any edit/write/apply_patch to a memory/_note_*.md the agent already holds. Makes the note_claim_protocol enforceable without the agent remembering to run claim_note.sh refresh each turn.",
+  "version": "1.0.0",
+  "kind": "hook",
+  "activation": {
+    "onStartup": true
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "workspaceDir": {
+        "type": "string",
+        "description": "Absolute path to the agent workspace whose memory/_note_*.md this plugin protects. If omitted, resolved dynamically from OPENCLAW_WORKSPACE, the tool call's target note path, or ctx."
+      }
+    }
+  }
+}

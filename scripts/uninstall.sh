@@ -141,6 +141,49 @@ else
   skip "AGENTS.md neuron block not found"
 fi
 
+# ── note-claim-refresh hook plugin ────────────────────────────────────
+hr "Note-claim-refresh plugin"
+PLUGIN_DST="$WS/plugins/note-claim-refresh"
+if [ -d "$PLUGIN_DST" ]; then
+  rm -rf "$PLUGIN_DST" && ok "removed $PLUGIN_DST" || warn "could not remove $PLUGIN_DST"
+else
+  skip "plugin dir not found: $PLUGIN_DST"
+fi
+OPENCLAW_JSON="${OPENCLAW_CONFIG:-$HOME/.openclaw/openclaw.json}"
+[ -f "$OPENCLAW_JSON" ] || OPENCLAW_JSON="$OPENCLAW_DIR/openclaw.json"
+if [ -f "$OPENCLAW_JSON" ]; then
+  DINOMEM_OPENCLAW_JSON="$OPENCLAW_JSON" DINOMEM_PLUGIN_DST="$PLUGIN_DST" python3 - <<'PYEOF'
+import json, os
+path = os.environ["DINOMEM_OPENCLAW_JSON"]
+plugin_dst = os.environ["DINOMEM_PLUGIN_DST"]
+PID = "note-claim-refresh"
+with open(path) as f:
+    cfg = json.load(f)
+changed = []
+plugins = cfg.get("plugins", {})
+allow = plugins.get("allow")
+if isinstance(allow, list) and PID in allow:
+    allow.remove(PID); changed.append("plugins.allow -= " + PID)
+load = plugins.get("load", {})
+paths = load.get("paths")
+if isinstance(paths, list) and plugin_dst in paths:
+    paths.remove(plugin_dst); changed.append("plugins.load.paths -= " + plugin_dst)
+pconf = plugins.get("config")
+if isinstance(pconf, dict) and PID in pconf:
+    del pconf[PID]; changed.append("plugins.config." + PID + " removed")
+if changed:
+    with open(path, "w") as f:
+        json.dump(cfg, f, indent=2)
+    for c in changed:
+        print("  \033[32m[ok]\033[0m   unwired: " + c)
+    print("  \033[33m[warn]\033[0m Restart OpenClaw to unload the plugin: openclaw gateway restart")
+else:
+    print("  \033[33m[skip]\033[0m note-claim-refresh not wired in openclaw.json")
+PYEOF
+else
+  skip "openclaw.json not found — plugin config left as-is"
+fi
+
 # -- Base uninstall (opt-in) --------------------------------------------------
 if [ "$WITH_BASE" = 1 ]; then
   hr "dinomem base uninstall (--with-base)"
