@@ -43,12 +43,17 @@ cmd="${1:-}"; note="${2:-}"; claimant="${3:-}"
 now_iso() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 now_epoch() { date -u +%s; }
 
-# Parse current claim from frontmatter (first --- ... --- block only).
+# Parse current claim from frontmatter. Handles TWO formats:
+#  (1) YAML fenced:  first line ---, block ends at next ---.
+#  (2) project-note: first line `# Heading`, bare `key: value` frontmatter
+#      that ends at the first blank line (matches check_projects.sh / resolve_done_notes.py).
 read_claim() {
   awk '
-    NR==1 && $0!="---" { exit }         # no frontmatter block
-    NR==1 { infm=1; next }
-    infm && $0=="---" { exit }
+    NR==1 && $0=="---" { infm=1; fenced=1; next }   # format 1: fenced
+    NR==1 && /^#/       { infm=1; next }             # format 2: heading -> bare frontmatter
+    NR==1 { exit }                                   # neither -> no frontmatter
+    infm && fenced && $0=="---" { exit }             # end of fenced block
+    infm && !fenced && NF==0 { exit }                # end of bare block (blank line)
     infm && /^claimed_by:/  { sub(/^claimed_by:[ \t]*/,""); by=$0 }
     infm && /^claimed_at:/  { sub(/^claimed_at:[ \t]*/,""); at=$0 }
     END { print by "\t" at }
@@ -83,7 +88,7 @@ write_claim() {
   local by="$1" at="$2"
   local tmp; tmp="$(mktemp "${note}.claim.XXXXXX")"
   if head -1 "$note" | grep -qx -- '---'; then
-    # Existing frontmatter: drop any prior claim lines, re-insert before closing ---.
+    # Format 1 (YAML fenced): drop prior claim lines, re-insert before closing ---.
     awk -v by="$by" -v at="$at" '
       NR==1 { print; infm=1; next }
       infm && $0=="---" {
@@ -93,8 +98,27 @@ write_claim() {
       infm && (/^claimed_by:/ || /^claimed_at:/) { next }
       { print }
     ' "$note" > "$tmp"
+  elif head -1 "$note" | grep -q '^#'; then
+    # Format 2 (project-note: `# Heading` + bare key:value frontmatter until first blank line).
+    # Drop any prior claim lines inside the block, then append the fresh claim at the
+    # END of the bare frontmatter (just before the first blank line). This keeps the
+    # claim where check_projects.sh / resolve_done_notes.py read it (before blank line),
+    # and does NOT inject a stray --- fence that would create duplicate frontmatter.
+    awk -v by="$by" -v at="$at" '
+      NR==1 { print; infm=1; next }
+      infm && NF==0 {
+        if (by!="") { print "claimed_by: " by; print "claimed_at: " at }
+        infm=0; print; next
+      }
+      infm && (/^claimed_by:/ || /^claimed_at:/) { next }
+      { print }
+      END {
+        # File with no trailing blank line: flush claim if still inside frontmatter.
+        if (infm && by!="") { print "claimed_by: " by; print "claimed_at: " at }
+      }
+    ' "$note" > "$tmp"
   else
-    # No frontmatter: create a minimal one carrying just the claim.
+    # No recognizable frontmatter: create a minimal fenced one carrying just the claim.
     {
       echo "---"
       if [ -n "$by" ]; then echo "claimed_by: $by"; echo "claimed_at: $at"; fi

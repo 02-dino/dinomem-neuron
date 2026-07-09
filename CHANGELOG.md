@@ -4,6 +4,13 @@ All notable changes to dinomem-neuron are documented here.
 
 ---
 
+## Unreleased
+
+### Fixed
+- **`scripts/claim_note.sh` now claims project notes (race-protection gap).** The note-claim helper — which the Advancer / Improver / Deleter crons read to back off a note a live session is editing — previously only handled `---`-fenced YAML frontmatter. **Project notes** (`type: project`) use a different shape: a `# Heading` first line followed by bare `key: value` frontmatter that ends at the first blank line (the same block `check_projects.sh` and `resolve_done_notes.py` read). On that shape the old script could not read the claim and, when writing, injected a stray top-level `---` block — producing a **duplicate/empty `claimed_by`** that the crons then read as *unclaimed*, so a background cron could advance a project note while a live session was mid-build. `read_claim`/`write_claim` now detect **both** frontmatter formats; project-note claims are written **in place** before the first blank line (drop prior claim lines, append the fresh claim), with **exactly one `claimed_by`** and no stray fence. Fenced-format notes are unchanged. Pass the note as a **full path** (`claim_note.sh` locates by path arg).
+
+---
+
 ## 1.5.0
 
 New retrieval capability: **structured data (exact SQL)**. **Recommended for anyone who works with spreadsheets, exports, or any tabular/JSON data.** Adds a third, separate store so the agent can answer the precise questions embeddings can't — *how many, which ones, under $X, on this date, sorted by, grouped by, the total* — with real `WHERE`/`ORDER BY`/`COUNT`/`SUM`/`GROUP BY`/`JOIN`, not similarity. Two optional aids ride alongside the exact path: **fuzzy value routing** (resolves typo/synonym filter values, no embeddings) and **per-prose-column semantic rank** ("find rows about X" over free-text columns like survey feedback) — both strictly opt-in, neither regresses the exact-SQL path.
