@@ -6,7 +6,7 @@ Searches kb/vector_db_docs/ — the structure-aware document store
 populated by procedures/docs_ingest.py.
 
 Retrieval channels (all additive, all local, no cloud call):
-  1. Semantic — all-MiniLM cosine over Chroma, optionally HyDE-expanded.
+  1. Semantic — e5-small cosine over Chroma, optionally HyDE-expanded.
   2. Lexical  — zero-dependency Okapi BM25 over the same chunk corpus, fused
                 with the semantic ranking via Reciprocal Rank Fusion (RRF).
                 Gives exact tokens ("Pasal 1338", defined terms, citations)
@@ -60,18 +60,34 @@ DB_PATH = str(WORKSPACE / "kb/vector_db_docs")
 # DINOMEM_HF_CACHE_PLACEHOLDER. Glob the snapshots dir under the HF cache; fall
 # back to the model id so HF resolves it normally if no local snapshot exists.
 import pathlib
-_MODEL_ID = "sentence-transformers/all-MiniLM-L6-v2"
+# Single source of truth via env (fallback const). Multilingual e5 (EN/ID + majors, 384-dim, 512 ctx).
+_MODEL_ID = os.environ.get("DINOMEM_EMBED_MODEL", "intfloat/multilingual-e5-small")
 _hf_cache = pathlib.Path(
     os.environ.get("HF_HOME")
     or (pathlib.Path.home() / ".cache" / "huggingface")
 )
-_model_root = _hf_cache / "hub" / "models--sentence-transformers--all-MiniLM-L6-v2" / "snapshots"
+_model_root = _hf_cache / "hub" / ("models--" + _MODEL_ID.replace("/", "--")) / "snapshots"
 try:
     _snaps = sorted(p for p in _model_root.iterdir() if p.is_dir()) if _model_root.exists() else []
     LOCAL_MODEL_PATH = str(_snaps[-1]) if _snaps else _MODEL_ID
 except Exception:
     LOCAL_MODEL_PATH = _MODEL_ID
 _LOCAL_MODEL_RESOLVED = LOCAL_MODEL_PATH != _MODEL_ID
+
+# e5 is asymmetric: prepend "query: " on searches, "passage: " on stored docs.
+# LangChain Chroma routes searches->embed_query and ingest->embed_documents, so
+# subclassing here gives correct asymmetric prefixing everywhere for free.
+# Disable via DINOMEM_EMBED_PREFIX=0 for a symmetric model.
+_PREFIX_ENABLED = os.environ.get("DINOMEM_EMBED_PREFIX", "1") != "0"
+class _PrefixedHFE(HuggingFaceEmbeddings):
+    def embed_documents(self, texts):
+        if _PREFIX_ENABLED:
+            texts = ["passage: " + t for t in texts]
+        return super().embed_documents(texts)
+    def embed_query(self, text):
+        if _PREFIX_ENABLED:
+            text = "query: " + text
+        return super().embed_query(text)
 
 # ── Lazy init ─────────────────────────────────────────────────────────────────
 _embeddings = None
@@ -82,7 +98,7 @@ def _get_vectorstore():
     if _embeddings is None:
         # Only force offline/local_files_only when we resolved an actual local
         # snapshot; otherwise let HF resolve the model id normally.
-        _embeddings = HuggingFaceEmbeddings(
+        _embeddings = _PrefixedHFE(
             model_name=LOCAL_MODEL_PATH,
             model_kwargs={'device': 'cpu', 'local_files_only': _LOCAL_MODEL_RESOLVED},
             encode_kwargs={'normalize_embeddings': True}
@@ -115,7 +131,7 @@ def _cached_search(cache_key: str, query: str, fetch_k: int):
     ]
 
 # ── BM25 lexical arm (zero-dependency Okapi BM25) ─────────────────────────────
-# Semantic (all-MiniLM cosine) is fuzzy on exact tokens: literal "Pasal 42",
+# Semantic (e5-small cosine) is fuzzy on exact tokens: literal "Pasal 42",
 # defined terms, article refs, proper nouns. For legal/UU/contract corpora the
 # user very often queries by exact citation, which is precisely where a pure
 # semantic vector is weakest. BM25 adds a dedicated LEXICAL channel; its ranking

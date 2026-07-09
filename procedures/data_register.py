@@ -10,7 +10,7 @@ and writes/updates the routing entry in kb/data_store/catalog.json.
 Retrieval is PRIMARILY exact SQL (see tools/data_query.py): filter/range/sort/COUNT/SUM/GROUP BY/JOIN.
 PLUS two optional aids: (a) fuzzy value routing (--suggest, no embeddings) to resolve inexact filter
 values, and (b) an OPTIONAL per-column semantic rank over free-PROSE text columns (--semantic): flagged
-prose columns get a small embedding index (all-MiniLM-L6-v2, reused from docs_search) so you can "find
+prose columns get a small embedding index (multilingual-e5-small, reused from docs_search) so you can "find
 rows about X". Semantic is strictly opt-in per prose column and optional-dep guarded — if the embedding
 stack is absent, the exact-SQL path is completely unaffected.
 

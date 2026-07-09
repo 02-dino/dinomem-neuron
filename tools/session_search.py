@@ -53,14 +53,28 @@ import pathlib
 # hash (hardcoded hashes break silently when the HF cache pins a different
 # revision on another machine). Glob the snapshots dir; fall back to the model
 # id so HF can resolve it normally if no local snapshot exists.
-_cache_dir = pathlib.Path.home() / ".cache/huggingface/hub"
-_model_root = _cache_dir / "models--sentence-transformers--all-MiniLM-L6-v2" / "snapshots"
-_MODEL_ID = "sentence-transformers/all-MiniLM-L6-v2"
+# Single source of truth via env (fallback const). Multilingual e5 (EN/ID + majors, 384-dim, 512 ctx).
+_MODEL_ID = os.environ.get("DINOMEM_EMBED_MODEL", "intfloat/multilingual-e5-small")
+_cache_dir = pathlib.Path(os.environ.get("HF_HOME") or (pathlib.Path.home() / ".cache/huggingface")) / "hub"
+_model_root = _cache_dir / ("models--" + _MODEL_ID.replace("/", "--")) / "snapshots"
 try:
     _snaps = sorted(p for p in _model_root.iterdir() if p.is_dir()) if _model_root.exists() else []
     LOCAL_MODEL_PATH = str(_snaps[-1]) if _snaps else _MODEL_ID
 except Exception:
     LOCAL_MODEL_PATH = _MODEL_ID
+_LOCAL_MODEL_RESOLVED = LOCAL_MODEL_PATH != _MODEL_ID
+
+# e5 asymmetric prefixing (query:/passage:). Disable via DINOMEM_EMBED_PREFIX=0 for symmetric models.
+_PREFIX_ENABLED = os.environ.get("DINOMEM_EMBED_PREFIX", "1") != "0"
+class _PrefixedHFE(HuggingFaceEmbeddings):
+    def embed_documents(self, texts):
+        if _PREFIX_ENABLED:
+            texts = ["passage: " + t for t in texts]
+        return super().embed_documents(texts)
+    def embed_query(self, text):
+        if _PREFIX_ENABLED:
+            text = "query: " + text
+        return super().embed_query(text)
 
 # ── Lazy init ─────────────────────────────────────────────────────────────────
 _embeddings = None
@@ -69,9 +83,9 @@ _vectorstore = None
 def _get_vectorstore():
     global _embeddings, _vectorstore
     if _embeddings is None:
-        _embeddings = HuggingFaceEmbeddings(
+        _embeddings = _PrefixedHFE(
             model_name=LOCAL_MODEL_PATH,
-            model_kwargs={'device': 'cpu', 'local_files_only': True},
+            model_kwargs={'device': 'cpu', 'local_files_only': _LOCAL_MODEL_RESOLVED},
             encode_kwargs={'normalize_embeddings': True}
         )
     if _vectorstore is None:

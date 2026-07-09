@@ -919,7 +919,7 @@ TOOLS_BODY=$(cat <<'DINOMEM_NEURON_TOOLS_BODY'
     libraries:
       - langchain_chroma
       - langchain_huggingface
-      - sentence-transformers (all-MiniLM-L6-v2, local)
+      - sentence-transformers (multilingual-e5-small, local)
 
   docs_search:
     path: tools/docs_search.py
@@ -978,7 +978,7 @@ TOOLS_BODY=$(cat <<'DINOMEM_NEURON_TOOLS_BODY'
     libraries:
       - langchain_chroma
       - langchain_huggingface
-      - sentence-transformers (all-MiniLM-L6-v2, local)
+      - sentence-transformers (multilingual-e5-small, local)
 
   data_query:
     path: tools/data_query.py
