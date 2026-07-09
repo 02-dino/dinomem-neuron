@@ -1,12 +1,12 @@
 {
   "name": "dinomem-neuron",
   "displayName": "dinomem-neuron — Dino Agent Memory (Neuron Layer)",
-  "version": "0.1.0",
-  "description": "Advanced memory layer for dinomem. Adds L2 graph linking, L3 synthesis, L4 promotion, contradiction detection, and topic indexing. Requires dinomem base.",
+  "version": "1.5.0",
+  "description": "Advanced memory layer for dinomem. Adds L2 graph linking, L3 synthesis, L4 promotion, contradiction detection, topic indexing, RAG for long docs, and structured-data (exact SQL over CSV/JSON/Parquet). Requires dinomem base.",
   "author": "dino",
   "homepage": "https://github.com/02-dino/dinomem-neuron",
   "license": "Commercial",
-  "keywords": ["memory", "neuron", "graph", "synthesis", "openclaw"],
+  "keywords": ["memory", "neuron", "graph", "synthesis", "openclaw", "rag", "structured-data", "sql", "duckdb", "csv"],
   "requires": {
     "openclaw": ">=2026.1.0",
     "plugins": ["dinomem"],

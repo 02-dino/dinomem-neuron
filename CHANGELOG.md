@@ -4,6 +4,39 @@ All notable changes to dinomem-neuron are documented here.
 
 ---
 
+## 1.5.0
+
+New retrieval capability: **structured data (exact SQL)**. **Recommended for anyone who works with spreadsheets, exports, or any tabular/JSON data.** Adds a third, separate store so the agent can answer the precise questions embeddings can't — *how many, which ones, under $X, on this date, sorted by, grouped by, the total* — with real `WHERE`/`ORDER BY`/`COUNT`/`SUM`/`GROUP BY`/`JOIN`, not similarity. Two optional aids ride alongside the exact path: **fuzzy value routing** (resolves typo/synonym filter values, no embeddings) and **per-prose-column semantic rank** ("find rows about X" over free-text columns like survey feedback) — both strictly opt-in, neither regresses the exact-SQL path.
+
+### The point: separate stores, one router — memory is never polluted
+dinomem-neuron now keeps **different stores for different kinds of retrieval, and picks the right one automatically from the shape of the request** — no manual selection, nothing cross-contaminates:
+
+| Kind of question | Store | Tool | How it's chosen |
+|---|---|---|---|
+| row · count · range · filter · sort · aggregate (csv/json/parquet) | `kb/data_store/data.duckdb` (DuckDB, exact SQL) | `data_query` | request shape (numbers/filters/totals) |
+| meaning · "explain" · "like this" · passage (long docs) | `kb/vector_db_docs/` (vector embeddings) | `docs_search` | request shape (semantic recall) |
+| fact · decision · preference · todo | native memory files | `memory_search` | request shape (personal/durable facts) |
+
+Because structured rows live in their **own DuckDB** and long documents live in their **own vector DB** — both physically separate from memory — **memory is never polluted** by table rows or document chunks, and each retrieval channel stays sharp at exactly what it's good at. The routing is declared in `AGENTS.md` (`## structured_data` + `## retrieval_router`) so the agent auto-detects intent every turn instead of guessing.
+
+### Added
+- **Structured-data store + registration (`procedures/data_register.py`).** Materializes a CSV, JSON, or Parquet file into a single DuckDB store (`kb/data_store/data.duckdb`) — **one table per dataset** (not a category column, not a database-per-category). DuckDB `DESCRIBE` infers column types; nested/semi-structured JSON is preserved as a queryable `STRUCT` (`meta.tier`, `meta.age` work directly). Every table is recorded in `catalog.json` with its schema, keywords, description, and a content hash. Supports `--list`, `--dry-run`, and `--refresh` (hash-skips unchanged sources, re-materializes changed ones, and prunes vanished sources incl. `DROP TABLE`).
+- **Auto-profiled catalog (better routing + fewer bad queries).** At register/refresh, each column is profiled with pure SQL (no LLM): `distinct_count`, whether it's a low-cardinality **routing dimension** (`categorical`), and up to 12 `sample_values` for those dimensions. Unique integer keys and continuous numerics are correctly excluded from being "dimensions." **Keywords are auto-derived** from the table name + column names + word-like categorical values, so a natural-language request routes to the right table *even without hand-typed* `--keywords` (manual keywords are still merged first and preserved across refresh). The sampled values give the agent the actual value vocabulary to write correct `WHERE` clauses (it knows `region ∈ {US, EU, APAC}`) — directly reducing the bad-SQL failure mode.
+- **Exact SQL retrieval (`tools/data_query.py`).** Read-only `SELECT` retrieval over the store: filter, range (`<`,`>`,`=`), sort, `COUNT`/`SUM`/`GROUP BY`, and cross-table/cross-format `JOIN`. `--list`/`--table` expose each table's columns + keywords so the agent routes to the right one; `--format text|json`; importable API (`data_query()`, `list_tables()`). `catalog.json` doubles as the intent router.
+- **Two-layer read-only safety.** Queries are `SELECT`-only by construction: (1) a pre-execution guard strips comments, rejects multi-statement input (`SELECT 1; DROP TABLE …`), requires a leading `SELECT`/`WITH`, and blocks every write/DDL keyword (`INSERT`/`UPDATE`/`DELETE`/`DROP`/`ALTER`/`ATTACH`/`COPY`/`PRAGMA`/`INSTALL`/`LOAD`/…); (2) the DuckDB connection is opened `read_only=True`, so a write is rejected at the engine level even if the guard were ever bypassed. Bad SQL surfaces as a clean one-line `SQL error:` instead of a stack trace. The store is a retrieval surface, never a mutation path.
+- **Fuzzy value routing (`data_query.py --suggest`).** Resolves an *inexact filter value* — typo, partial, wrong-case, or simple synonym/acronym — to a real stored value using DuckDB-native `jaro_winkler` + `levenshtein` + `ILIKE`-contains (plus an initialism boost), scored against the catalog's sampled column values. **No embeddings.** It *suggests* the correct `table.column = value` and an example `WHERE` clause — it never rewrites your SQL, so the agent stays in control. Directly attacks the "user typed the value slightly wrong" failure mode (`"united states"` → `region = 'US'`, `"Wiget"` → `product = 'Widget'`). Works on any Latin-script language (Indonesian included).
+- **Per-prose-column semantic rank (`data_query.py --semantic`).** For a table with a free-**prose** column (survey feedback, reviews, support tickets), `data_register` auto-detects that column (text, *not* a low-cardinality dimension, avg length ≥ 25 chars) and builds a small per-column embedding index under `kb/data_store/text_index/<table>__<col>/` (reusing the same local `all-MiniLM-L6-v2`/Chroma stack as `docs_search`). `--semantic "<table>.<col>: <query>"` ranks rows by **meaning** and **joins the matched `rowid` back to the full structured row** — so "find rows about pricing complaints" flows straight into normal SQL filter/group. **Strictly opt-in per column and optional-dependency guarded**: if the embedding stack isn't installed, `--semantic` exits cleanly (code 3) and the exact-SQL path is entirely unaffected. This keeps the store *table-first with prose riding along*, not a second semantic store.
+- **Behavioral routing + docs.** `AGENTS.md` gains `## structured_data` and a 5-way `## retrieval_router`; `TOOLS.md` gains `data_query`/`data_register` specs; README and `references/architecture.md` document the feature and the separate-stores model. `duckdb` is an **optional** dependency — if it's absent the feature is simply unavailable and the semantic/memory tools are completely unaffected.
+
+### Fixed
+- **Installer dependency-target correctness (buyer-install smoothness).** `install.sh` previously checked for modules with `python3 -c` but installed them with bare `pip` — on machines where `pip` and `python3` resolve to *different* interpreters, dependencies landed where the tools couldn't import them. All dependency installs now go through `"$PY" -m pip` (the same interpreter used for the import checks) with a PEP-668 `--break-system-packages` auto-retry for modern externally-managed distros. Applies to all dependencies, not just the new one.
+- **`openclaw.plugin.json` version drift.** The manifest was stuck at `0.1.0` while `VERSION`/CHANGELOG had advanced; it now tracks the real version.
+
+### Upgrade
+Unzip the new archive over your install and run `bash scripts/install.sh`. No config changes required. To start using structured data: `python3 procedures/data_register.py --file <your.csv> --name <table> --keywords a,b,c`, then `python3 tools/data_query.py --sql "SELECT ..."`. Requires `duckdb` (the installer adds it; if it can't, only this feature is skipped).
+
+---
+
 ## 1.4.0
 
 Performance + install-correctness pass. **Recommended for everyone — especially larger memory corpora.** Makes the L2 graph build effectively instant, bounds L3 synthesis cost as memory grows, and fixes a first-install crash for the schema adapter.

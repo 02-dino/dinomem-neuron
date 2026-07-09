@@ -235,6 +235,19 @@ if [ "$PY_MAJOR" -lt 3 ] || { [ "$PY_MAJOR" -eq 3 ] && [ "$PY_MINOR" -lt 8 ]; };
 else
   ok "Python $PY_VERSION"
 fi
+# Resolve the SAME interpreter used for import-checks, and install deps into IT.
+# Bare `pip` can target a DIFFERENT python than `python3` (e.g. /usr/local pip -> 3.11
+# while python3 -> 3.14), silently installing deps where the tools can't import them.
+# Always install via `$PY -m pip`. On PEP-668 externally-managed envs, retry with
+# --break-system-packages (only that case; normal envs never hit the retry).
+PY="$(command -v python3)"
+py_can_import() { "$PY" -c "import $1" 2>/dev/null; }
+pip_install() {
+  # usage: pip_install <pip-args...>; returns 0 on success
+  "$PY" -m pip install -q "$@" 2>/dev/null && return 0
+  "$PY" -m pip install -q --break-system-packages "$@" 2>/dev/null && return 0
+  return 1
+}
 # ── System resource check (warn-only; base already pulled the TEI image) ─────
 # Neuron adds daily L2 graph build + L3 synthesis. Recommended floor:
 #   base + neuron : 2 vCPU / 3 GB RAM. No large local install here, so no disk block.
@@ -409,31 +422,34 @@ fi
 
 # ── 0) Python dependencies ───────────────────────────────────────────────────
 hr "Python dependencies"
-python3 -c "import langchain_chroma" 2>/dev/null && skip "langchain-chroma (installed)" || (
-  pip install -q langchain-chroma && ok "langchain-chroma" || warn "langchain-chroma install failed"
+py_can_import langchain_chroma && skip "langchain-chroma (installed)" || (
+  pip_install langchain-chroma && ok "langchain-chroma" || warn "langchain-chroma install failed"
 )
-python3 -c "import langchain_huggingface" 2>/dev/null && skip "langchain-huggingface (installed)" || (
-  pip install -q langchain-huggingface && ok "langchain-huggingface" || warn "langchain-huggingface install failed"
+py_can_import langchain_huggingface && skip "langchain-huggingface (installed)" || (
+  pip_install langchain-huggingface && ok "langchain-huggingface" || warn "langchain-huggingface install failed"
 )
-python3 -c "import langchain_core" 2>/dev/null && skip "langchain-core (installed)" || (
-  pip install -q langchain-core && ok "langchain-core" || warn "langchain-core install failed"
+py_can_import langchain_core && skip "langchain-core (installed)" || (
+  pip_install langchain-core && ok "langchain-core" || warn "langchain-core install failed"
 )
-python3 -c "import numpy" 2>/dev/null && skip "numpy (installed)" || (
-  pip install -q numpy && ok "numpy" || warn "numpy install failed"
+py_can_import numpy && skip "numpy (installed)" || (
+  pip_install numpy && ok "numpy" || warn "numpy install failed"
 )
-python3 -c "import pandas" 2>/dev/null && skip "pandas (installed)" || (
-  pip install -q pandas && ok "pandas" || warn "pandas install failed"
+py_can_import pandas && skip "pandas (installed)" || (
+  pip_install pandas && ok "pandas" || warn "pandas install failed"
 )
-python3 -c "import yaml" 2>/dev/null && skip "pyyaml (installed)" || (
-  pip install -q pyyaml && ok "pyyaml" || warn "pyyaml install failed"
+py_can_import duckdb && skip "duckdb (installed)" || (
+  pip_install duckdb && ok "duckdb" || warn "duckdb install failed (structured_data feature unavailable; semantic tools unaffected)"
 )
-python3 -c "import googleapiclient" 2>/dev/null && skip "google-api-python-client (installed)" || (
-  pip install -q google-api-python-client google-auth google-auth-oauthlib google-auth-httplib2 && ok "google-api-python-client" || warn "google-api-python-client install failed"
+py_can_import yaml && skip "pyyaml (installed)" || (
+  pip_install pyyaml && ok "pyyaml" || warn "pyyaml install failed"
+)
+py_can_import googleapiclient && skip "google-api-python-client (installed)" || (
+  pip_install google-api-python-client google-auth google-auth-oauthlib google-auth-httplib2 && ok "google-api-python-client" || warn "google-api-python-client install failed"
 )
 
 # ── 1) Create directories ─────────────────────────────────────────────────────
 hr "Directories"
-for d in topics kb/memory_neuron/l2_graph kb/memory_neuron/l3_synthesis kb/memory_neuron/l4_promoted; do
+for d in topics kb/memory_neuron/l2_graph kb/memory_neuron/l3_synthesis kb/memory_neuron/l4_promoted kb/data_store; do
   if [ -d "$WS/$d" ]; then skip "$d/ (exists)"; else mkdir -p "$WS/$d"; ok "$d/"; fi
 done
 
@@ -477,7 +493,7 @@ hr "Copying scripts"
 # The scripts/*.sh + resolve_done_notes.py + distill_done_note.py helpers are the
 # cron targets referenced in the cron prompts; without them a fresh neuron install
 # registers crons whose scripts are missing (Step-0 pre-gate fails).
-for f in procedures/extract_memory.py procedures/memory_graph.py procedures/memory_synthesis.py procedures/memory_promote.py procedures/contradiction_check.py procedures/generate_topic_index.py procedures/docs_ingest.py procedures/session_ingest.py procedures/_schema_adapter.py tools/docs_search.py tools/session_search.py tools/graph_search.py tools/cache_utils.py scripts/claim_note.sh scripts/check_projects.sh scripts/check_improvable.sh scripts/resolve_done_notes.py scripts/distill_done_note.py; do
+for f in procedures/extract_memory.py procedures/memory_graph.py procedures/memory_synthesis.py procedures/memory_promote.py procedures/contradiction_check.py procedures/generate_topic_index.py procedures/docs_ingest.py procedures/session_ingest.py procedures/_schema_adapter.py procedures/data_register.py tools/docs_search.py tools/session_search.py tools/graph_search.py tools/cache_utils.py tools/data_query.py scripts/claim_note.sh scripts/check_projects.sh scripts/check_improvable.sh scripts/resolve_done_notes.py scripts/distill_done_note.py; do
   dst="$WS/$f"
   # extract_memory.py is the neuron superset over base's copy — always overwrite it,
   # even without --force, or the upgrade ships base's older engine.
@@ -732,7 +748,22 @@ DINOMEM_BODY=$(cat <<'DINOMEM_NEURON_AGENTS_BODY'
     uploaded_file: python3 procedures/docs_ingest.py --file <media path> → confirm  # script self-extracts pdf/docx/etc → docs/<slug>.md
     pasted_text: save docs/<slug>.md → python3 procedures/docs_ingest.py --file docs/<slug>.md → confirm
   media_path: inbound uploads at ~/.openclaw/media/inbound/<uuid> (from <media:...> placeholder); pass that path straight to --file
-  note: ingest auto-extracts via pdftotext+pandoc (no manual convert); re-ingested daily 4:00 UTC; ready for docs_search after; never save long docs to memory/
+  note: ingest auto-extracts via pdftotext+pandoc (no manual convert); re-ingested daily 4:00 UTC; ready for docs_search after; never save long docs to memory/; row|count|range|filter|aggregate over structured data (csv|json|parquet) → data_query NOT docs_search
+
+## structured_data
+  when: row | count | range | filter | sort | aggregate | field lookup | "how many" | "under $X" | "on <date>" | "cheapest/most" | "list ... where" over registered exact data (csv|json|parquet; any structured/semi-structured dataset)
+  action:
+    query: read kb/data_store/catalog.json → pick table(s) by keywords+columns → python3 tools/data_query.py --sql "SELECT ... FROM <table> WHERE ..."  # SELECT-only
+    register: python3 procedures/data_register.py --file <path.csv|json|parquet> --name <table> --desc "..." [--keywords a,b,c]
+  route: meaning|"like this"|passage → docs_search | fact|decision|preference → memory_search | recent-convo <7d → session_search | exact pattern|regex over raw text/logs → exec (ripgrep/grep)
+  note: store=kb/data_store/ (one duckdb, one table per dataset, NOT a category column, NOT db-per-category); handles structured+semi-structured (nested json ok); catalog.json=schema map+intent router; retrieval=exact SQL no embeddings; NEVER save rows to memory/
+
+## retrieval_router
+  meaning | "explain" | "like this" | passage → docs_search
+  recent conversation detail (<7d) → session_search
+  fact | decision | preference | todo → memory_search
+  row | count | range | filter | sort | aggregate | field lookup (csv|json|parquet) → data_query
+  exact pattern | regex | grep | exact-string over raw text/logs → exec (ripgrep/grep)
 
 ## auto_note
   triggers:
@@ -758,6 +789,7 @@ DINOMEM_BODY=$(cat <<'DINOMEM_NEURON_AGENTS_BODY'
   session_search: python3 tools/session_search.py; when memory_search thin/uncertain AND session <7d old AND transcript detail needed
   session_start_recall: extends base M_session_start — at cold start, when opener names entity/feature/continuation absent from _note_ files, run session_search "<natural-language topic of opener>" over recent raw convo <7d and read hit BEFORE answering; glob + session_search both mandatory (neuron-only: base has no session_search tool)
   graph_search: tools/graph_search.py; when complex relational query; fallback: memory_search; skip when relation_edges not yet populated
+  data_query_handoff: row|count|range|filter|sort|aggregate|field-lookup over registered structured data (csv|json|parquet) → data_query (exact SQL), NOT memory_search; memory has no <,>,=,COUNT,SUM; see ## structured_data / ## retrieval_router
   # G2: session_search embeds queries too — the base M3_query_style rule applies to it as well:
   #      prefer natural language, avoid technical identifiers/code terms/exact strings/variable names.
   M3_query_style_extends: applies_to also includes session_search (same natural-language rule as memory_search)
@@ -947,6 +979,92 @@ TOOLS_BODY=$(cat <<'DINOMEM_NEURON_TOOLS_BODY'
       - langchain_chroma
       - langchain_huggingface
       - sentence-transformers (all-MiniLM-L6-v2, local)
+
+  data_query:
+    path: tools/data_query.py
+    type: exec
+    db: kb/data_store/data.duckdb
+    catalog: kb/data_store/catalog.json
+    capabilities:
+      - exact_sql_retrieval
+      - csv_json_parquet_ingest
+      - semi_structured_nested_json
+      - filter_range_sort_aggregate
+      - multi_table_one_db
+      - list_catalog_tables
+      - select_only_readonly
+    inputs:
+      sql:
+        type: string
+        required: false
+        note: "SELECT-only query (--sql). Non-SELECT rejected."
+      table:
+        type: string
+        required: false
+        note: "Scope/inspect one catalog table (--table)."
+      list:
+        type: boolean
+        required: false
+        note: "List catalog tables+schema+keywords; no sql needed (--list)."
+      format:
+        type: string
+        required: false
+        default: text
+        note: "text|json output (--format)."
+    output:
+      type: list
+      structure: rows
+    constraints:
+      mode: read_only
+    libraries:
+      - duckdb
+
+  data_register:
+    path: procedures/data_register.py
+    type: exec
+    db: kb/data_store/data.duckdb
+    catalog: kb/data_store/catalog.json
+    capabilities:
+      - materialize_csv_json_parquet
+      - infer_column_types
+      - write_catalog_entry
+      - refresh_prune_hash_skip
+      - nested_json
+    inputs:
+      file:
+        type: string
+        required: false
+        note: "Source file to register (--file); csv|json|parquet."
+      name:
+        type: string
+        required: false
+        note: "Table name (--name); SQL-safe identifier."
+      desc:
+        type: string
+        required: false
+        note: "One-line dataset description (--desc)."
+      keywords:
+        type: string
+        required: false
+        note: "Comma-separated routing keywords (--keywords)."
+      list:
+        type: boolean
+        required: false
+        note: "List registered tables (--list)."
+      dry_run:
+        type: boolean
+        required: false
+        note: "Validate readability; no write (--dry-run)."
+      refresh:
+        type: boolean
+        required: false
+        note: "Re-scan sources; update schema/rows; prune vanished (--refresh)."
+    output:
+      type: text
+    constraints:
+      mode: read_write
+    libraries:
+      - duckdb
 DINOMEM_NEURON_TOOLS_BODY
 )
 TOOLS_BLOCK="$BEGIN

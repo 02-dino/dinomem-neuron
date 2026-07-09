@@ -55,21 +55,25 @@ memory/*.md + MEMORY.md + vector DB (TEI)
 ├── memory/
 │   └── _permanent.md         # Promoted permanent lessons (do not edit)
 └── kb/
-    └── memory_neuron/
-        ├── l2_graph/
-        │   └── memory_graph.json     # Graph nodes + edges
-        ├── l3_synthesis/
-        │   ├── SYNTHESIS.md              # Living snapshot of current insights
-        │   ├── current_insights.json     # Structured handoff → L4 promoter
-        │   ├── insight_history.jsonl     # Append-only insight history
-        │   ├── l3_edge_confidence.json   # Edge confidence scores
-        │   ├── contradiction_log.jsonl   # Detected contradictions
-        │   └── contradiction_queue.jsonl # Unresolved contradictions
-        └── l4_promoted/
-            ├── promotion_state.json      # Provisional + trusted store
-            ├── promotion_log.jsonl       # Append-only audit trail
-            ├── TRUSTED.md                # Human-readable trusted set mirror
-            └── .last_consumed.json       # Dedup guard
+    ├── memory_neuron/               # memory store — L2/L3/L4 synthesis artifacts
+    │   ├── l2_graph/
+    │   │   └── memory_graph.json     # Graph nodes + edges
+    │   ├── l3_synthesis/
+    │   │   ├── SYNTHESIS.md              # Living snapshot of current insights
+    │   │   ├── current_insights.json     # Structured handoff → L4 promoter
+    │   │   ├── insight_history.jsonl     # Append-only insight history
+    │   │   ├── l3_edge_confidence.json   # Edge confidence scores
+    │   │   ├── contradiction_log.jsonl   # Detected contradictions
+    │   │   └── contradiction_queue.jsonl # Unresolved contradictions
+    │   └── l4_promoted/
+    │       ├── promotion_state.json      # Provisional + trusted store
+    │       ├── promotion_log.jsonl       # Append-only audit trail
+    │       ├── TRUSTED.md                # Human-readable trusted set mirror
+    │       └── .last_consumed.json       # Dedup guard
+    ├── vector_db_docs/               # long-docs store — RAG embeddings (separate from memory)
+    └── data_store/
+        ├── data.duckdb               # structured-data store — one table per dataset (separate from memory)
+        └── catalog.json             # table schema map + intent router (columns, keywords, source_hash)
 ```
 
 ## Cron Schedule
@@ -133,6 +137,27 @@ Resumption reads `resume_state` **only** — never conversation history. After e
 ## RAG — long-document ingest
 
 Long documents (contracts, books, legal text, manuals) live in a separate vector store (`kb/vector_db_docs/`), kept apart from memory so they never pollute the synthesis pipeline. Ingest is **seamless and multi-format**: share a file in chat — PDF, Word (`.docx`), `.rtf`, `.odt`, HTML, EPUB, or plain text/markdown — and `docs_ingest.py` auto-extracts it to markdown (PDF via `pdftotext`, Office/HTML via `pandoc`), saves `docs/<slug>.md`, and ingests it for `docs_search`. No manual conversion, no folder drop. Uploaded media paths (`~/.openclaw/media/inbound/<uuid>`) are accepted directly, with magic-byte format detection when the extension is missing. If a binary is unavailable, text/markdown ingest still works and the affected formats degrade gracefully.
+
+## Structured data — exact SQL store
+
+Structured/semi-structured datasets (CSV, JSON, Parquet) live in a **separate DuckDB store** (`kb/data_store/data.duckdb`), kept apart from both memory and the RAG vector store. The **primary path** is exact retrieval — the counterpart to semantic RAG: filter, range (`<`,`>`,`=`), sort, `COUNT`/`SUM`/`GROUP BY`, cross-table `JOIN` — the precise questions embeddings can't answer.
+
+Two **optional aids** ride alongside the exact path (neither regresses it):
+
+- **Fuzzy value routing** (`data_query.py --suggest`) — resolves an inexact filter *value* (typo / partial / simple synonym-acronym) to a real stored value using DuckDB-native `jaro_winkler`/`levenshtein`/`ILIKE`. No embeddings. It *suggests* the real `table.column = value` (+ an example `WHERE`); it never rewrites your SQL.
+- **Per-prose-column semantic rank** (`data_query.py --semantic`) — for a table whose one column is free **prose** (survey feedback, reviews, tickets), `data_register` auto-detects that column (text, not a low-cardinality dimension, avg length ≥ 25 chars) and builds a small per-column embedding index (`kb/data_store/text_index/<table>__<col>/`, reusing the same `all-MiniLM-L6-v2`/Chroma stack as `docs_search`). `--semantic "<table>.<col>: <query>"` ranks rows by *meaning* and **joins the matched `rowid` back to the full structured row**, so "find rows about pricing complaints" then flows straight into normal SQL. It is **strictly opt-in per column** and **optional-dependency guarded**: if the embedding stack isn't installed, `--semantic` exits cleanly (code 3) and the exact-SQL path is entirely unaffected. This is why the store is *table-first with prose riding along*, not a second semantic store.
+
+**Store layout.** One DuckDB file, **one table per dataset** (never a category column, never a DB-per-category). `data_register.py` materializes a source file into a table (DuckDB `DESCRIBE` infers column types; nested JSON via `read_json_auto(maximum_depth=-1)` so `meta.tier`-style fields stay queryable) and records the table in `catalog.json`. Nested/semi-structured JSON is preserved as a `STRUCT` column and queried with dotted paths.
+
+**catalog.json** is both the schema map and the **intent router**: per table it stores `table_name`, `source_file`, `file_type`, `columns`, `row_count`, `keywords`, `description`, and a `source_hash` for change detection. `--list` surfaces columns+keywords+dimensions so the agent picks the right table.
+
+**Auto-profiling (pure SQL, no LLM).** At register/refresh each column is profiled: `distinct_count`, a `categorical` flag (a low-cardinality *routing dimension* — ≤25 distinct text/enum/bool or small-domain int; unique-int keys and continuous numerics are excluded so an `id` never masquerades as a dimension), and up to 12 `sample_values` for those dimensions. From this, **`keywords` are auto-derived** (table name + column names + word-like categorical values; numeric/id values are excluded as routing noise), so a natural-language request routes to the correct table even without hand-typed `--keywords` — manual keywords are merged first and preserved across `--refresh`. The sampled values double as the agent's **value vocabulary for correct `WHERE` clauses** (it knows `region ∈ {US, EU, APAC}` is a 3-value dimension vs `price` continuous), directly attacking the bad-SQL failure mode.
+
+**Read-only by construction — two layers.** `data_query.py` runs SELECT-only queries: (1) a pre-execution guard strips comments, rejects multi-statement input (`SELECT 1; DROP TABLE …`), requires a leading `SELECT`/`WITH`, and scans for any forbidden keyword (`INSERT`/`UPDATE`/`DELETE`/`DROP`/`ALTER`/`CREATE`/`ATTACH`/`COPY`/`PRAGMA`/`INSTALL`/`LOAD`/…); (2) the DuckDB connection is opened `read_only=True`, so a write is rejected at the engine level even if the guard were bypassed. DuckDB parse/binder/runtime errors surface as a clean one-line `SQL error:` (exit 2), never a raw traceback. `duckdb` is an optional dependency: if absent, the feature is unavailable and the semantic tools are unaffected (exit 3, feature-off-not-crash).
+
+**Refresh.** `data_register.py --refresh` re-scans registered sources: hash-skips unchanged, updates changed (re-materialize + new schema/row_count), and prunes vanished sources (`DROP TABLE` + catalog removal).
+
+**Routing (`## structured_data` / `## retrieval_router` in AGENTS.md).** The agent routes by request **shape**: row · count · range · filter · sort · aggregate · field-lookup → `data_query`; passage · "explain" · "like this" → `docs_search`; fact · decision · preference → `memory_search`; recent-conversation (<7d) → `session_search`; exact pattern/regex over raw text → `exec` grep. Rows are **never** written to memory. This is the separation that keeps memory clean: three stores (memory, `vector_db_docs`, `data_store`), each intent-routed, no cross-pollution.
 
 ## Prerequisites
 

@@ -12,6 +12,7 @@ A clear description of what went wrong.
 - [ ] L3 — memory_synthesis.py / contradiction_check.py
 - [ ] L4 — memory_promote.py / generate_topic_index.py
 - [ ] RAG — docs_ingest.py / docs_search.py
+- [ ] Structured data — data_register.py / data_query.py
 - [ ] install.sh
 
 **To reproduce**

@@ -70,6 +70,7 @@ This insight is now injected every turn. Future investing discussions automatica
 | 📌 | **Knowledge Promotion** (L4) | Insights that pass multi-signal evaluation (confidence, reinforcement/recurrence, contradiction, insight lifecycle) → written into always-injected context → behavior change |
 | 🗺️ | **Enriched navigation index** | `MEMORY.md` serves dual roles: search navigation aid (like dinomem base) + always-present behavior layer. Promoted insights live here — active every turn without recall. |
 | 📚 | **RAG for long docs** | Semantic search over contracts, books, legal text — stored separately, never pollutes memory |
+| 📊 | **Structured data** | Exact SQL retrieval over CSV/JSON/Parquet — filter, range (`<`,`>`,`=`), sort, `COUNT`/`SUM`/`GROUP BY` — the precise questions embeddings can't answer. Plus optional **fuzzy value routing** (`--suggest`, resolves typo/synonym filter values, no embeddings) and optional **per-prose-column semantic rank** (`--semantic`, "find rows about X" over free-text columns like survey feedback). Read-only; never pollutes memory |
 | 🤖 | **Automatic notes** | The agent writes `_note_` files from its own commitments ("next step", "TODO") and task follow-ups — not just when you ask |
 | 🏗️ | **Project executor** | Large builds become `type: project` notes: the agent estimates token cost upfront and splits the work if it won't fit the remaining budget, then executes one step per turn (with a reactive context checkpoint as a safety net) so nothing is lost across sessions. A Project Advancer cron auto-advances unfinished projects unattended and announces progress, pausing for approval on anything destructive. |
 | ♻️ | **Self-improving project closer** | When a project finishes, a Project Improver cron reviews the completed work and — if it makes sense for *that* project — makes a behavior-preserving improvement (cheaper/faster/clearer/more reliable; "nothing needed" is a valid outcome), validates it, then stamps the note `verified`. A Verified Note Deleter then retires verified notes (snapshotting first). External/destructive improvements stay gated for owner approval. |
@@ -265,7 +266,7 @@ your base is too old, run `dinomem/scripts/update.sh` before using neuron.
 
 ## Beyond the pipeline
 
-The L2/L3/L4 flow above is neuron's core: turning raw memory into validated, behavior-changing knowledge. Riding on that same base are four capabilities that aren't part of the synthesis engine but extend what the agent can do day to day.
+The L2/L3/L4 flow above is neuron's core: turning raw memory into validated, behavior-changing knowledge. Riding on that same base are five capabilities that aren't part of the synthesis engine but extend what the agent can do day to day.
 
 ### RAG for long documents
 
@@ -280,6 +281,24 @@ Contracts, books, legal text, manuals — anything too long to live in memory. `
 The three are additive: turning any one off leaves the others intact.
 
 **Seamless ingest.** You don't drop files in a folder or convert anything. Share a document in chat — PDF, Word (`.docx`), `.rtf`, `.odt`, HTML, EPUB, or plain text/markdown — and the agent detects the intent, extracts it to markdown, and ingests it automatically, ready for `docs_search`. This works on any chat channel that downloads attachments to OpenClaw's shared media store (Telegram, WhatsApp, Discord, Slack, and others), not just one. PDF extraction uses `pdftotext` and Office/HTML uses `pandoc`; the installer auto-installs both when possible, and if either is unavailable, text/markdown ingest still works while the affected formats degrade gracefully with a clear message.
+
+### Structured data
+
+RAG answers *"what does this say?"* — structured data answers *"how many, which ones, what's the total."* Embeddings are fuzzy on exact numbers, ranges, and counts; a spreadsheet question like *"orders under \$50 in the US, sorted by date"* needs real `WHERE`/`ORDER BY`/`SUM`, not similarity. This capability is the exact-retrieval counterweight to the semantic pipeline.
+
+`data_register.py` materializes a CSV, JSON, or Parquet file into a single DuckDB store (`kb/data_store/data.duckdb`) — **one table per dataset** (not a category column, not a DB-per-category) — and records its schema + routing keywords in `catalog.json`. Nested/semi-structured JSON is handled natively (`meta.tier`, `meta.age` are directly queryable). `data_query.py` then runs exact SQL:
+
+```bash
+# register a dataset (schema inferred, catalog updated)
+python3 procedures/data_register.py --file sales.csv --name sales --desc "Q3 orders" --keywords sales,revenue
+
+# query it — filter / range / aggregate / group-by
+python3 tools/data_query.py --sql "SELECT region, SUM(price*qty) FROM sales WHERE price < 50 GROUP BY region"
+```
+
+**Read-only by construction — two layers.** Queries are SELECT-only: a keyword guard rejects any `INSERT`/`UPDATE`/`DELETE`/`DROP`/`ALTER`/`ATTACH`/`COPY`/`PRAGMA`/etc. and multi-statement injection (`SELECT 1; DROP TABLE …`) before execution, and the DuckDB connection itself is opened `read_only=True` so a write is rejected at the engine level even if the guard were bypassed. The store is a retrieval surface, never a mutation path.
+
+**Routing.** `catalog.json` doubles as the intent router — `--list` shows every table's columns + keywords so the agent picks the right one. The behavior policy (`## structured_data` / `## retrieval_router`) draws the line: *row · count · range · filter · sort · aggregate → `data_query`*, while *meaning · "like this" · passage → `docs_search`* and *fact · decision · preference → `memory_search`*. Rows are never saved to memory. `--refresh` re-scans sources (hash-skips unchanged, updates changed, prunes vanished). Requires `duckdb`; if it's not installed the feature is simply unavailable and the semantic tools are unaffected.
 
 ### Automatic note creation
 
@@ -389,6 +408,7 @@ All signals must align. One-off or low-confidence insights stay in synthesis —
 | dinomem base not installed | install.sh warns and continues | Install dinomem first |
 | Existing `kb/memory_neuron/` | Preserved — not overwritten | Nothing, safe |
 | Existing `kb/vector_db_docs/` | Neuron RAG will write to this path | Back up first if it belongs to another system |
+| Existing `kb/data_store/` | Neuron structured-data will write `data.duckdb` + `catalog.json` here | Back up first if it belongs to another system |
 | Existing `rag_long_docs` in AGENTS.md | Block appended — potential duplicate | Remove duplicate manually after install |
 | Existing `MEMORY.md` with content | Will be **rewritten** by `generate_topic_index.py` on first weekly run | Raw `memory/*.md` files untouched — index rebuilt from them |
 
@@ -416,10 +436,12 @@ All signals must align. One-off or low-confidence insights stay in synthesis —
 │   ├── contradiction_check.py  # L3 — contradiction detection
 │   ├── generate_topic_index.py # L4 — topic index + MEMORY.md enrichment
 │   ├── docs_ingest.py          # RAG — ingest long docs
+│   ├── data_register.py        # Structured data — register csv/json/parquet into the DuckDB store + catalog
 │   ├── skill_extract.py        # Skill Promotion — extract from completed projects, L3 clusters, PERSISTENT.md best practices
 │   └── run_log.py              # Per-run audit trail — append-only JSONL log for all cron scripts
 ├── tools/
 │   ├── docs_search.py          # RAG — semantic search over long docs (HyDE query expansion enabled by default)
+│   ├── data_query.py           # Structured data — read-only exact SQL over the DuckDB store (SELECT-only)
 │   └── cache_utils.py          # Shared cache utility
 ├── scripts/
 │   ├── check_projects.sh       # zero-LLM pre-gate for Project Advancer (any in_progress project?)
@@ -433,11 +455,15 @@ All signals must align. One-off or low-confidence insights stay in synthesis —
 │   └── _permanent.md           # Promoted permanent lessons (do not edit)
 ├── docs/                       # Long documents for RAG (you add files here)
 └── kb/
-    └── memory_neuron/
-        ├── l2_graph/
-        ├── l3_synthesis/
-        └── l4_promoted/
+    ├── memory_neuron/          # memory store — L2/L3/L4 synthesis artifacts
+    │   ├── l2_graph/
+    │   ├── l3_synthesis/
+    │   └── l4_promoted/
+    ├── vector_db_docs/         # long-docs store — RAG embeddings (separate from memory)
+    └── data_store/             # structured-data store — data.duckdb + catalog.json (separate from memory)
 ```
+
+**Separate stores, one router.** Each retrieval kind lives in its own store and the agent auto-detects which to use from the request shape — so **memory is never polluted** by rows or long documents: structured/tabular data → `kb/data_store/data.duckdb` (exact SQL, with optional per-prose-column semantic rank riding along), long documents → `kb/vector_db_docs/` (semantic), and memory → native memory files. Row/count/range/aggregate questions route to `data_query`, passage/"like this" to `docs_search`, and facts/preferences to memory.
 
 ---
 
