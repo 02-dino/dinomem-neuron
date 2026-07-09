@@ -117,13 +117,12 @@ resume_state: <paths / decisions / assumptions the next turn needs to resume bli
 
 **Estimate gate** — at request time the agent decides whether a request is a project: `>3 files OR >5 sequential tool-steps OR research-then-build OR the user says "project/build"`. Heuristic floor, LLM may override. Trip the gate → write a project note instead of diving in; else execute normally in one turn.
 
-**Execution loop** — the *primary* turn-boundary signal is **step heaviness**, not context %. Before each step the agent judges its execution load and only reads context budget via `session_status` (`Context: Nk/200k (X%)`) as a backstop:
+**Execution loop** — turn boundaries are decided by **step heaviness**. Before each step the agent judges its execution load:
 
-- **Next step is heavy** (write+test a whole tool/file, multi-file change, research-then-build, a full write→run→debug→verify cycle) — give it its own turn: do only that step, checkpoint, stop cleanly — *even if context is low*. Don't chain another heavy step just because budget allows.
+- **Next step is heavy** (write+test a whole tool/file, multi-file change, research-then-build, a full write→run→debug→verify cycle) — give it its own turn: do only that step, checkpoint, stop cleanly, report `step n/m done`. Don't chain another heavy step. Next turn or the Project Advancer cron resumes from `current_step`.
 - **Next step is light** (tiny edit/config/doc/one-liner) — mark `[x]`, rewrite `resume_state`, advance `current_step`, batch the next light step in the same turn.
-- **Backstop — over ~60% context** — checkpoint (state already written), stop cleanly, report `step n/m done, context X%`. Next turn or the Project Advancer cron resumes from `current_step`.
 
-Heaviness leads because build-and-test steps fragment badly if split by token budget; the % is the safety net, not the plan.
+Heaviness is the signal because build-and-test steps fragment badly if split mid-cycle; a heavy step earns its own turn regardless of how much room is left.
 
 Resumption reads `resume_state` **only** — never conversation history. After every step the agent rewrites `resume_state` so the note stays self-sufficient. This is the reliability linchpin: a blind fresh session must be able to continue from the note alone.
 
