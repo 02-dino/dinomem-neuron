@@ -893,17 +893,7 @@ TOOLS_BODY=$(cat <<'DINOMEM_NEURON_TOOLS_BODY'
       - filter_by_document
       - filter_by_section
       - list_indexed_documents
-    when_to_use: |
-      Semantic search over long-form documents previously ingested via
-      docs_ingest.py (legal text, contracts, manuals, books). See AGENTS.md
-      rag_long_docs for the WHEN/policy. For conversation transcripts use
-      session_search; for market/memory KB use the agent's memory tools.
-    scope: |
-      Searches the structure-aware document store (kb/vector_db_docs), populated
-      by procedures/docs_ingest.py (re-ingested daily ~4:00 UTC via cron). ingest
-      auto-extracts pdf/docx/rtf/odt/html/epub (via pdftotext+pandoc) and accepts
-      uploaded file paths (e.g. ~/.openclaw/media/inbound/<uuid>) directly — no
-      manual conversion. If the DB is missing, the tool errors with a build hint.
+    note: errors with a build hint if kb/vector_db_docs is missing (run docs_ingest.py)
     inputs:
       query:
         type: string
