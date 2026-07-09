@@ -26,8 +26,18 @@ from pathlib import Path
 from datetime import datetime, timedelta, timezone
 
 from langchain_chroma import Chroma
-from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_core.documents import Document
+
+# Shared embedding resolver + e5 query:/passage: prefixing (single source of
+# truth: tools/_embed.py). Migrated 2026-07-09 (L1) off the per-file _PrefixedHFE
+# + local snapshot-resolution dupes so ingest (passage) and query vectors always
+# align to one model/prefix definition. tools/ is a sibling of procedures/.
+import sys as _sys_embed
+_sys_embed.path.insert(0, str(Path(__file__).parent.parent / "tools"))
+try:
+    from tools._embed import get_embeddings, model_id, EMBED_MODEL_META_KEY
+except ImportError:
+    from _embed import get_embeddings, model_id, EMBED_MODEL_META_KEY
 
 # ── Config ────────────────────────────────────────────────────────────────────
 WORKSPACE       = Path(__file__).parent.parent
@@ -47,38 +57,6 @@ WINDOW_SIZE     = 5   # exchanges per chunk
 STEP            = 3   # step between windows
 # overlap = WINDOW_SIZE - STEP = 2
 
-import pathlib
-# Resolve the local model snapshot dynamically rather than hardcoding a snapshot
-# hash (hardcoded hashes break silently when the HF cache pins a different
-# revision on another machine). MUST match what session_search.py uses, or
-# ingested session vectors won't align with query vectors. Honor HF_HOME; glob
-# the snapshots dir; fall back to the model id so HF can resolve it normally.
-# Single source of truth via env (fallback const). MUST match session_search.py.
-_MODEL_ID = os.environ.get("DINOMEM_EMBED_MODEL", "intfloat/multilingual-e5-small")
-_hf_cache = pathlib.Path(
-    os.environ.get("HF_HOME")
-    or (pathlib.Path.home() / ".cache" / "huggingface")
-)
-_model_root = _hf_cache / "hub" / ("models--" + _MODEL_ID.replace("/", "--")) / "snapshots"
-try:
-    _snaps = sorted(p for p in _model_root.iterdir() if p.is_dir()) if _model_root.exists() else []
-    LOCAL_MODEL_PATH = str(_snaps[-1]) if _snaps else _MODEL_ID
-except Exception:
-    LOCAL_MODEL_PATH = _MODEL_ID
-_LOCAL_MODEL_RESOLVED = LOCAL_MODEL_PATH != _MODEL_ID
-
-# e5 asymmetric prefixing (query:/passage:) — must match session_search.py so
-# ingested (passage) and query vectors align. Disable via DINOMEM_EMBED_PREFIX=0.
-_PREFIX_ENABLED = os.environ.get("DINOMEM_EMBED_PREFIX", "1") != "0"
-class _PrefixedHFE(HuggingFaceEmbeddings):
-    def embed_documents(self, texts):
-        if _PREFIX_ENABLED:
-            texts = ["passage: " + t for t in texts]
-        return super().embed_documents(texts)
-    def embed_query(self, text):
-        if _PREFIX_ENABLED:
-            text = "query: " + text
-        return super().embed_query(text)
 
 os.environ['HF_HUB_OFFLINE'] = '1'
 os.environ['TRANSFORMERS_OFFLINE'] = '1'
@@ -274,20 +252,22 @@ def main():
     if args.dry_run:
         log("DRY RUN — no writes")
 
-    # Init embeddings
+    # Init embeddings (shared resolver: model id + local-snapshot resolution +
+    # asymmetric query:/passage: prefixing all centralized in tools/_embed.py).
     log("Loading embeddings model...")
-    embeddings = _PrefixedHFE(
-        model_name=LOCAL_MODEL_PATH,
-        model_kwargs={'device': 'cpu', 'local_files_only': _LOCAL_MODEL_RESOLVED},
-        encode_kwargs={'normalize_embeddings': True}
-    )
+    embeddings = get_embeddings()
 
     # Init DB
     Path(DB_PATH).mkdir(parents=True, exist_ok=True)
     db = Chroma(
         persist_directory=DB_PATH,
         embedding_function=embeddings,
-        collection_metadata={"description": "Recent session store (7-day window, sliding window chunks)"}
+        # Stamp the embedding model id so query paths can detect a model mismatch
+        # (model swap vs an old-model store => silent garbage). See _embed.warn_on_mismatch.
+        collection_metadata={
+            "description": "Recent session store (7-day window, sliding window chunks)",
+            EMBED_MODEL_META_KEY: model_id(),
+        }
     )
 
     # Cleanup expired entries first

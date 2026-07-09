@@ -373,6 +373,9 @@ def cmd_semantic(raw, table_arg, column_arg, fmt, k=5):
         _die(f"index dir missing for {table}.{column} ({persist}). Re-register/refresh the table.", 2)
     try:
         vs = _embed.get_chroma(persist, cname)
+        # Fail loud if this prose index was built with a different embedding model
+        # than the one now configured (else ranking silently misaligns -> garbage).
+        _embed.warn_on_mismatch(vs, where=f"data_query:{table}.{column}")
         hits = vs.similarity_search_with_score(query, k=k)
     except _embed.SemanticUnavailable as e:
         _die(f"semantic rank unavailable ({e}). Exact SQL is unaffected.", 3)

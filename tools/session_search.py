@@ -42,39 +42,18 @@ except ImportError:
     from cache_utils import cached
 
 from langchain_chroma import Chroma
-from langchain_huggingface import HuggingFaceEmbeddings
+
+# Shared embedding resolver + e5 query:/passage: prefixing (single source of
+# truth: tools/_embed.py). Migrated 2026-07-09 (L1) off the per-file _PrefixedHFE
+# + local snapshot-resolution dupes.
+try:
+    from tools._embed import get_embeddings, warn_on_mismatch
+except ImportError:
+    from _embed import get_embeddings, warn_on_mismatch
 
 # ── Config ────────────────────────────────────────────────────────────────────
 WORKSPACE = Path(__file__).parent.parent
 DB_PATH = str(WORKSPACE / "kb/vector_db_sessions")
-
-import pathlib
-# Resolve the local model snapshot dynamically instead of hardcoding a snapshot
-# hash (hardcoded hashes break silently when the HF cache pins a different
-# revision on another machine). Glob the snapshots dir; fall back to the model
-# id so HF can resolve it normally if no local snapshot exists.
-# Single source of truth via env (fallback const). Multilingual e5 (EN/ID + majors, 384-dim, 512 ctx).
-_MODEL_ID = os.environ.get("DINOMEM_EMBED_MODEL", "intfloat/multilingual-e5-small")
-_cache_dir = pathlib.Path(os.environ.get("HF_HOME") or (pathlib.Path.home() / ".cache/huggingface")) / "hub"
-_model_root = _cache_dir / ("models--" + _MODEL_ID.replace("/", "--")) / "snapshots"
-try:
-    _snaps = sorted(p for p in _model_root.iterdir() if p.is_dir()) if _model_root.exists() else []
-    LOCAL_MODEL_PATH = str(_snaps[-1]) if _snaps else _MODEL_ID
-except Exception:
-    LOCAL_MODEL_PATH = _MODEL_ID
-_LOCAL_MODEL_RESOLVED = LOCAL_MODEL_PATH != _MODEL_ID
-
-# e5 asymmetric prefixing (query:/passage:). Disable via DINOMEM_EMBED_PREFIX=0 for symmetric models.
-_PREFIX_ENABLED = os.environ.get("DINOMEM_EMBED_PREFIX", "1") != "0"
-class _PrefixedHFE(HuggingFaceEmbeddings):
-    def embed_documents(self, texts):
-        if _PREFIX_ENABLED:
-            texts = ["passage: " + t for t in texts]
-        return super().embed_documents(texts)
-    def embed_query(self, text):
-        if _PREFIX_ENABLED:
-            text = "query: " + text
-        return super().embed_query(text)
 
 # ── Lazy init ─────────────────────────────────────────────────────────────────
 _embeddings = None
@@ -83,11 +62,9 @@ _vectorstore = None
 def _get_vectorstore():
     global _embeddings, _vectorstore
     if _embeddings is None:
-        _embeddings = _PrefixedHFE(
-            model_name=LOCAL_MODEL_PATH,
-            model_kwargs={'device': 'cpu', 'local_files_only': _LOCAL_MODEL_RESOLVED},
-            encode_kwargs={'normalize_embeddings': True}
-        )
+        # Shared resolver: model id, local-snapshot resolution, and asymmetric
+        # query:/passage: prefixing all handled centrally in tools/_embed.py.
+        _embeddings = get_embeddings()
     if _vectorstore is None:
         if not Path(DB_PATH).exists():
             raise FileNotFoundError(
@@ -98,6 +75,9 @@ def _get_vectorstore():
             persist_directory=DB_PATH,
             embedding_function=_embeddings
         )
+        # Fail loud if this store was built with a different embedding model than
+        # the one now configured (else query vectors silently misalign -> garbage).
+        warn_on_mismatch(_vectorstore, where="session_search:vector_db_sessions")
     return _vectorstore
 
 # ── Search ────────────────────────────────────────────────────────────────────
