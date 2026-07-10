@@ -4,6 +4,15 @@ All notable changes to dinomem-neuron are documented here.
 
 ---
 
+## 1.6.1 — 2026-07-10
+
+### Fixed
+- **`install.sh` — Project Advancer cron registration had a broken Python heredoc that killed the whole installer.** A literal (unescaped) newline inside the `"message"` JSON string in the Project Advancer cron payload made the embedded `python3 - <<PYEOF` block a `SyntaxError`. Under `set -euo pipefail` (active at the top of `install.sh`), that syntax error propagated as a non-zero exit and **aborted the entire install script** at that step — meaning Project Improver, Verified Note Deleter, Daily Note Review, and any later setup steps never ran on any fresh install (upgrades/re-runs where the cron already existed were unaffected, since the `exists` branch short-circuits before the broken heredoc). Live since 2026-07-02 (`fc1d1a8`). Fixed by properly `\n`-escaping the message string; verified by extracting and executing the exact heredoc standalone (parses, produces valid JSON) and running `bash -n` over the full script.
+- **Project Advancer cron — real progress/approval reports could be silently swallowed on default installs.** The cron ships with `delivery.mode: "none"` by default (correct — it disables only the runner's automatic chat-fallback). But the prompt's own "announce" instructions were descriptive text only, never an explicit `message` tool call — so on a stock install, genuine state-change reports (step completed, safety-gate pause needing approval) had no path to actually reach the owner. Reworded Step 10 to explicitly call the `message` tool for real reports (matching how Project Improver's Step 11 already does it), independent of `delivery.mode`.
+- **Project Advancer cron — idle/no-op runs could spam chat if `delivery.mode` is later switched to `announce`.** The "stop silently / no announce" instructions never told the agent to emit the literal `NO_REPLY` token, which is what OpenClaw's cron delivery layer actually checks to suppress a run's output — a plain sentence like "No in-progress project notes found" still gets delivered under `announce` mode. Added an explicit SILENT-STOP CONTRACT to the prompt: every no-op/skip/already-paused path now must output exactly `NO_REPLY` and nothing else.
+
+---
+
 ## 1.6.0 — 2026-07-09
 
 Auto-refresh for the note-claim protocol — the live session no longer has to remember `claim_note.sh refresh`. **Recommended for everyone; it closes a real race that lets a background cron overwrite a note you're mid-edit.** A new `after_tool_call` hook plugin (`plugins/note-claim-refresh/`) runs the claim refresh **as a consequence of editing a note**, so the claim the Advancer/Improver/Deleter crons read to back off can never go stale from a forgotten manual refresh.
