@@ -23,16 +23,26 @@ now_epoch=$(date -u +%s)
 
 for f in "$MEM"/_note_*.md; do
   [ -e "$f" ] || continue
-  head_block=$(head -n 15 "$f")
+  # Scan anchored fields (no leading whitespace, i.e. real frontmatter/top-level
+  # lines, not indented prose/steps) across the WHOLE FILE rather than a fixed
+  # head -n 15 or a "stop at first blank line" heuristic. Both are unsafe here:
+  # claim_note.sh writes claimed_by/claimed_at at the END of a note's bare
+  # frontmatter, which can land well past line 15 on notes with long
+  # steps:/resume_state: blocks (same bug class fixed in note-claim-refresh
+  # 2026-07-10) -- AND some project notes have legitimate blank lines inside
+  # free-form addendum sections BEFORE the real claim lines, so "first blank
+  # line" also under-scans. Anchored (^field:) grep on the whole file is safe:
+  # these bare tokens only ever appear once, at column 0, in real frontmatter --
+  # prose/steps text never starts a line with them verbatim.
 
-  echo "$head_block" | grep -qiE '^\s*type:\s*project\s*$'   || continue
-  echo "$head_block" | grep -qiE '^\s*status:\s*done\s*$'    || continue
+  grep -qE '^type:\s*project\s*$' "$f"   || continue
+  grep -qE '^status:\s*done\s*$' "$f"    || continue
   # already verified → not improvable (Component 1 will delete it)
-  echo "$head_block" | grep -qiE '^\s*verified:\s*true\s*$'  && continue
+  grep -qE '^verified:\s*true\s*$' "$f"  && continue
 
   # fresh-claim check: skip if another job is actively working it
-  claimed_by=$(echo "$head_block" | grep -iE '^\s*claimed_by:' | head -n1 | sed -E 's/^\s*claimed_by:\s*//I' | tr -d '\r' | xargs || true)
-  claimed_at=$(echo "$head_block" | grep -iE '^\s*claimed_at:' | head -n1 | sed -E 's/^\s*claimed_at:\s*//I' | tr -d '\r' | xargs || true)
+  claimed_by=$(grep -E '^claimed_by:' "$f" | tail -n1 | sed -E 's/^claimed_by:\s*//' | tr -d '\r' | xargs || true)
+  claimed_at=$(grep -E '^claimed_at:' "$f" | tail -n1 | sed -E 's/^claimed_at:\s*//' | tr -d '\r' | xargs || true)
   if [ -n "$claimed_by" ] && [ -n "$claimed_at" ]; then
     if claim_epoch=$(date -u -d "$claimed_at" +%s 2>/dev/null); then
       age=$(( now_epoch - claim_epoch ))

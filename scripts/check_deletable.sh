@@ -19,9 +19,12 @@ MEM="$WS/memory"
 
 for f in "$MEM"/_note_*.md; do
   [ -e "$f" ] || continue
-  head_block=$(head -n 15 "$f")
-  # any note explicitly stamped verified: true is deletable
-  echo "$head_block" | grep -qiE '^\s*verified:\s*true\s*$' && exit 0
+  # Scan the anchored field (no leading whitespace = real top-level frontmatter
+  # line) across the WHOLE FILE, not a fixed head -n 15. On notes with long
+  # steps:/resume_state: blocks the verified: line can land well past line 15
+  # -- same bug class fixed in note-claim-refresh 2026-07-10. Anchored (^field:)
+  # grep is safe: prose/steps never start a raw line with this exact token.
+  grep -qE '^verified:\s*true\s*$' "$f" && exit 0
 done
 
 exit 1
