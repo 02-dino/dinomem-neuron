@@ -4,6 +4,22 @@ All notable changes to dinomem-neuron are documented here.
 
 ---
 
+## 1.6.5 — 2026-07-10
+
+Installer reliability + config-safety release. Fixes the neuron→base install friction that forced manual base installs, and adds a self-healing config guard that prevents the "bot goes silent after install" failure. **Recommended for everyone — especially anyone who hit a manual base-install workaround or a dead gateway after installing.**
+
+### Fixed
+- **neuron→base handoff no longer dies on `--agree`.** The neuron installer passes `--agree` through to the base installer after the human accepts the neuron license; base previously rejected it as an unknown arg and exited, forcing the buyer to install base manually first. Base now accepts+ignores `--agree`. Full base dry-run now completes end-to-end (exit 0) with the exact flag neuron passes.
+- **Cron registration is now verified, not assumed.** Every cron add reads the job back by name (`cron list --json`) after adding; if it didn't actually persist, the installer prints a `[FAIL]` + a precise manual-add fallback line instead of silently assuming success. This was the worst prior failure — crons silently not registering with no signal.
+- **Existing healthy TEI on :8080 is reused, not clobbered.** If a healthy embed server already answers `/health` on 8080, the installer reuses it instead of trying to start a second container on a taken port.
+
+### Added
+- **Surgical config recovery on schema-validation failure.** If a config change isn't accepted by your installed OpenClaw version's schema, the installer no longer either (a) crashes the gateway on next restart or (b) blanket-reverts every dinomem change. It now diffs the patched config to leaf-paths, re-applies each change one at a time validating after each, and **keeps every change your OpenClaw accepts while dropping only the specific rejected field(s)** — reporting exactly what was kept/skipped. This is the direct fix for the "bot goes completely silent after install" report.
+- **Post-install self-check with a "bot goes silent" guard.** The neuron install epilogue prints a PASS/WARN table that now leads with **config schema validity** (safe to restart?) and **gateway liveness** (`openclaw status` responding?), then checks all crons by name, TEI `/health`, python imports, and memorySearch wiring. Purely reporting; never exits nonzero.
+- **langchain-chroma install retry** and clearer doctor guidance for verifying the install non-interactively.
+
+---
+
 ## 1.6.4 — 2026-07-10
 
 Reliability fix for the note-claim-refresh hook: a long project note could silently lose its live-session claim while you were still actively working it. **Recommended for everyone.**
