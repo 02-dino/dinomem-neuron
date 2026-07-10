@@ -568,22 +568,45 @@ if [ "$DO_CRON" = 1 ]; then
 
   # project_advancer — OpenClaw agentTurn cron (NOT shell crontab): auto-advance type:project in_progress notes
   # one step per run, unattended, announces progress. Premium: only neuron installs this.
-  PROJ_ADV_CHECK=$(python3 -c "
-import subprocess, json, sys
-try:
-    r = subprocess.run(['openclaw', 'cron', 'list', '--json'], capture_output=True, text=True, timeout=10)
-    jobs = json.loads(r.stdout) if r.returncode == 0 else []
-    exists = any('project' in j.get('name','').lower() and 'advancer' in j.get('name','').lower() for j in (jobs if isinstance(jobs, list) else jobs.get('jobs', {}).get('jobs', [])))
-    print('exists' if exists else 'missing')
-except: print('skip')
-" 2>/dev/null)
-  if [ "$PROJ_ADV_CHECK" = "exists" ]; then
-    skip "project_advancer OpenClaw cron (exists)"
-  elif [ "$PROJ_ADV_CHECK" = "skip" ]; then
-    warn "Could not check OpenClaw cron — add Project Advancer cron manually via OpenClaw"
-  else
-    python3 - <<PYEOF
-import subprocess, json
+  python3 - <<PYEOF
+import subprocess, json, os
+
+def upsert_cron_job(job, idfile, label, idsdir):
+    """Upgrade-safe cron register. If a job with job['name'] exists, DISABLE it and
+    refresh its agentTurn message (kills old self-firing + updates the prompt);
+    else create it (already enabled:False in the dict). Capture the id either way."""
+    name = job['name']
+    existing_id = ''
+    try:
+        lr = subprocess.run(['openclaw', 'cron', 'list', '--json'], capture_output=True, text=True, timeout=10)
+        if lr.returncode == 0:
+            data = json.loads(lr.stdout)
+            joblist = data if isinstance(data, list) else data.get('jobs', {}).get('jobs', data.get('jobs', []))
+            for j in (joblist or []):
+                if j.get('name','').strip().lower() == name.strip().lower():
+                    existing_id = j.get('id',''); break
+    except Exception:
+        existing_id = ''
+    try:
+        if existing_id:
+            msg = job.get('payload', {}).get('message', '')
+            subprocess.run(['openclaw', 'cron', 'edit', existing_id, '--disable', '--message', msg],
+                           capture_output=True, text=True, timeout=15)
+            jid = existing_id
+            print(f"  \033[32m[ok]\033[0m   {label} OpenClaw cron updated + disabled (driven by Project Cron Gate)")
+        else:
+            ar = subprocess.run(['openclaw', 'cron', 'add', '--json', json.dumps(job)],
+                                capture_output=True, text=True, timeout=15)
+            if ar.returncode != 0:
+                print(f"  \033[33m[warn]\033[0m Could not register {label} cron: {ar.stderr[:100]}")
+                return
+            jid = json.loads(ar.stdout).get('id','')
+            print(f"  \033[32m[ok]\033[0m   {label} OpenClaw cron registered (disabled; driven by Project Cron Gate)")
+        os.makedirs(idsdir, exist_ok=True)
+        open(idsdir + '/' + idfile, 'w').write(jid)
+    except Exception as e:
+        print(f"  \033[33m[warn]\033[0m {label} upsert failed: {e}")
+
 job = {
     "name": "Project Advancer",
     "schedule": {"kind": "cron", "expr": "*/15 * * * *", "tz": "UTC"},
@@ -596,43 +619,54 @@ job = {
     "sessionTarget": "isolated",
     "delivery": {"mode": "none"}
 }
-import os
-r = subprocess.run(['openclaw', 'cron', 'add', '--json', json.dumps(job)], capture_output=True, text=True, timeout=15)
-if r.returncode == 0:
-    print("  \033[32m[ok]\033[0m   project_advancer OpenClaw cron registered (disabled; driven by Project Cron Gate)")
-    try:
-        jid = json.loads(r.stdout).get('id','')
-        d = "$WS/.cron_ids"
-        os.makedirs(d, exist_ok=True)
-        open(d + '/advancer', 'w').write(jid)
-    except Exception as e:
-        print(f"  \033[33m[warn]\033[0m could not capture advancer id: {e}")
-else:
-    print(f"  \033[33m[warn]\033[0m Could not register project_advancer cron: {r.stderr[:100]}")
+# UPSERT (upgrade-safe): if a job with this name already exists, DISABLE it and
+# refresh its prompt (so old installs stop self-firing + get the new message);
+# otherwise create it disabled. Either way capture the id for the gate. Never
+# create a duplicate, never leave an old enabled copy behind.
+upsert_cron_job(job, "advancer", "project_advancer", "$WS/.cron_ids")
 PYEOF
-  fi
 fi
 
 # ── project_improver (Component 2) — OpenClaw agentTurn cron ──────────────────
 # Self-improving closer, half 1 of 2: LLM improves COMPLETED-but-unverified
 # project notes (behavior-preserving, all domains), then stamps verified: true.
 # Zero-LLM pre-gate (check_improvable.sh) guards cost. Premium: neuron only.
-PROJ_IMP_CHECK=$(python3 -c "
-import subprocess, json, sys
-try:
-    r = subprocess.run(['openclaw', 'cron', 'list', '--json'], capture_output=True, text=True, timeout=10)
-    jobs = json.loads(r.stdout) if r.returncode == 0 else []
-    exists = any('project' in j.get('name','').lower() and 'improver' in j.get('name','').lower() for j in (jobs if isinstance(jobs, list) else jobs.get('jobs', {}).get('jobs', [])))
-    print('exists' if exists else 'missing')
-except: print('skip')
-" 2>/dev/null)
-if [ "$PROJ_IMP_CHECK" = "exists" ]; then
-  skip "project_improver OpenClaw cron (exists)"
-elif [ "$PROJ_IMP_CHECK" = "skip" ]; then
-  warn "Could not check OpenClaw cron — add Project Improver cron manually via OpenClaw"
-else
-  python3 - <<PYEOF
-import subprocess, json
+python3 - <<PYEOF
+import subprocess, json, os
+
+def upsert_cron_job(job, idfile, label, idsdir):
+    name = job['name']
+    existing_id = ''
+    try:
+        lr = subprocess.run(['openclaw', 'cron', 'list', '--json'], capture_output=True, text=True, timeout=10)
+        if lr.returncode == 0:
+            data = json.loads(lr.stdout)
+            joblist = data if isinstance(data, list) else data.get('jobs', {}).get('jobs', data.get('jobs', []))
+            for j in (joblist or []):
+                if j.get('name','').strip().lower() == name.strip().lower():
+                    existing_id = j.get('id',''); break
+    except Exception:
+        existing_id = ''
+    try:
+        if existing_id:
+            msg = job.get('payload', {}).get('message', '')
+            subprocess.run(['openclaw', 'cron', 'edit', existing_id, '--disable', '--message', msg],
+                           capture_output=True, text=True, timeout=15)
+            jid = existing_id
+            print(f"  \033[32m[ok]\033[0m   {label} OpenClaw cron updated + disabled (driven by Project Cron Gate)")
+        else:
+            ar = subprocess.run(['openclaw', 'cron', 'add', '--json', json.dumps(job)],
+                                capture_output=True, text=True, timeout=15)
+            if ar.returncode != 0:
+                print(f"  \033[33m[warn]\033[0m Could not register {label} cron: {ar.stderr[:100]}")
+                return
+            jid = json.loads(ar.stdout).get('id','')
+            print(f"  \033[32m[ok]\033[0m   {label} OpenClaw cron registered (disabled; driven by Project Cron Gate)")
+        os.makedirs(idsdir, exist_ok=True)
+        open(idsdir + '/' + idfile, 'w').write(jid)
+    except Exception as e:
+        print(f"  \033[33m[warn]\033[0m {label} upsert failed: {e}")
+
 job = {
     "name": "Project Improver (Component 2)",
     "schedule": {"kind": "cron", "expr": "20,50 * * * *", "tz": "UTC", "staggerMs": 60000},
@@ -645,42 +679,49 @@ job = {
     "sessionTarget": "isolated",
     "delivery": {"mode": "none"}
 }
-import os
-r = subprocess.run(['openclaw', 'cron', 'add', '--json', json.dumps(job)], capture_output=True, text=True, timeout=15)
-if r.returncode == 0:
-    print("  \033[32m[ok]\033[0m   project_improver OpenClaw cron registered (disabled; driven by Project Cron Gate)")
-    try:
-        jid = json.loads(r.stdout).get('id','')
-        d = "$WS/.cron_ids"
-        os.makedirs(d, exist_ok=True)
-        open(d + '/improver', 'w').write(jid)
-    except Exception as e:
-        print(f"  \033[33m[warn]\033[0m could not capture improver id: {e}")
-else:
-    print(f"  \033[33m[warn]\033[0m Could not register project_improver cron: {r.stderr[:100]}")
+upsert_cron_job(job, "improver", "project_improver", "$WS/.cron_ids")
 PYEOF
-fi
 
 # ── verified_note_deleter (Component 1) — OpenClaw agentTurn cron ─────────────
 # Self-improving closer, half 2 of 2: thin wrapper over resolve_done_notes.py.
 # Deterministically deletes notes carrying verified: true (snapshot + _pin_
 # promote + non-blocking lock + claim-respect). Premium: neuron only.
-NOTE_DEL_CHECK=$(python3 -c "
-import subprocess, json, sys
-try:
-    r = subprocess.run(['openclaw', 'cron', 'list', '--json'], capture_output=True, text=True, timeout=10)
-    jobs = json.loads(r.stdout) if r.returncode == 0 else []
-    exists = any('verified' in j.get('name','').lower() and 'deleter' in j.get('name','').lower() for j in (jobs if isinstance(jobs, list) else jobs.get('jobs', {}).get('jobs', [])))
-    print('exists' if exists else 'missing')
-except: print('skip')
-" 2>/dev/null)
-if [ "$NOTE_DEL_CHECK" = "exists" ]; then
-  skip "verified_note_deleter OpenClaw cron (exists)"
-elif [ "$NOTE_DEL_CHECK" = "skip" ]; then
-  warn "Could not check OpenClaw cron — add Verified Note Deleter cron manually via OpenClaw"
-else
-  python3 - <<PYEOF
-import subprocess, json
+python3 - <<PYEOF
+import subprocess, json, os
+
+def upsert_cron_job(job, idfile, label, idsdir):
+    name = job['name']
+    existing_id = ''
+    try:
+        lr = subprocess.run(['openclaw', 'cron', 'list', '--json'], capture_output=True, text=True, timeout=10)
+        if lr.returncode == 0:
+            data = json.loads(lr.stdout)
+            joblist = data if isinstance(data, list) else data.get('jobs', {}).get('jobs', data.get('jobs', []))
+            for j in (joblist or []):
+                if j.get('name','').strip().lower() == name.strip().lower():
+                    existing_id = j.get('id',''); break
+    except Exception:
+        existing_id = ''
+    try:
+        if existing_id:
+            msg = job.get('payload', {}).get('message', '')
+            subprocess.run(['openclaw', 'cron', 'edit', existing_id, '--disable', '--message', msg],
+                           capture_output=True, text=True, timeout=15)
+            jid = existing_id
+            print(f"  \033[32m[ok]\033[0m   {label} OpenClaw cron updated + disabled (driven by Project Cron Gate)")
+        else:
+            ar = subprocess.run(['openclaw', 'cron', 'add', '--json', json.dumps(job)],
+                                capture_output=True, text=True, timeout=15)
+            if ar.returncode != 0:
+                print(f"  \033[33m[warn]\033[0m Could not register {label} cron: {ar.stderr[:100]}")
+                return
+            jid = json.loads(ar.stdout).get('id','')
+            print(f"  \033[32m[ok]\033[0m   {label} OpenClaw cron registered (disabled; driven by Project Cron Gate)")
+        os.makedirs(idsdir, exist_ok=True)
+        open(idsdir + '/' + idfile, 'w').write(jid)
+    except Exception as e:
+        print(f"  \033[33m[warn]\033[0m {label} upsert failed: {e}")
+
 job = {
     "name": "Verified Note Deleter (Component 1)",
     "schedule": {"kind": "cron", "expr": "25,55 * * * *", "tz": "UTC", "staggerMs": 30000},
@@ -693,21 +734,8 @@ job = {
     "sessionTarget": "isolated",
     "delivery": {"mode": "none"}
 }
-import os
-r = subprocess.run(['openclaw', 'cron', 'add', '--json', json.dumps(job)], capture_output=True, text=True, timeout=15)
-if r.returncode == 0:
-    print("  \033[32m[ok]\033[0m   verified_note_deleter OpenClaw cron registered (disabled; driven by Project Cron Gate)")
-    try:
-        jid = json.loads(r.stdout).get('id','')
-        d = "$WS/.cron_ids"
-        os.makedirs(d, exist_ok=True)
-        open(d + '/deleter', 'w').write(jid)
-    except Exception as e:
-        print(f"  \033[33m[warn]\033[0m could not capture deleter id: {e}")
-else:
-    print(f"  \033[33m[warn]\033[0m Could not register verified_note_deleter cron: {r.stderr[:100]}")
+upsert_cron_job(job, "deleter", "verified_note_deleter", "$WS/.cron_ids")
 PYEOF
-fi
 
 # ── project_cron_gate — ZERO-LLM dispatcher (command cron) ────────────────────
 # The three jobs above (Advancer/Improver/Deleter) are registered DISABLED so they
