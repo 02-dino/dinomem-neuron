@@ -4,6 +4,20 @@ All notable changes to dinomem-neuron are documented here.
 
 ---
 
+## 1.6.2 — 2026-07-10
+
+The project-note cron trio (Project Advancer / Improver / Verified Note Deleter) no longer costs an LLM turn on idle ticks. **Recommended for everyone — it removes ~192 mostly-no-op LLM turns/day.**
+
+### Changed
+- **Zero-LLM cron gate — the 15-min heartbeat is now free unless there is real work.** Previously each of the three jobs was an `agentTurn` cron that fired on its own schedule (Advancer every 15 min, Improver/Deleter twice an hour). An `agentTurn` spins up a full LLM session *before* its own "Step 0" pre-check script runs — so the cheap `check_*.sh` gate could only ever run *after* paying for an LLM turn. In practice ~95% of those fires had nothing to do and just spun up the model to run a bash check and reply `NO_REPLY`. Now the installer registers the three jobs **disabled** (they never self-fire) plus a single new **command-kind** cron, `Project Cron Gate` (`scripts/cron_gate.sh`, every 15 min), which runs in the Gateway process at **$0 LLM**. The gate runs the three cheap checks (`check_projects.sh`, `check_improvable.sh`, and the new `check_deletable.sh`) and only calls `openclaw cron run <id>` to force-enqueue a job's LLM turn when that job's check reports real work. Net: idle ticks cost nothing; the LLM only spins up when there is an actual project note to advance/improve/retire.
+- **Graceful, loud fallback when a gateway forbids command crons.** Command-kind crons require `operator.admin`. If a buyer's gateway rejects or downgrades the command job, the installer detects it (real probe via `cron get`, not just an exit code), **re-enables the three `agentTurn` jobs on their original schedules** so behavior is fully preserved, and prints a prominent warning explaining that this fallback path costs LLM on every idle tick and how to enable the free path.
+
+### Added
+- **`scripts/cron_gate.sh`** — the zero-LLM dispatcher (command-cron target). Job IDs are injected per-install via `--command-env`; empty/missing IDs skip that lane. Always exits 0 (a gate that errors must not spam failure alerts) and emits `NO_REPLY` when it triggers nothing.
+- **`scripts/check_deletable.sh`** — zero-LLM pre-gate for the Verified Note Deleter lane (exits 0 only when a `verified: true` note exists), mirroring `resolve_done_notes.py`'s own gate.
+
+---
+
 ## 1.6.1 — 2026-07-10
 
 ### Fixed

@@ -493,7 +493,7 @@ hr "Copying scripts"
 # The scripts/*.sh + resolve_done_notes.py + distill_done_note.py helpers are the
 # cron targets referenced in the cron prompts; without them a fresh neuron install
 # registers crons whose scripts are missing (Step-0 pre-gate fails).
-for f in procedures/extract_memory.py procedures/memory_graph.py procedures/memory_synthesis.py procedures/memory_promote.py procedures/contradiction_check.py procedures/generate_topic_index.py procedures/docs_ingest.py procedures/session_ingest.py procedures/_schema_adapter.py procedures/data_register.py tools/docs_search.py tools/session_search.py tools/graph_search.py tools/cache_utils.py tools/data_query.py scripts/claim_note.sh scripts/check_projects.sh scripts/check_improvable.sh scripts/resolve_done_notes.py scripts/distill_done_note.py; do
+for f in procedures/extract_memory.py procedures/memory_graph.py procedures/memory_synthesis.py procedures/memory_promote.py procedures/contradiction_check.py procedures/generate_topic_index.py procedures/docs_ingest.py procedures/session_ingest.py procedures/_schema_adapter.py procedures/data_register.py tools/docs_search.py tools/session_search.py tools/graph_search.py tools/cache_utils.py tools/data_query.py scripts/claim_note.sh scripts/check_projects.sh scripts/check_improvable.sh scripts/check_deletable.sh scripts/cron_gate.sh scripts/resolve_done_notes.py scripts/distill_done_note.py; do
   dst="$WS/$f"
   # extract_memory.py is the neuron superset over base's copy — always overwrite it,
   # even without --force, or the upgrade ships base's older engine.
@@ -587,6 +587,7 @@ import subprocess, json
 job = {
     "name": "Project Advancer",
     "schedule": {"kind": "cron", "expr": "*/15 * * * *", "tz": "UTC"},
+    "enabled": False,
     "payload": {
         "kind": "agentTurn",
         "message": "Project Advancer. Auto-advance step-by-step project notes unattended.\n\nSILENT-STOP CONTRACT: whenever an instruction below says 'silent' / 'no announce' / 'stop immediately', your ENTIRE final message for this run must be exactly the literal token NO_REPLY and nothing else — no extra sentence. This is what makes the cron delivery layer suppress the run; a descriptive sentence like 'nothing to advance' still gets delivered if delivery is not mode:none. REAL reports (state actually changed, safety-gate pause, flagged issue) must be sent explicitly via the message tool to the owner's default channel — do not rely on the runner's fallback announce, since delivery may be mode:none.\n\nStep 0: PRE-CHECK (zero LLM cost gate). Run: bash $WS/scripts/check_projects.sh\nIf exit code != 0 -> no in_progress project notes exist. Stop immediately. Output exactly NO_REPLY and nothing else.\n\nStep 1: ls memory/_note_*.md in $WS/memory/. Read each. Select only notes with type: project AND status: in_progress.\n\nStep 1b — HEAVINESS CHECK (pre-task): Before advancing any project, look at its NEXT unchecked step. If that step is heavy (write+test a whole tool/file, multi-file change, research-then-build, or a full write->run->debug->verify cycle), commit to doing ONLY that one step this run. If it is light (tiny edit/config/doc/one-liner), you may chain several light steps in this run. Turn boundaries are decided by step heaviness, not by context %.\n\nStep 1c: If no in_progress notes AND nothing flagged, stop silently. Output exactly NO_REPLY and nothing else.\n\nStep 2 — CLAIM CHECK (atomic task claiming). ALL timestamps are UTC ISO8601; compute claim age in UTC. For each in_progress note, read claimed_by and claimed_at fields. (G6 live-session guard) If claimed_by STARTS WITH 'live-session' AND claimed_at is less than 120 minutes (2 hours) ago, SKIP this note entirely — a human is actively working it in an interactive session; never fight a live session. If claimed_by is set (any other value) AND claimed_at is less than 30 minutes ago, SKIP this note entirely (another Advancer instance is working it). If claimed_at is older than its window (120min for live-session, 30min otherwise), the claim is stale — clear claimed_by and claimed_at, then proceed. If claimed_at is in the FUTURE (clock/timezone error), treat the claim as INVALID/stale and clear it. If claimed_by is absent, proceed.\n\nStep 3 — CLAIM WRITE: Before executing any step, write claimed_by: <this run's cron run_id or a short uuid> and claimed_at: <current time as UTC ISO8601 with trailing Z, e.g. 2026-07-07T00:55:00Z> to the note. Re-read the note immediately after writing to verify the claim was written correctly. If the re-read shows a different claimed_by (race condition), abort this note and move on.\n\nStep 4: For each claimed in_progress project note, pick the lowest unchecked step at current_step. Resume from resume_state ONLY (the note is self-sufficient; do not rely on chat history).\n\nStep 4b — DRIFT CHECK (verify before executing): Do NOT assume current_step's checkbox state reflects reality — notes can drift (e.g. work finished in a live human session but the checkbox never flipped, or a companion note already covered this step). Before treating this step as pending work, independently verify whether its OWN done_when is already satisfied against real state (file/artifact exists, git -C <repo> rev-parse HEAD == @{u}, feature already shipped, companion note already did it, etc — the same kind of locally-checkable verification Daily Note Review uses). If already satisfied: mark it [x], advance current_step, rewrite resume_state, then repeat this same Step 4b check for the NEW current_step (loop until you hit a step that is genuinely NOT done, or the whole project completes) — treat this drift-catchup as part of the same LIGHT turn, not a new heavy step. If genuinely not satisfied, proceed to Step 5 normally.\n\nStep 5: SAFETY GATE before executing the step. If the step is destructive or external (deletes data, git push, sends external messages, irreversible writes outside workspace, spends money, touches credentials), DO NOT execute it. Leave it pending, clear your claim (Step 8), send a message via the message tool to the owner that the project is paused awaiting approval at step n/m — tag the owner (use platform-appropriate mention format), move to the next project.\n\nStep 6: Execute the one current step. After it: verify the step done_when. If met, mark [x], advance current_step, REWRITE resume_state with what the next step needs (paths, decisions, assumptions). If not met, leave pending and record why in resume_state.\n\nStep 7: Turn-boundary guard (heaviness-based). Gauge the heaviness of the NEXT step. Heavy = write+test a whole tool/file, multi-file change, research-then-build, or a full write->run->debug->verify cycle. If the next step is heavy, do only the current step this run, checkpoint (state already written), CLEAR claimed_by and claimed_at, and stop advancing this run — do NOT chain another heavy step. Light steps (tiny edit/config/doc/one-liner) may be chained: continue to the next step of the same project until the next step is heavy or the project is done.\n\nStep 8 — CLAIM RELEASE: After completing or checkpointing a project (step done, heavy-step checkpoint, or safety gate pause), clear claimed_by and claimed_at from the note before moving to the next project.\n\nStep 9: When a project done_when (all steps [x] / final artifact) is met, flip status to done, clear claimed_by and claimed_at. Daily Note Review will delete/promote it.\n\nStep 10: REPORT only on real state change, via the message tool (do not rely on runner fallback delivery, which may be disabled). Rules:\n- Step advanced or completed -> send a message with a progress bar\n- First time hitting safety gate -> send a message once, tag owner (use platform-appropriate mention)\n- Already paused (resume_state contains 'awaiting approval') -> silent. Output exactly NO_REPLY and nothing else.\n- Skipped due to a live-session or other active claim -> silent (not a state change). Output exactly NO_REPLY and nothing else.\n- Malformed or stalled -> send a message only if last_flagged not set in resume_state OR last_flagged > 24h ago; write last_flagged: <ISO timestamp> to resume_state after sending. Otherwise silent: output exactly NO_REPLY.\n- No state change -> silent. Output exactly NO_REPLY and nothing else.\nProgress bar (only when actually sending a real state-change report): [████░░░░░░] 4/10 40% — project name, step n/m. Short, group-chat style.",
@@ -595,9 +596,17 @@ job = {
     "sessionTarget": "isolated",
     "delivery": {"mode": "none"}
 }
+import os
 r = subprocess.run(['openclaw', 'cron', 'add', '--json', json.dumps(job)], capture_output=True, text=True, timeout=15)
 if r.returncode == 0:
-    print("  \033[32m[ok]\033[0m   project_advancer OpenClaw cron registered (every 4h)")
+    print("  \033[32m[ok]\033[0m   project_advancer OpenClaw cron registered (disabled; driven by Project Cron Gate)")
+    try:
+        jid = json.loads(r.stdout).get('id','')
+        d = "$WS/.cron_ids"
+        os.makedirs(d, exist_ok=True)
+        open(d + '/advancer', 'w').write(jid)
+    except Exception as e:
+        print(f"  \033[33m[warn]\033[0m could not capture advancer id: {e}")
 else:
     print(f"  \033[33m[warn]\033[0m Could not register project_advancer cron: {r.stderr[:100]}")
 PYEOF
@@ -627,6 +636,7 @@ import subprocess, json
 job = {
     "name": "Project Improver (Component 2)",
     "schedule": {"kind": "cron", "expr": "20,50 * * * *", "tz": "UTC", "staggerMs": 60000},
+    "enabled": False,
     "payload": {
         "kind": "agentTurn",
         "message": "Project Improver (Component 2). You improve COMPLETED-but-unverified project notes, then stamp them verified so Component 1 can retire them. Autonomous, behavior-preserving, all domains. Hold the safety gate HARD — you edit real artifacts unattended.\n\nStep 0 — ZERO-LLM PRE-GATE: Run: bash $WS/scripts/check_improvable.sh\nIf exit code != 0 → nothing to improve. STOP IMMEDIATELY. No further tool calls, no announce.\n\nStep 1 — SELECT: ls memory/_note_*.md in $WS/memory/. Read each. Pick notes with type: project AND status: done AND NOT verified: true. Handle ONE note this run (the oldest by date). If none, stop silently.\n\nStep 2 — CLAIM CHECK (respect the shared claim protocol; never fight another job). ALL timestamps are UTC ISO8601; compute age in UTC. Read claimed_by / claimed_at. If claimed_by STARTS WITH 'live-session' AND claimed_at < 120 minutes (2h) ago → SKIP (a human is working it live; never fight a live session). If claimed_by is any other value AND claimed_at < 30 min ago → SKIP (Advancer or another improver instance owns it). If claimed_at older than its window → stale, clear and proceed. If claimed_at is in the FUTURE (clock/timezone error) → treat as invalid/stale, clear and proceed. If absent → proceed.\n\nStep 3 — CLAIM WRITE: Write claimed_by: component2-improver AND claimed_at: <current time as UTC ISO8601 with trailing Z, e.g. 2026-07-07T00:55:00Z> into the note frontmatter. Re-read immediately to confirm your claim stuck. If a different claimed_by appears (lost a race) → abort this note, stop.\n\nStep 4 — UNDERSTAND: Read the project's done_when and resume_state, and inspect the actual artifact(s) it produced (scripts, deliverables, reports, config — whatever the project made). Establish what the project DOES and how you'll verify it still does that after any change (its behavior contract = its done_when).\n\nStep 5 — ASSESS (principle, NOT a checklist): Ask 'can this be made cheaper, faster, clearer, or more reliable — AND does that even make sense for THIS project?' There is NO prescribed action. Do not force caching/logging/locks/dedup or any technique. The right move is whatever fits this specific project — possibly a technique nobody would list, possibly NOTHING. 'Already efficient, nothing needed' is a valid, common, correct outcome.\n\nStep 6 — IMPROVE (behavior-preserving ONLY): If there is a worthwhile improvement, make it. You MUST NOT change WHAT the project does — only how efficiently/reliably/clearly it does it. Back up any file before editing (bash $SKILL_DIR/scripts/file-backup.sh <file>). Keep changes minimal and targeted.\n\nStep 7 — VALIDATE / DEBUG until reliable: After improving, verify the artifact STILL satisfies the project's done_when — for code: it runs / tests pass / compiles; for a deliverable: it is coherent, complete, and verifiably correct against done_when. If your change broke behavior, debug and fix, or REVERT to the backup. Do not proceed until the behavior contract holds again. If you cannot make it hold, revert fully and treat as 'no safe improvement'.\n\nStep 8 — SAFETY GATE (non-negotiable): You may do LOCAL, reversible work only. If improving/validating would require an EXTERNAL or DESTRUCTIVE action — git push, deleting data, sending external messages, spending money, touching credentials, irreversible writes outside the workspace — DO NOT do it. Do the local part, then STOP before the external action. Do NOT stamp verified. Clear your claim (Step 10), and in Step 11 report the project is 'improved locally, paused awaiting approval for <the external step>', tag the owner. Record in resume_state that it is awaiting approval so the next run does not re-loop on it endlessly.\n\nStep 9 — STAMP VERIFIED: Only if the project is validated behavior-preserving AND no external step is blocking, write verified: true into the note frontmatter. This is the signal Component 1 uses to delete it. (If you determined 'nothing needed', still stamp verified: true — you reviewed and confirmed it's already sound.)\n\nStep 10 — CLAIM RELEASE: Clear claimed_by and claimed_at from the note (whether you stamped verified, paused at the safety gate, or aborted). Never leave a dead claim.\n\nStep 11 — REPORT to the owner via the message tool, using the agent's default owner channel (platform-appropriate mention; do not hardcode a chat id). One short message: project name + what you did. Formats:\n- Improved: 'Improved <project>: <one-line what+why>. Validated behavior-preserving, verified.'\n- Nothing needed: 'Reviewed <project>: already efficient, nothing to change. Verified.'\n- Safety-gated: 'Improved <project> locally: <what>. Paused — needs your approval for <external step> before I finish.' (tag owner)\nKeep it terse. No report if Step 0 gated out or you skipped on a claim (those are silent).\n\nHARD RULES: behavior-preserving only, never change what a project does; local+reversible only, external/destructive → stop+report; one note per run; always release your claim; respect live-session and advancer claims; 'nothing needed' is a valid outcome — never invent busywork.",
@@ -635,9 +645,17 @@ job = {
     "sessionTarget": "isolated",
     "delivery": {"mode": "none"}
 }
+import os
 r = subprocess.run(['openclaw', 'cron', 'add', '--json', json.dumps(job)], capture_output=True, text=True, timeout=15)
 if r.returncode == 0:
-    print("  \033[32m[ok]\033[0m   project_improver OpenClaw cron registered (:20/:50)")
+    print("  \033[32m[ok]\033[0m   project_improver OpenClaw cron registered (disabled; driven by Project Cron Gate)")
+    try:
+        jid = json.loads(r.stdout).get('id','')
+        d = "$WS/.cron_ids"
+        os.makedirs(d, exist_ok=True)
+        open(d + '/improver', 'w').write(jid)
+    except Exception as e:
+        print(f"  \033[33m[warn]\033[0m could not capture improver id: {e}")
 else:
     print(f"  \033[33m[warn]\033[0m Could not register project_improver cron: {r.stderr[:100]}")
 PYEOF
@@ -666,6 +684,7 @@ import subprocess, json
 job = {
     "name": "Verified Note Deleter (Component 1)",
     "schedule": {"kind": "cron", "expr": "25,55 * * * *", "tz": "UTC", "staggerMs": 30000},
+    "enabled": False,
     "payload": {
         "kind": "agentTurn",
         "message": "Verified Note Deleter (Component 1). Deterministic janitor: delete project/task notes that carry verified: true, so the workspace stays clean after Component 2 has improved+validated them. This is a THIN wrapper around a script that does all the real work (zero-LLM gate, claim-respect, snapshot, distill-to-regular-memory, non-blocking lock).\n\nStep 1: Run exactly this command: python3 $WS/scripts/resolve_done_notes.py\n\nStep 2: Read its output. The script self-gates: if no status:done note exists it exits immediately (no work). It deletes ONLY notes with verified: true that are NOT freshly claimed by another job; before deleting each it snapshots it and DISTILLS its knowledge into normal schema memory entries (which then age/freeze on merit via the usual retention review). There is no _pin_ promotion — durable pins are authored directly as _pin_ files, never produced by note retirement.\n\nStep 3: ANNOUNCE only if it actually deleted something (grep the output for 'deleted verified note'). If so, send ONE terse line to the owner via the message tool using the agent's default owner channel (platform-appropriate; do not hardcode a chat id): e.g. 'Retired N verified note(s): <names>.' If it deleted nothing (gate exit, lock busy, or no verified notes), stay SILENT — no message.\n\nDo nothing else. Do not edit notes, do not re-check done_when, do not stamp verified — that is Component 2's job. You are the janitor.",
@@ -674,11 +693,131 @@ job = {
     "sessionTarget": "isolated",
     "delivery": {"mode": "none"}
 }
+import os
 r = subprocess.run(['openclaw', 'cron', 'add', '--json', json.dumps(job)], capture_output=True, text=True, timeout=15)
 if r.returncode == 0:
-    print("  \033[32m[ok]\033[0m   verified_note_deleter OpenClaw cron registered (:25/:55)")
+    print("  \033[32m[ok]\033[0m   verified_note_deleter OpenClaw cron registered (disabled; driven by Project Cron Gate)")
+    try:
+        jid = json.loads(r.stdout).get('id','')
+        d = "$WS/.cron_ids"
+        os.makedirs(d, exist_ok=True)
+        open(d + '/deleter', 'w').write(jid)
+    except Exception as e:
+        print(f"  \033[33m[warn]\033[0m could not capture deleter id: {e}")
 else:
     print(f"  \033[33m[warn]\033[0m Could not register verified_note_deleter cron: {r.stderr[:100]}")
+PYEOF
+fi
+
+# ── project_cron_gate — ZERO-LLM dispatcher (command cron) ────────────────────
+# The three jobs above (Advancer/Improver/Deleter) are registered DISABLED so they
+# never self-fire. This single command-kind cron runs every 15 min in the Gateway
+# process at $0 LLM, runs each cheap check_*.sh, and force-runs (openclaw cron run)
+# only the jobs whose check reports real work. That is the whole point of the
+# redesign: the 15-min heartbeat costs no LLM unless there is an actual project
+# note to advance/improve/retire.
+#
+# Command crons need the Gateway to allow command-kind jobs (operator.admin). If a
+# buyer's gateway refuses them, we FALL BACK by re-enabling the three agentTurn
+# jobs on their own schedules (the pre-redesign behavior) so nothing breaks — and
+# we print a LOUD warning, because that fallback path costs LLM on every idle tick.
+GATE_CHECK=$(python3 -c "
+import subprocess, json, sys
+try:
+    r = subprocess.run(['openclaw', 'cron', 'list', '--json'], capture_output=True, text=True, timeout=10)
+    jobs = json.loads(r.stdout) if r.returncode == 0 else []
+    exists = any('project cron gate' in j.get('name','').lower() for j in (jobs if isinstance(jobs, list) else jobs.get('jobs', {}).get('jobs', [])))
+    print('exists' if exists else 'missing')
+except: print('skip')
+" 2>/dev/null)
+if [ "$GATE_CHECK" = "exists" ]; then
+  skip "project_cron_gate OpenClaw cron (exists)"
+elif [ "$GATE_CHECK" = "skip" ]; then
+  warn "Could not check OpenClaw cron — add Project Cron Gate manually via OpenClaw"
+else
+  python3 - <<PYEOF
+import subprocess, json, os
+
+WS = "$WS"
+idsdir = WS + "/.cron_ids"
+def readid(name):
+    try:
+        return open(idsdir + "/" + name).read().strip()
+    except Exception:
+        return ""
+adv = readid("advancer"); imp = readid("improver"); dele = readid("deleter")
+
+# Fallback helper: re-enable the three agentTurn jobs on their own schedules so
+# behavior is preserved even without the zero-LLM gate.
+def reenable(label, jid):
+    if not jid:
+        return
+    subprocess.run(['openclaw', 'cron', 'enable', jid], capture_output=True, text=True, timeout=15)
+
+def fallback(reason):
+    print("  \033[33m[WARN]\033[0m ==================================================================")
+    print("  \033[33m[WARN]\033[0m  Zero-LLM command-cron gate could NOT be installed:")
+    print("  \033[33m[WARN]\033[0m    " + reason)
+    print("  \033[33m[WARN]\033[0m  Falling back to per-15-min agentTurn checks for Advancer/Improver/Deleter.")
+    print("  \033[33m[WARN]\033[0m  This path COSTS LLM on every idle tick (~192 turns/day of mostly no-op).")
+    print("  \033[33m[WARN]\033[0m  To get the free path: allow command cron jobs (operator.admin) on your")
+    print("  \033[33m[WARN]\033[0m  gateway, then re-run this installer.")
+    print("  \033[33m[WARN]\033[0m ==================================================================")
+    reenable("advancer", adv); reenable("improver", imp); reenable("deleter", dele)
+
+if not (adv and imp and dele):
+    fallback("one or more LLM job ids were not captured (cron add may have failed above).")
+else:
+    gate = {
+        "name": "Project Cron Gate",
+        "description": "Zero-LLM dispatcher: checks project-note gates every 15min and force-runs Advancer/Improver/Deleter only when work exists",
+        "schedule": {"kind": "cron", "expr": "*/15 * * * *", "tz": "UTC"},
+        "payload": {
+            "kind": "command",
+            "argv": ["sh", "-lc", "bash " + WS + "/scripts/cron_gate.sh"],
+            "cwd": WS,
+            "env": {
+                "OPENCLAW_WORKSPACE": WS,
+                "GATE_ADVANCER_ID": adv,
+                "GATE_IMPROVER_ID": imp,
+                "GATE_DELETER_ID": dele,
+            },
+        },
+        "delivery": {"mode": "none"},
+    }
+    r = subprocess.run(['openclaw', 'cron', 'add', '--json', json.dumps(gate)], capture_output=True, text=True, timeout=15)
+    if r.returncode != 0:
+        fallback("gateway rejected the command-cron add: " + (r.stderr or '')[:120])
+    else:
+        # REAL PROBE: confirm the gateway actually stored it as a command-kind job.
+        gid = ''
+        try:
+            gid = json.loads(r.stdout).get('id','')
+        except Exception:
+            pass
+        kind_ok = False
+        if gid:
+            g = subprocess.run(['openclaw', 'cron', 'get', gid, '--json'], capture_output=True, text=True, timeout=15)
+            if g.returncode == 0:
+                try:
+                    gj = json.loads(g.stdout)
+                    kind_ok = (gj.get('payload', {}).get('kind') == 'command') and (gj.get('enabled') is True)
+                except Exception:
+                    kind_ok = False
+        else:
+            # some builds return the job inline without a separate get; trust returncode + parse
+            try:
+                gj = json.loads(r.stdout)
+                kind_ok = (gj.get('payload', {}).get('kind') == 'command')
+            except Exception:
+                kind_ok = False
+        if kind_ok:
+            print("  \033[32m[ok]\033[0m   project_cron_gate OpenClaw command-cron registered (*/15, zero-LLM) — drives Advancer/Improver/Deleter")
+        else:
+            # Gateway downgraded/refused a real command job — remove the bad gate and fall back.
+            if gid:
+                subprocess.run(['openclaw', 'cron', 'remove', gid], capture_output=True, text=True, timeout=15)
+            fallback("gateway did not store a real command-kind job (payload.kind != command).")
 PYEOF
 fi
 
