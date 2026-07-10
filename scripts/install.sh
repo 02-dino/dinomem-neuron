@@ -1720,11 +1720,37 @@ if changed and os.environ.get("DINOMEM_DRY_RUN") == "1":
 elif not changed:
     print("  \033[33m[skip]\033[0m openclaw.json bootstrap caps already correct")
 else:
+    import subprocess
     with open(path, "w") as f:
         json.dump(cfg, f, indent=2)
-    for c in changed:
-        print(f"  \033[32m[ok]\033[0m   patched: {c}")
-    print("  \033[33m[warn]\033[0m Restart OpenClaw: openclaw gateway restart")
+    # Validate after write; if this OpenClaw version rejects it, restore the exact
+    # pre-write bytes (these are only two raise-only ints — a full revert here loses
+    # nothing else, since this block patches nothing but bootstrap caps).
+    def _validate():
+        if os.environ.get("DINOMEM_SKIP_CONFIG_VALIDATE") == "1":
+            return None
+        try:
+            return subprocess.run(["openclaw", "config", "validate"],
+                                  capture_output=True, text=True, timeout=30)
+        except FileNotFoundError:
+            return None
+        except Exception:
+            return None
+    v = _validate()
+    if v is not None and v.returncode != 0:
+        with open(path, "w") as f:
+            f.write(original)
+        print("  \033[33m[warn]\033[0m bootstrap-cap patch rejected by schema — reverted (caps left at prior values):")
+        for line in (v.stderr or v.stdout or "").strip().splitlines():
+            line = line.strip()
+            if line:
+                print(f"           {line}")
+    else:
+        for c in changed:
+            print(f"  \033[32m[ok]\033[0m   patched: {c}")
+        if v is not None:
+            print("  \033[32m[ok]\033[0m   openclaw.json validated against schema")
+        print("  \033[33m[warn]\033[0m Restart OpenClaw: openclaw gateway restart")
 PYEOF
 fi
 
@@ -1819,6 +1845,24 @@ hr "Self-check"
 SC_FAIL=0
 sc_pass() { printf '  \033[32m[PASS]\033[0m %s\n' "$*"; }
 sc_warn() { printf '  \033[33m[WARN]\033[0m %s\n' "$*"; SC_FAIL=1; }
+# 0) CONFIG VALIDITY + GATEWAY LIVENESS — the 'bot goes silent' guard. A config that
+# fails schema validation will crash the gateway on the next restart (total silence),
+# so this is the single most important check. If a gateway is already running, also
+# confirm it still answers (a half-broken restart shows up here).
+if command -v openclaw >/dev/null 2>&1; then
+  if openclaw config validate >/dev/null 2>&1; then
+    sc_pass "openclaw.json passes schema validation (safe to restart)"
+  else
+    sc_warn "openclaw.json FAILS schema validation — DO NOT restart yet; gateway would not come back. Run: openclaw config validate"
+  fi
+  if openclaw status >/dev/null 2>&1; then
+    sc_pass "OpenClaw gateway responding now (restart to load dinomem changes)"
+  else
+    sc_warn "OpenClaw gateway not responding to 'openclaw status' — start/restart it: openclaw gateway restart"
+  fi
+else
+  sc_warn "openclaw CLI not found on PATH — cannot validate config or check gateway"
+fi
 # 1) OpenClaw crons present (by name)
 if command -v openclaw >/dev/null 2>&1; then
   _CRON_LIST="$(openclaw cron list --json 2>/dev/null || echo '[]')"
