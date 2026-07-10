@@ -4,6 +4,16 @@ All notable changes to dinomem-neuron are documented here.
 
 ---
 
+## 1.6.3 — 2026-07-10
+
+Upgrade-safety hardening for the LLM crons: refreshing to a new version now updates existing cron prompts instead of leaving old installs frozen on stale prompts. **Recommended for anyone upgrading from an older install.**
+
+### Changed
+- **`daily_note_review` cron now upgrades in place (prompt refresh, no freeze).** Same class of bug fixed for the project-cron trio in 1.6.2, applied to the remaining evolving-prompt cron: the installer previously did "if a cron named X exists → skip it," so an older install kept running `Daily Note Review` with its *old* prompt forever, even after upgrading the neuron. Registration is now an **upsert** — if the job already exists, its prompt is refreshed in place via `cron edit <id> --message` and it stays enabled on its own schedule (it is self-scheduled, not gate-driven, so unlike the trio it is **not** disabled); if it does not exist, it is created. No duplicates, no stale prompt. Re-running the installer is idempotent.
+- **Audit note:** the OS-crontab jobs (`memory_graph`, `memory_synthesis`, `memory_promote`, `docs_ingest`) were already upgrade-safe (they use the `upsert_cron` helper, which replaces a changed line). `Project Cron Gate` intentionally stays skip-if-exists — it is a pure command-cron with no evolving prompt, so there is nothing to refresh. After 1.6.2 + 1.6.3, **every** cron the installer registers is upgrade-clean.
+
+---
+
 ## 1.6.2 — 2026-07-10
 
 The project-note cron trio (Project Advancer / Improver / Verified Note Deleter) no longer costs an LLM turn on idle ticks. **Recommended for everyone — it removes ~192 mostly-no-op LLM turns/day.**
