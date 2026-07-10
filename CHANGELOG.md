@@ -4,6 +4,16 @@ All notable changes to dinomem-neuron are documented here.
 
 ---
 
+## 1.6.4 — 2026-07-10
+
+Reliability fix for the note-claim-refresh hook: a long project note could silently lose its live-session claim while you were still actively working it. **Recommended for everyone.**
+
+### Fixed
+- **note-claim-refresh no longer misses claims buried below the first 2 KB of a note.** The hook scans each `memory/_note_*.md` to find notes the current session holds a claim on, then keeps that claim fresh so the Advancer/Improver/Deleter crons back off. It previously read only the first **2048 bytes** of each note to locate the `claimed_by:` line — fine for short fenced notes, but `claim_note.sh` writes `claimed_by`/`claimed_at` at the **end** of a bare project-note frontmatter block (the one with a long `steps:` list and a multi-paragraph `resume_state:`), which can land well past 2 KB (observed at byte ~5000 and ~12000 on real notes). Past that cutoff the hook saw no claim, silently skipped the refresh, and the claim aged out past its 120-min window — letting a background cron reclaim a note the session was still actively editing. **No error was ever raised**, so it looked like the hook simply wasn't firing. The scan now reads to the **actual frontmatter terminator** (the closing `---` for fenced notes, or the first blank line for bare project notes), capped at 32 KB, so the claim line is always found regardless of note length.
+- **Broadened refresh trigger (any tool call, throttled).** The hook now refreshes a held claim on **any** tool call while a session is active, not only on edits to the claimed note — a session can legitimately hold a claim on note X while spending an hour doing exec/git/read work that never edits X, and the old edit-only trigger let the claim age out during exactly that kind of long build. A per-agent time throttle keeps the scan to at most once per 5 minutes, so the added coverage stays negligible. Fully generalized (per-install `agentId` + dynamic workspace resolution; no hardcoded paths).
+
+---
+
 ## 1.6.3 — 2026-07-10
 
 Upgrade-safety hardening for the LLM crons: refreshing to a new version now updates existing cron prompts instead of leaving old installs frozen on stale prompts. **Recommended for anyone upgrading from an older install.**
