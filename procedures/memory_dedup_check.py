@@ -279,11 +279,16 @@ def main():
     try:
         emb = get_embeddings()
         cand_vec = emb.embed_query(_embed_text(cand_title, cand_body))
-        scored = []
-        for t in targets:
-            t_title, t_body = _read_title_body(t)
-            t_vec = emb.embed_documents([_embed_text(t_title, t_body)])[0]
-            scored.append((_cosine(cand_vec, t_vec), t, t_title))
+        # Batch all target embeddings into a single embed_documents() call instead
+        # of one call per file — same scores, far fewer round-trips (matters most
+        # for the TEI/HTTP backend where each call is a network hop).
+        target_meta = [_read_title_body(t) for t in targets]
+        target_texts = [_embed_text(tt, tb) for tt, tb in target_meta]
+        target_vecs = emb.embed_documents(target_texts)
+        scored = [
+            (_cosine(cand_vec, t_vec), t, t_title)
+            for t_vec, t, (t_title, _t_body) in zip(target_vecs, targets, target_meta)
+        ]
     except SemanticUnavailable:
         print(json.dumps({"match": False, "skipped": "no-embed-backend"}, ensure_ascii=False))
         return 0

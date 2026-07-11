@@ -4,6 +4,21 @@ All notable changes to dinomem-neuron are documented here.
 
 ---
 
+## 1.6.7 — 2026-07-11
+
+Concurrency-safety release: the **Project Advancer** and **Project Improver** crons now claim project notes through the same atomic lock the live session uses. Closes a race where an unattended cron could silently overwrite ('clobber') the claim of a note you're actively editing in a live session — and then advance or re-nag a note out from under you. **Recommended for anyone running the Advancer/Improver crons alongside interactive work.**
+
+### Fixed
+- **Advancer/Improver claim is now atomic (was a TOCTOU race).** Previously both crons *hand-wrote* `claimed_by`/`claimed_at` with a raw file edit — outside the `flock` that `claim_note.sh` holds. A claim written by a live session between the cron's read and its unlocked write was silently overwritten. Now Step 3 runs `claim_note.sh claim <note> <claimant>` (Advancer: `advancer-<runid>`, Improver: `component2-improver`) and **skips the note on exit 3 (BUSY)** — so the cron's check-and-set goes through the *same* lock as the live session. No more clobber.
+- **Claim release is now atomic too.** Both crons release via `claim_note.sh release <note>` instead of hand-stripping the frontmatter.
+- **Stale progress announcements.** The Advancer now re-reads `current_step`/`status` from disk immediately before composing a progress report, so it can no longer announce a cached earlier step (e.g. a ghost 'step 1/6' after the note already reached a later step).
+
+### Notes
+- The prose 120-min live-session / 30-min other-job guard is kept as a cheap pre-filter, but it is no longer trusted to be race-safe on its own — the `claim_note.sh` flock is the authoritative gate.
+- Ships in the neuron `install.sh` cron templates (`$WS`-relative), so every install's Advancer/Improver inherits the atomic claim.
+
+---
+
 ## 1.6.6 — 2026-07-11
 
 Memory-hygiene release: a pre-write **semantic dedup gate** for auto-pin / auto-note. Stops your agent from stacking a second pin/note on a topic an existing one already covers (and, worse, writing a contradictory duplicate). **Recommended for everyone** — the longer an agent runs, the more its `memory/` accretes near-duplicate `_pin_`/`_note_` files; this closes that hole.
