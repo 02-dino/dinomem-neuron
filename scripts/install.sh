@@ -1340,7 +1340,29 @@ DINOMEM_BODY=$(cat <<'DINOMEM_NEURON_AGENTS_BODY'
   row | count | range | filter | sort | aggregate | field lookup (csv|json|parquet) → data_query
   exact pattern | regex | grep | exact-string over raw text/logs → exec (ripgrep/grep)
 
+## memory_pin
+  # extends base memory_pin; adds the semantic dedup gate to the pin-write path
+  dedup_first: before authoring a NEW _pin_, run ## memory_dedup on the candidate. If it returns match:true, UPDATE the existing pin instead of creating a second one (this is exactly the pin-sprawl / contradictory-duplicate case the gate exists for). match:false or skipped -> author the new _pin_ as normal.
+  otherwise: unchanged from base (permanent_fact OR user emphasizes importance; ask if uncertain; _pin_ prefix, memory/, slug lowercase-hyphens-max30)
+
+## memory_dedup
+  # Pre-write dedup gate for auto-pin / auto-note. Stops pin/note sprawl and
+  # (worse) contradictory duplicates: a new file on a topic an existing pin/note
+  # already covers. Slugs differ but topics overlap, so this is SEMANTIC, not a
+  # slug match. Advisory only — informs the decision, never blocks a write.
+  when: about to auto-write a NEW memory/_pin_<slug>.md or memory/_note_<slug>.md (from memory_pin OR auto_note triggers below)
+  action:
+    - run: python3 $WS/procedures/memory_dedup_check.py --kind pin|note --title "<candidate title>" --body "<candidate body>"
+    - read the JSON on stdout:
+        match:true  -> an existing file covers this topic. OPEN result.file and MERGE/UPDATE it (fold the new fact in, correct any stale line) INSTEAD of creating a new file. If the overlap is partial/ambiguous, ask the user merge-vs-new. suggestion:merge = high confidence; suggestion:review = borderline, glance before merging.
+        match:false -> genuinely novel; proceed to write the new _pin_/_note_.
+        skipped:*   -> dedup could not run (no embed backend / embed error); proceed to write normally (never block a memory write on this).
+  scope: fires for durable _pin_ writes and for _note_ writes; skip for quick read-only lookups and for editing a file you already identified.
+  why: proven 2026-07-11 — a new _pin_ nearly stacked on (and contradicted) an existing buyer-delivery pin; embedding-based dedup catches the topic overlap a slug check cannot.
+  note: adaptive z-score scoring inside the script (e5 absolute thresholds don't generalize); tune via DINOMEM_DEDUP_Z / DINOMEM_DEDUP_ABS_FLOOR if a corpus over/under-flags.
+
 ## auto_note
+  dedup_first: before writing a NEW _note_, run ## memory_dedup (an existing note may already track this work; merge into it instead of stacking a duplicate)
   triggers:
     - self_commitment: own output implies deferred work → auto-write _note_
     - external_commitment: own output commits to discrete external artifact (github issue/PR, external send) not done THIS turn → auto-write _note_ immediately with verifiable done_when

@@ -4,6 +4,21 @@ All notable changes to dinomem-neuron are documented here.
 
 ---
 
+## 1.6.6 — 2026-07-11
+
+Memory-hygiene release: a pre-write **semantic dedup gate** for auto-pin / auto-note. Stops your agent from stacking a second pin/note on a topic an existing one already covers (and, worse, writing a contradictory duplicate). **Recommended for everyone** — the longer an agent runs, the more its `memory/` accretes near-duplicate `_pin_`/`_note_` files; this closes that hole.
+
+### Added
+- **`procedures/memory_dedup_check.py` — advisory dedup gate.** Before authoring a NEW `_pin_`/`_note_`, the agent embeds the candidate and compares it against every existing pin/note in `$OPENCLAW_WORKSPACE/memory/`. If an existing file covers the same topic, it returns `{match:true, file, suggestion}` so the agent MERGES into that file instead of creating a duplicate. Advisory only — it never blocks a memory write.
+- **AGENTS.md policy wiring.** `memory_pin` and `auto_note` now run the dedup check first (`dedup_first`) and merge-vs-create based on the result. Shipped in the neuron AGENTS.md template so every install gets it.
+
+### Notes
+- **Semantic, not slug-based.** Two files with different slugs but the same topic are caught; a slug check would miss them.
+- **Adaptive z-score scoring.** Absolute cosine thresholds don't generalize on e5-small (anisotropic — everything clusters in a narrow high band). The gate flags a hit only when the top match is a statistical **outlier** above the corpus's own baseline, so it self-tunes per-workspace. Override via `DINOMEM_DEDUP_Z` / `DINOMEM_DEDUP_ABS_FLOOR` if a corpus over/under-flags.
+- **Backend-agnostic + fail-open.** Uses whichever embed backend the install has (`tools/_embed.py` or a TEI server); if none is available it cleanly skips (`{match:false, skipped:"no-embed-backend"}`) and never blocks a write.
+
+---
+
 ## 1.6.5 — 2026-07-10
 
 Installer reliability + config-safety release. Fixes the neuron→base install friction that forced manual base installs, and adds a self-healing config guard that prevents the "bot goes silent after install" failure. **Recommended for everyone — especially anyone who hit a manual base-install workaround or a dead gateway after installing.**
