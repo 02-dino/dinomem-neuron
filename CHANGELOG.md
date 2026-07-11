@@ -4,6 +4,18 @@ All notable changes to dinomem-neuron are documented here.
 
 ---
 
+## 1.6.8 — 2026-07-11
+
+**Critical install-time fix — prevents "bot goes completely silent after install".** On OpenClaw **2026.6.x+**, setting `plugins.allow` *without* also setting `plugins.bundledDiscovery` now fails schema validation (`plugins: Invalid input`). Our installer wired the `note-claim-refresh` plugin into `plugins.allow` but never stamped `bundledDiscovery`, so on the very next `openclaw gateway restart` the config was rejected and the gateway refused to start — total silence, no responses. **Recommended for anyone who installed on OpenClaw 2026.6.x or newer.**
+
+### Fixed
+- **Installer now stamps `plugins.bundledDiscovery="compat"` whenever it touches `plugins.allow`.** `"compat"` preserves legacy bundled provider/channel discovery, so existing chat channels (Telegram/WhatsApp/etc.) keep working. This makes the wired config pass validation on new OpenClaw versions and restart cleanly.
+- Existing installs that are already stuck can self-repair with `openclaw doctor --fix` (adds `bundledDiscovery`), then `openclaw gateway restart` — no reinstall needed.
+
+> Note: `python3 procedures/memory_graph.py` printing `no usable chunks with embeddings found` on a fresh install is **expected**, not an error — the memory graph simply has nothing to build until the agent accumulates memories. It is unrelated to the silence bug above.
+
+---
+
 ## 1.6.7 — 2026-07-11
 
 Concurrency-safety release: the **Project Advancer** and **Project Improver** crons now claim project notes through the same atomic lock the live session uses. Closes a race where an unattended cron could silently overwrite ('clobber') the claim of a note you're actively editing in a live session — and then advance or re-nag a note out from under you. **Recommended for anyone running the Advancer/Improver crons alongside interactive work.**

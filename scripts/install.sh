@@ -1820,6 +1820,15 @@ if PID not in allow:
     allow.append(PID)
     changed.append(f"plugins.allow += {PID}")
 
+# 1b) bundledDiscovery — REQUIRED companion to plugins.allow on OpenClaw
+#     2026.6.x+. Setting plugins.allow WITHOUT bundledDiscovery makes the new
+#     schema reject the whole config ("plugins: Invalid input") and the gateway
+#     refuses to start — total bot silence. "compat" preserves legacy bundled
+#     provider/channel discovery (safest: won't disable existing chat channels).
+if plugins.get("bundledDiscovery") not in ("compat", "allowlist"):
+    plugins["bundledDiscovery"] = "compat"
+    changed.append('plugins.bundledDiscovery -> "compat"')
+
 # 2) load.paths -> abs plugin dir (dedup)
 load = plugins.setdefault("load", {})
 paths = load.get("paths")
