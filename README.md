@@ -167,13 +167,13 @@ Disk barely moves (graph JSON is small; docs vector DB is ~1–2 MB per 1000 chu
 
 Recurring cost is LLM tokens only. Figures below are **cumulative — dinomem base included** (neuron runs on top of base, not instead of it). Estimated tokens/month (input+output), grounded in the actual batch caps:
 
-| Usage | Cheap-eligible (base) | Default-only (neuron L3/L4) | Total |
-| ----------------------- | --------------------- | --------------------------- | ------- |
-| Low — ~2–3 sessions/day | ~1–2M                 | ~1–2M                       | ~2–4M   |
-| Moderate — ~8–12/day    | ~5–9M                 | ~4–7M                       | ~9–16M  |
-| High — ~30+/day         | ~18–30M               | ~10–15M                     | ~28–45M |
+| Usage | Non-reasoning (base + neuron L4) | Reasoning (neuron L3) | Total |
+| ----------------------- | -------------------------------- | --------------------- | ------- |
+| Low — ~2–3 sessions/day | ~1–2M                            | ~1–2M                 | ~2–4M   |
+| Moderate — ~8–12/day    | ~5–9M                            | ~4–7M                 | ~9–16M  |
+| High — ~30+/day         | ~18–30M                          | ~10–15M               | ~28–45M |
 
-**Cheap-eligible** = base bulk (extraction, review) — routes to [`DINOMEM_CHEAP_MODEL`](#model-selection) if set. **Default-only** = neuron's L3 synthesis + L4 promotion, which run on your **default** (reasoning) model by design — the cheap lever can't touch these. Graph/L2 = **0 tokens** (pure local cosine).
+**Non-reasoning** = base bulk (extraction, review) **+ neuron's L4** (`memory_promote` valid/invalidated check + `generate_topic_index`) — all route to [`DINOMEM_CHEAP_MODEL`](#model-selection) if set. **Reasoning** = neuron's **L3** synthesis + contradiction check, which run on your **default** (reasoning) model by design — the cheap lever can't touch these. Graph/L2 = **0 tokens** (pure local cosine).
 
 _Grounding: extract ~26k tok / 3 sessions · review ~4k/day · synthesis `nodes//10` clusters/day (cap 40) × ~1.2k tok · order-of-magnitude, scales with sessions/day + corpus size._
 
@@ -241,19 +241,22 @@ Session → Archive → extract_memory.py → memory/*.md + MEMORY.md + vector D
 
 ### Model selection
 
-neuron's pipeline is the **reasoning tier**. `memory_synthesis`, `contradiction_check`,
-and `memory_promote` make validity/judgment calls (emergent-insight synthesis,
-contradiction logic, permanent-promotion verdicts) — so they always run on your
-OpenClaw **default** model and request a thinking budget
+neuron's **L3** is the **reasoning tier**. `memory_synthesis` and `contradiction_check`
+make validity/judgment calls (emergent-insight synthesis, contradiction logic) — so
+they run `reasoning=True`: your OpenClaw **default** model plus a thinking budget
 (`DINOMEM_REASONING_THINKING`, default `high`). They ignore `DINOMEM_CHEAP_MODEL`
 on purpose: routing these to a cheap model risks cementing stale insights or
 deleting good memory.
 
-`generate_topic_index` is mechanical (tree assembly) and stays on the default
-model without a thinking boost.
+neuron's **L4** is **non-reasoning**. `memory_promote` is a one-word
+valid/invalidated check and `generate_topic_index` is mechanical tree assembly —
+neither requests a thinking budget, and both honor `DINOMEM_CHEAP_MODEL` (same
+bulk tier as base). They run cheap by design.
 
-The cheap-model lever (`DINOMEM_CHEAP_MODEL`) only affects dinomem base's
-no-reasoning bulk scripts (`extract_memory`, `memory_review`). See
+The cheap-model lever (`DINOMEM_CHEAP_MODEL`) affects all no-reasoning bulk
+scripts — dinomem base's (`extract_memory`, `memory_review`) **and** neuron's L4
+(`memory_promote`, `generate_topic_index`). Only L3 (`memory_synthesis`,
+`contradiction_check`) ignores it. See
 [dinomem → Model selection](https://github.com/02-dino/dinomem#model-selection).
 These flags live in `extract_memory.call_llm`, which neuron imports — so dinomem
 base **v1.2.0+ is required**. neuron's installer enforces this floor. The catch:
