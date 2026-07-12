@@ -1931,6 +1931,30 @@ if [ -f "$OPENCLAW_JSON" ] && grep -q '"memorySearch"' "$OPENCLAW_JSON" 2>/dev/n
 else
   sc_warn "openclaw.json memorySearch not detected — embeddings may not be wired"
 fi
+# 5) Hook liveness (L3/L3b): `hooks enable` only sets the config flag; if $WS is
+#    not the gateway's scanned workspace, the hook in $WS/hooks/ silently never
+#    loads. Assert eligibility via `hooks check --json` (grep on the table is
+#    unreliable — emoji wrap splits names). Self-heal into global ~/.openclaw/hooks/.
+if command -v openclaw >/dev/null 2>&1 && openclaw status >/dev/null 2>&1; then
+  _elig="$(openclaw hooks check --json 2>/dev/null | "$PY" -c "import json,sys;
+try:
+  d=json.load(sys.stdin); print('yes' if 'dinomem-open-notes' in d.get('hooks',{}).get('eligible',[]) else 'no')
+except Exception: print('unknown')" 2>/dev/null)"
+  if [ "$_elig" = "yes" ]; then
+    sc_pass "dinomem-open-notes hook is eligible (gateway can load it)"
+  else
+    _ghd="${OPENCLAW_DIR:-$HOME/.openclaw}/hooks"
+    if [ -d "$SKILL_DIR/hooks/dinomem-open-notes" ]; then
+      mkdir -p "$_ghd"
+      rm -rf "$_ghd/dinomem-open-notes"
+      cp -r "$SKILL_DIR/hooks/dinomem-open-notes" "$_ghd/dinomem-open-notes"
+      openclaw hooks enable dinomem-open-notes >/dev/null 2>&1 || true
+      sc_warn "dinomem-open-notes not eligible from \$WS/hooks/ — copied to global $_ghd/ + re-enabled; RESTART OpenClaw, then verify: openclaw hooks check --json"
+    else
+      sc_warn "dinomem-open-notes not eligible and source missing — check the install"
+    fi
+  fi
+fi
 if [ "$SC_FAIL" = 0 ]; then
   printf '  \033[32m== self-check: all green ==\033[0m\n'
 else

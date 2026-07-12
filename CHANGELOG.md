@@ -4,6 +4,16 @@ All notable changes to dinomem-neuron are documented here.
 
 ---
 
+## 1.7.2 — 2026-07-12
+
+**Installer robustness — hook liveness self-check + global-dir self-heal (fixes silent hook no-op).** `openclaw hooks enable dinomem-open-notes` only flips the config `enabled` flag; it does not confirm the gateway can actually *load* the hook. When the installer's `$WS` is not the gateway's scanned workspace, the hook copied into `$WS/hooks/` lands in an unscanned dir and **silently never fires at bootstrap** — the exact failure the open-notes hook exists to prevent — while the installer still claims success.
+
+### Fixed
+- **Self-check now asserts hook eligibility via `openclaw hooks check --json`** (`dinomem-open-notes` ∈ `eligible[]`), not a `hooks list` grep (which false-negatives: the CLI table emoji-wraps and splits the hook name across two lines).
+- **Self-heal:** if the hook isn't eligible from `$WS/hooks/`, the installer copies the pack into the always-scanned global `~/.openclaw/hooks/dinomem-open-notes/`, re-enables it, and warns to restart — so the headline deterministic-open-note-injection feature actually runs regardless of workspace layout.
+
+---
+
 ## 1.7.1 — 2026-07-12
 
 **Installer robustness — plugin registration no longer crash-loops the gateway on workspace teardown, and self-heals a previously-broken config.** The `note-claim-refresh` plugin was installed into `$WS/plugins/` and registered in the **global** `openclaw.json` with a workspace-relative `plugins.load.paths` entry; if that workspace was ever removed/moved, the dangling path made the config schema-invalid (`plugins is .strict()`) and the gateway refused to start (crash-loop). The per-plugin config was also written at the **invalid top-level `plugins.config`** key instead of `plugins.entries.<name>.config`.
