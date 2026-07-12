@@ -1366,7 +1366,7 @@ DINOMEM_BODY=$(cat <<'DINOMEM_NEURON_AGENTS_BODY'
   note-claim: claim a project/task _note_ before editing it from a live session so the Advancer/Improver/Deleter crons back off. READ + claim BEFORE the first multi-turn or build-related edit to any memory/_note_*.md a cron could also touch.
 
 ## cold_start_recall
-  # Mechanized by the dinomem-open-notes hook (neuron superset) at agent:bootstrap — replaces the old glob rule AND session_start_recall. The hook injects a blocking manifest of OPEN _note_*.md and, when the opener names something no note covers, reminds you to run session_search "<natural-language topic>" (recent convo <7d) BEFORE answering. If the hook is disabled, fall back manually: glob memory/_note_*.md + session_search the opener's topic before the first answer.
+  # The dinomem-open-notes hook auto-injects a manifest of OPEN _note_*.md at bootstrap (and a session_search recall nudge). Behavior: read the relevant open note and resume from its resume_state BEFORE answering; do NOT restart finished work. When the opener names something no injected note covers, run session_search "<natural-language topic>" (recent convo <7d) before answering.
 
 ## retrieval_tools_quickref
   # One-line routing; full rules in the retrieval-routing skill.
