@@ -4,6 +4,18 @@ All notable changes to dinomem-neuron are documented here.
 
 ---
 
+## 1.7.1 — 2026-07-12
+
+**Installer robustness — plugin registration no longer crash-loops the gateway on workspace teardown, and self-heals a previously-broken config.** The `note-claim-refresh` plugin was installed into `$WS/plugins/` and registered in the **global** `openclaw.json` with a workspace-relative `plugins.load.paths` entry; if that workspace was ever removed/moved, the dangling path made the config schema-invalid (`plugins is .strict()`) and the gateway refused to start (crash-loop). The per-plugin config was also written at the **invalid top-level `plugins.config`** key instead of `plugins.entries.<name>.config`.
+
+### Fixed
+- **Plugin installs to the persistent global extensions dir** (`$OPENCLAW_DIR/extensions/note-claim-refresh`) instead of `$WS/plugins/`, so `load.paths` never points inside a transient workspace.
+- **Per-plugin config moved to `plugins.entries.note-claim-refresh.config`** (schema-valid) with `{ enabled: true }`; the installer no longer writes a top-level `plugins.config` block.
+- **Self-heal on upgrade:** the wiring step now prunes any stale workspace-relative `note-claim-refresh` `load.paths` entry, and migrates + deletes any leftover invalid top-level `plugins.config` from older installer builds. A config broken by a prior build is repaired in place on the next install — no more manual hand-fixing.
+- Verified by an isolated unit test (8/8 assertions) that replays the exact crash-loop config shape and asserts a valid, deduped, self-healed result. No live-gateway install run was used (that was the original footgun).
+
+---
+
 ## 1.7.0 — 2026-07-12
 
 **Hooks + Skills release — the long inline AGENTS.md block is replaced by a deterministic bootstrap hook and four AgentSkills.** Neuron's injected AGENTS.md block shrinks from ~118 lines to ~18: the always-loaded rules become on-demand skills, and the two cold-start recall rules become a mechanism instead of a plea. **Seamless upgrade from any prior neuron *and* from dinomem base** — `--force` refreshes the managed block in place (no stacking), and neuron's superset hook/skill overwrite base's same-named copies cleanly.

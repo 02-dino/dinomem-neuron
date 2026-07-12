@@ -1749,7 +1749,10 @@ fi
 # plugin config here for robustness on multi-workspace hosts.
 hr "Note-claim-refresh hook plugin"
 PLUGIN_SRC="$SKILL_DIR/plugins/note-claim-refresh"
-PLUGIN_DST="$WS/plugins/note-claim-refresh"
+# Install into the PERSISTENT global extensions dir, NOT the workspace. Plugin
+# registration in openclaw.json is global; a workspace-relative load.paths entry
+# dangles (and crash-loops the gateway) if the workspace is ever removed/moved.
+PLUGIN_DST="$OPENCLAW_DIR/extensions/note-claim-refresh"
 if [ ! -d "$PLUGIN_SRC" ]; then
   warn "plugin source $PLUGIN_SRC missing — skipping (claim refresh stays manual)"
 else
@@ -1791,28 +1794,67 @@ if plugins.get("bundledDiscovery") not in ("compat", "allowlist"):
     plugins["bundledDiscovery"] = "compat"
     changed.append('plugins.bundledDiscovery -> "compat"')
 
-# 2) load.paths -> abs plugin dir (dedup)
+# 2) load.paths -> abs plugin dir (dedup) + PRUNE stale workspace-relative paths.
+#    Older installer builds registered $WS/plugins/note-claim-refresh, which
+#    dangles if the workspace is deleted/moved (schema-invalid -> gateway
+#    crash-loop). Remove any prior PID path that isn't the persistent one.
 load = plugins.setdefault("load", {})
 paths = load.get("paths")
 if not isinstance(paths, list):
     paths = []
     load["paths"] = paths
+# prune stale note-claim-refresh entries (any path ending in the PID dir that
+# isn't the current persistent plugin_dst)
+stale_paths = [p for p in paths
+               if isinstance(p, str)
+               and p.rstrip("/").endswith("/" + PID)
+               and p != plugin_dst]
+for sp in stale_paths:
+    paths.remove(sp)
+    changed.append(f"plugins.load.paths -= {sp} (stale)")
 if plugin_dst not in paths:
     paths.append(plugin_dst)
     changed.append(f"plugins.load.paths += {plugin_dst}")
 
-# 3) per-plugin config.workspaceDir (robustness on multi-workspace hosts)
-pconf = plugins.get("config")
-if not isinstance(pconf, dict):
-    pconf = {}
-    plugins["config"] = pconf
-entry = pconf.get(PID)
+# 3) per-plugin config + enable -> plugins.entries.<PID>.config
+#    IMPORTANT: OpenClaw's `plugins` schema is .strict() and does NOT accept a
+#    top-level `plugins.config` key (only enabled/allow/deny/load/slots/entries/
+#    bundledDiscovery). Per-plugin config is valid ONLY under
+#    plugins.entries.<name>.config. Writing plugins.config at the top level makes
+#    the whole config schema-invalid and the gateway refuses to start. Also, a
+#    stale top-level `plugins.config` from an older installer build must be
+#    migrated/removed here.
+entries = plugins.setdefault("entries", {})
+if not isinstance(entries, dict):
+    entries = {}
+    plugins["entries"] = entries
+entry = entries.get(PID)
 if not isinstance(entry, dict):
     entry = {}
-    pconf[PID] = entry
-if entry.get("workspaceDir") != ws:
-    entry["workspaceDir"] = ws
-    changed.append(f"plugins.config.{PID}.workspaceDir -> {ws}")
+    entries[PID] = entry
+if entry.get("enabled") is not True:
+    entry["enabled"] = True
+    changed.append(f"plugins.entries.{PID}.enabled -> true")
+econf = entry.get("config")
+if not isinstance(econf, dict):
+    econf = {}
+    entry["config"] = econf
+if econf.get("workspaceDir") != ws:
+    econf["workspaceDir"] = ws
+    changed.append(f"plugins.entries.{PID}.config.workspaceDir -> {ws}")
+
+# 3b) MIGRATE/REMOVE any invalid top-level plugins.config (from older installer
+#     builds). Move a matching PID entry into plugins.entries, then delete the
+#     top-level key entirely so the config validates.
+stale = plugins.get("config")
+if isinstance(stale, dict):
+    stale_pid = stale.get(PID)
+    if isinstance(stale_pid, dict):
+        for k, v in stale_pid.items():
+            if econf.get(k) != v:
+                econf.setdefault(k, v)
+    del plugins["config"]
+    changed.append("removed invalid top-level plugins.config (migrated into entries)")
 
 if changed and os.environ.get("DINOMEM_DRY_RUN") == "1":
     for c in changed:
