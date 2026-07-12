@@ -4,6 +4,31 @@ All notable changes to dinomem-neuron are documented here.
 
 ---
 
+## 1.7.0 — 2026-07-12
+
+**Hooks + Skills release — the long inline AGENTS.md block is replaced by a deterministic bootstrap hook and four AgentSkills.** Neuron's injected AGENTS.md block shrinks from ~118 lines to ~18: the always-loaded rules become on-demand skills, and the two cold-start recall rules become a mechanism instead of a plea. **Seamless upgrade from any prior neuron *and* from dinomem base** — `--force` refreshes the managed block in place (no stacking), and neuron's superset hook/skill overwrite base's same-named copies cleanly.
+
+### Added
+- **`dinomem-open-notes` hook (neuron superset).** Overwrites base's copy of the same hook: on every `agent:bootstrap` it injects a blocking manifest of OPEN `_note_*.md` (as base does) **plus** a neuron-only recall line telling the model to run `session_search` when the opener names something no open note covers. This mechanizes the old `M_session_start` glob rule **and** neuron's `session_start_recall` rule — the model no longer has to *remember* to look. Toggle the recall line with `DINOMEM_SESSION_RECALL=0`; cap injected notes with `DINOMEM_OPEN_NOTES_MAX` (default 5). Always overwrites base (even without `--force`) so the upgrade never keeps base's recall-less hook.
+- **Four AgentSkills** (extracted from the inline block; read on-demand):
+  - `project-notes` — project-note format, estimate/heaviness gates, turn-boundary execution, self-check, `resume_state` discipline.
+  - `memory-pinning` (neuron superset — overwrites base's) — `_pin_`/`_note_` format + the semantic **dedup gate** (`memory_dedup_check.py`) + auto-note triggers.
+  - `retrieval-routing` — which retrieval tool per query (`docs_search`/`session_search`/`memory_search`/`data_query`/`graph_search`/grep) + long-doc ingest + structured-data (`data_query`) usage.
+  - `note-claim` — the live-session write side of the note-claim protocol (`claim_note.sh` claim/refresh/release).
+
+### Changed
+- **Injected AGENTS.md block cut ~118 → ~18 lines.** The moved procedures now live in the skills above; the block keeps only short when-to-use stubs, a `cold_start_recall` note pointing at the hook, and a one-line retrieval-tool quickref.
+
+### Fixed
+- **`--force` now refreshes the managed AGENTS.md block in place (was a no-op skip).** Upgrades from an older neuron (longer inline block) actually pick up the new short block: the installer strips the old `BEGIN:dinomem-neuron..END` span and writes the current block — idempotent upsert, never stacks a second block. Targets neuron's own markers, so base's separate `BEGIN:dinomem` block is untouched.
+- **`rm -rf` before every `cp -r`** for the hook and skills, preventing the copy-into-existing-dir nesting footgun on re-install.
+
+### Upgrade notes
+- Existing neuron/base users: re-run the installer with `--force` to refresh the AGENTS.md block and deploy the hook + skills, then `openclaw gateway restart`. No manual steps.
+- `uninstall.sh --purge` removes the three neuron-exclusive skills; the shared-name `memory-pinning` skill and `dinomem-open-notes` hook are removed only under `--with-base` (base still relies on them otherwise).
+
+---
+
 ## 1.6.8 — 2026-07-11
 
 **Critical install-time fix — prevents "bot goes completely silent after install".** On OpenClaw **2026.6.x+**, setting `plugins.allow` *without* also setting `plugins.bundledDiscovery` now fails schema validation (`plugins: Invalid input`). Our installer wired the `note-claim-refresh` plugin into `plugins.allow` but never stamped `bundledDiscovery`, so on the very next `openclaw gateway restart` the config was rejected and the gateway refused to start — total silence, no responses. **Recommended for anyone who installed on OpenClaw 2026.6.x or newer.**

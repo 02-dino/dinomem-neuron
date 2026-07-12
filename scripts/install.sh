@@ -536,6 +536,47 @@ if [ -f "$SKILL_DIR/.license_expiry" ]; then
   ok ".license_expiry (license term)"
 fi
 
+# ── Install open-notes hook (NEURON SUPERSET — overwrites base's) ────────────
+# Neuron's dinomem-open-notes hook adds the session_search cold-start recall line
+# on top of base's open-note manifest. Base's installer ran FIRST and placed
+# base's version; this MUST overwrite it even without --force (like
+# extract_memory.py) or the upgrade silently keeps base's hook without neuron's
+# recall behavior. rm -rf before cp prevents the cp -r nesting footgun.
+if [ -d "$SKILL_DIR/hooks/dinomem-open-notes" ]; then
+  hr "Open-notes hook (neuron superset: open-note manifest + session_search recall)"
+  HOOK_SRC="$SKILL_DIR/hooks/dinomem-open-notes"
+  HOOK_DST="$WS/hooks/dinomem-open-notes"
+  mkdir -p "$WS/hooks"
+  rm -rf "$HOOK_DST"
+  cp -r "$HOOK_SRC" "$HOOK_DST"
+  ok "hooks/dinomem-open-notes/ copied (neuron superset overwrites base)"
+  if command -v openclaw >/dev/null 2>&1 && openclaw status >/dev/null 2>&1; then
+    openclaw hooks enable dinomem-open-notes >/dev/null 2>&1 \
+      && ok "dinomem-open-notes hook enabled (restart OpenClaw to activate)" \
+      || warn "openclaw hooks enable failed — run manually: openclaw hooks enable dinomem-open-notes"
+  else
+    warn "OpenClaw not running — run after restart: openclaw hooks enable dinomem-open-notes"
+  fi
+fi
+
+# ── Install neuron skills (SUPERSET — overwrites base's same-named skills) ───
+# memory-pinning is the neuron superset (adds the dedup gate) and overwrites
+# base's copy; project-notes / retrieval-routing / note-claim are neuron-only.
+# Always overwrite (base ran first) so the upgrade ships neuron's versions.
+# rm -rf before cp prevents the cp -r nesting footgun.
+if [ -d "$SKILL_DIR/skills" ]; then
+  hr "Skills (project-notes, memory-pinning, retrieval-routing, note-claim)"
+  for _sk in "$SKILL_DIR/skills"/*/; do
+    [ -d "$_sk" ] || continue
+    _skname="$(basename "$_sk")"
+    _skdst="$WS/skills/$_skname"
+    mkdir -p "$WS/skills"
+    rm -rf "$_skdst"
+    cp -r "$_sk" "$_skdst"
+    ok "skills/$_skname/ copied"
+  done
+fi
+
 # ── 3) Register cron jobs ─────────────────────────────────────────────────────
 # upsert_cron: add or update a cron entry by script keyword
 upsert_cron() {
@@ -1317,124 +1358,24 @@ END="<!-- END:dinomem-neuron -->"
 # Body is a literal quoted heredoc: embedded double-quotes ("<title>", "<query>")
 # and <angle-bracket> placeholders must NOT be shell-evaluated. Markers wrapped after.
 DINOMEM_BODY=$(cat <<'DINOMEM_NEURON_AGENTS_BODY'
-## rag_long_docs
-  when: long doc shared | doc file uploaded (pdf/docx/rtf/odt/html/epub/md/txt) | save/remember doc | content >2000 chars
-  action:
-    uploaded_file: python3 procedures/docs_ingest.py --file <media path> → confirm  # script self-extracts pdf/docx/etc → docs/<slug>.md
-    pasted_text: save docs/<slug>.md → python3 procedures/docs_ingest.py --file docs/<slug>.md → confirm
-  media_path: inbound uploads at ~/.openclaw/media/inbound/<uuid> (from <media:...> placeholder); pass that path straight to --file
-  note: ingest auto-extracts via pdftotext+pandoc (no manual convert); re-ingested daily 4:00 UTC; ready for docs_search after; never save long docs to memory/; row|count|range|filter|aggregate over structured data (csv|json|parquet) → data_query NOT docs_search
+## neuron_skills
+  # Neuron ships AgentSkills that hold the full procedures. Read the SKILL.md when its trigger fires; the stubs below are just the when-to-use.
+  retrieval-routing: which retrieval tool per query (docs_search | session_search | memory_search | data_query | graph_search | grep) + how to ingest long docs and register/query structured data. READ when: long doc shared/uploaded (pdf/docx/etc) | save/remember a doc | content >2000 chars | row|count|range|filter|sort|aggregate|field-lookup over csv/json/parquet | unsure which retrieval tool to use.
+  memory-pinning: how to write durable memory — permanent _pin_ facts and transient _note_ todos/reminders — with the semantic dedup gate + auto-note triggers. READ when: user says remember/pin/note this | your reply commits to deferred/external work | a todo/reminder/time-bound item arises. Always run the dedup gate (procedures/memory_dedup_check.py) BEFORE authoring a NEW _pin_/_note_; match:true -> merge into the existing file, not a second one.
+  project-notes: plan+execute multi-step builds as durable on-disk project notes (format, estimate gate, heaviness/turn-boundary, self-check, resume_state). READ when: a request trips the project gate (>3 files OR >5 sequential tool-steps OR research-then-build OR user says project/build) | resuming an in_progress project note.
+  note-claim: claim a project/task _note_ before editing it from a live session so the Advancer/Improver/Deleter crons back off. READ + claim BEFORE the first multi-turn or build-related edit to any memory/_note_*.md a cron could also touch.
 
-## structured_data
-  when: row | count | range | filter | sort | aggregate | field lookup | "how many" | "under $X" | "on <date>" | "cheapest/most" | "list ... where" over registered exact data (csv|json|parquet; any structured/semi-structured dataset)
-  action:
-    query: read kb/data_store/catalog.json → pick table(s) by keywords+columns → python3 tools/data_query.py --sql "SELECT ... FROM <table> WHERE ..."  # SELECT-only
-    register: python3 procedures/data_register.py --file <path.csv|json|parquet> --name <table> --desc "..." [--keywords a,b,c]
-  route: meaning|"like this"|passage → docs_search | fact|decision|preference → memory_search | recent-convo <7d → session_search | exact pattern|regex over raw text/logs → exec (ripgrep/grep)
-  note: store=kb/data_store/ (one duckdb, one table per dataset, NOT a category column, NOT db-per-category); handles structured+semi-structured (nested json ok); catalog.json=schema map+intent router; retrieval=exact SQL no embeddings; NEVER save rows to memory/
+## cold_start_recall
+  # Mechanized by the dinomem-open-notes hook (neuron superset) at agent:bootstrap — replaces the old glob rule AND session_start_recall. The hook injects a blocking manifest of OPEN _note_*.md and, when the opener names something no note covers, reminds you to run session_search "<natural-language topic>" (recent convo <7d) BEFORE answering. If the hook is disabled, fall back manually: glob memory/_note_*.md + session_search the opener's topic before the first answer.
 
-## retrieval_router
+## retrieval_tools_quickref
+  # One-line routing; full rules in the retrieval-routing skill.
   meaning | "explain" | "like this" | passage → docs_search
-  recent conversation detail (<7d) → session_search
+  recent conversation detail (<7d) → session_search   # M3 natural-language query rule applies (avoid code identifiers/exact strings)
   fact | decision | preference | todo → memory_search
-  row | count | range | filter | sort | aggregate | field lookup (csv|json|parquet) → data_query
+  row | count | range | filter | sort | aggregate | field lookup (csv|json|parquet) → data_query (exact SQL, NOT memory_search)
+  complex relational (depends_on|affects|trace|chain) → graph_search (fallback memory_search)
   exact pattern | regex | grep | exact-string over raw text/logs → exec (ripgrep/grep)
-
-## memory_pin
-  # extends base memory_pin; adds the semantic dedup gate to the pin-write path
-  dedup_first: before authoring a NEW _pin_, run ## memory_dedup on the candidate. If it returns match:true, UPDATE the existing pin instead of creating a second one (this is exactly the pin-sprawl / contradictory-duplicate case the gate exists for). match:false or skipped -> author the new _pin_ as normal.
-  otherwise: unchanged from base (permanent_fact OR user emphasizes importance; ask if uncertain; _pin_ prefix, memory/, slug lowercase-hyphens-max30)
-
-## memory_dedup
-  # Pre-write dedup gate for auto-pin / auto-note. Stops pin/note sprawl and
-  # (worse) contradictory duplicates: a new file on a topic an existing pin/note
-  # already covers. Slugs differ but topics overlap, so this is SEMANTIC, not a
-  # slug match. Advisory only — informs the decision, never blocks a write.
-  when: about to auto-write a NEW memory/_pin_<slug>.md or memory/_note_<slug>.md (from memory_pin OR auto_note triggers below)
-  action:
-    - run: python3 $WS/procedures/memory_dedup_check.py --kind pin|note --title "<candidate title>" --body "<candidate body>"
-    - read the JSON on stdout:
-        match:true  -> an existing file covers this topic. OPEN result.file and MERGE/UPDATE it (fold the new fact in, correct any stale line) INSTEAD of creating a new file. If the overlap is partial/ambiguous, ask the user merge-vs-new. suggestion:merge = high confidence; suggestion:review = borderline, glance before merging.
-        match:false -> genuinely novel; proceed to write the new _pin_/_note_.
-        skipped:*   -> dedup could not run (no embed backend / embed error); proceed to write normally (never block a memory write on this).
-  scope: fires for durable _pin_ writes and for _note_ writes; skip for quick read-only lookups and for editing a file you already identified.
-  why: proven 2026-07-11 — a new _pin_ nearly stacked on (and contradicted) an existing buyer-delivery pin; embedding-based dedup catches the topic overlap a slug check cannot.
-  note: adaptive z-score scoring inside the script (e5 absolute thresholds don't generalize); tune via DINOMEM_DEDUP_Z / DINOMEM_DEDUP_ABS_FLOOR if a corpus over/under-flags.
-
-## auto_note
-  dedup_first: before writing a NEW _note_, run ## memory_dedup (an existing note may already track this work; merge into it instead of stacking a duplicate)
-  triggers:
-    - self_commitment: own output implies deferred work → auto-write _note_
-    - external_commitment: own output commits to discrete external artifact (github issue/PR, external send) not done THIS turn → auto-write _note_ immediately with verifiable done_when
-    - completion_followup: task done but follow-up remains → auto-write _note_
-    - project_estimate: request trips project gate → auto-write project _note_ before starting
-  guardrail: only if concrete done_when is writable; personal/ambiguous → ask first
-  upgrade: enumerate steps FIRST; if >1 digital/verifiable step → type: project; never skip enumeration; physical/non-verifiable tasks → task_bound
-
-## note_claim_protocol
-  when: a LIVE interactive session is about to EDIT/write a project or task _note_ (_note_*.md) that a cron (Advancer/Improver/Deleter) could also touch
-  why: the crons READ claimed_by/claimed_at and back off a fresh claim (live-session 120min window), but nothing writes the claim for the live agent. Unclaimed => a cron can grab the same note mid-edit and double-write / re-nag. The live agent is the write side of the protocol.
-  action:
-    - BEFORE the first edit: bash $WS/scripts/claim_note.sh claim <note> live-session-<agent-id>   # exit 3 = another job holds it fresh -> do not fight; pick another or tell the user
-    - each later turn resuming the SAME note: bash $WS/scripts/claim_note.sh refresh <note> live-session-<agent-id>
-    - when done / paused / abandoning: bash $WS/scripts/claim_note.sh release <note>
-  skip_when: read-only note lookups; _pin_ files; a note created+finished in one edit with no cron overlap
-  enforce: mandatory before multi-turn or build-related note edits; this makes the claim protocol enforceable instead of documentation-only
-
-## memory_tools
-  # extends base memory_tools; adds neuron-specific tools
-  session_search: python3 tools/session_search.py; when memory_search thin/uncertain AND session <7d old AND transcript detail needed
-  session_start_recall: extends base M_session_start — at cold start, when opener names entity/feature/continuation absent from _note_ files, run session_search "<natural-language topic of opener>" over recent raw convo <7d and read hit BEFORE answering; glob + session_search both mandatory (neuron-only: base has no session_search tool)
-  graph_search: tools/graph_search.py; when complex relational query; fallback: memory_search; skip when relation_edges not yet populated
-  data_query_handoff: row|count|range|filter|sort|aggregate|field-lookup over registered structured data (csv|json|parquet) → data_query (exact SQL), NOT memory_search; memory has no <,>,=,COUNT,SUM; see ## structured_data / ## retrieval_router
-  # G2: session_search embeds queries too — the base M3_query_style rule applies to it as well:
-  #      prefer natural language, avoid technical identifiers/code terms/exact strings/variable names.
-  M3_query_style_extends: applies_to also includes session_search (same natural-language rule as memory_search)
-
-## project_note
-  purpose: context-bounded step-by-step executor; durable plan on disk survives context limits + new sessions
-  type: project (extends base _note_ schema)
-  format: '# Project <name>\ntype: project\nstatus: in_progress | done\ndate: YYYY-MM-DD\ndone_when: <final artifact / all steps [x]>\nstale_after: YYYY-MM-DD\ncurrent_step: <n>\nclaimed_by: <run_id or blank>\nclaimed_at: <ISO timestamp or blank>\nsteps:\n  - [ ] 1. <step> -- done_when: <check>\n  - [ ] 2. ...\nresume_state: <paths/decisions/assumptions next turn needs to resume blind>'
-  claimed_by: set by Project Advancer / Project Improver on claim; cleared on step complete, checkpoint, or safety-gate pause; stale if claimed_at older than its window (live-session 120min / other 30min)
-  claimed_at: UTC ISO8601 timestamp (trailing Z) of claim write; used to detect stale claims. Windows: live-session 120min, other claimant 30min. Future-dated = invalid/stale.
-  estimate:
-    when: at request time, before starting
-    gate: '>3 files OR >5 sequential tool-steps OR research-then-build OR user says project/build'
-    method: heuristic gate floor + LLM override; trip gate -> make project note, else normal one-turn
-    upgrade: enumerate steps FIRST; if >1 digital/verifiable step -> type: project; never skip enumeration; physical/non-verifiable tasks -> task_bound
-  heaviness_gate:
-    signal: heaviness = execution load of a step (files touched, LOC, test/debug surface)
-    heavy: write+test a whole tool/file | multi-file change | research-then-build | full write->run->debug->verify cycle
-    light: tiny edit | config | doc | one-liner
-    rule: heavy step -> own turn; light steps -> batch a few per turn
-  execute:
-    turn_boundary: heaviness of NEXT step decides continue-vs-stop; heavy -> stop, start it fresh next turn; light -> do it, continue
-    gate: do NOT start a heavy step to batch; a heavy step gets its own turn
-    heavy_step: checkpoint (write resume_state), stop cleanly, tell user step n/m done; resume next turn/cron from current_step
-    light_step: mark step [x], update resume_state, advance current_step, continue next light step same turn
-    spawn: if next step heavy AND remaining steps > 2 AND sessions_spawn available -> spawn subagent with task=remaining steps + resume_state; subagent works in clean context; parent waits for completion event
-    resume: new session reads note, jumps to current_step, resumes from resume_state ONLY (no chat-history reliance)
-  mandatory: after every step rewrite resume_state so note is self-sufficient; reliability linchpin
-  note_edit_safety: # G5b -- guards against silently losing a resume_state/status write
-    why: the edit tool applies a multi-edit batch ATOMICALLY -- if ANY one oldText fails to match, the WHOLE batch rolls back and NOTHING changes; the tool returns an error but a note claimed 'updated' before reading that result is silently stale (=> Advancer resumes from wrong step, or a done note never closes)
-    trap: chaining edits where a later oldText anchor overlaps/depends on text an earlier edit in the SAME batch already changed, or re-using an anchor a prior applied edit consumed -> stale anchor -> full rollback
-    rules:
-      - NEVER treat a note write as done until you have READ the tool's success/error result; an error = zero changes applied
-      - after any batch of >1 edit to a note, grep/re-read the changed lines (status, current_step, resume_state, claimed_at) to CONFIRM before advancing or announcing
-      - keep batch edits to DISJOINT independent regions; if edits overlap or depend on each other, split into sequential calls and verify between them
-      - on rollback: re-read the note FRESH (anchors may reflect a partial earlier success), rebuild oldText from current content, retry
-  self_check: # G5
-    when: before stopping at ANY checkpoint while status in_progress
-    verify: type:project, status:in_progress, current_step matches lowest unchecked step, resume_state non-empty + concrete
-    on_fail: fix note THIS TURN before stopping; malformed note = silent death (Advancer skips it)
-  live_session_claim: # G6 rule -- makes claim automatic in interactive sessions, not just cron-vs-cron
-    when: a live interactive session actively executes a project note (not the Advancer cron)
-    action: write claimed_by=live-session-<agentid> + claimed_at=<now ISO> to the note BEFORE the first edit; refresh claimed_at each resuming turn; clear both on finish/pause
-    why: without this the 4h Advancer can wake mid-conversation and double-edit the same note; the claim lock is otherwise only honored cron-vs-cron
-  driver: hybrid -- user may say continue; else Project Advancer cron auto-advances in_progress notes (unattended, announces progress, pauses on destructive/external steps)
-  resolve: done_when met -> Daily Note Review cron (neuron, 06:00 UTC, claim-aware) deletes/promotes via normal pipeline
-  awaiting_approval_reverify: safety-gated final step (push/external) → at cold start re-verify artifact exists (git -C <repo> rev-parse HEAD == @{u}); if done, close note instead of re-asking.
-  done_when_verifiability: every done_when must be locally checkable (file exists / grep / exit 0 / git rev-parse HEAD==@{u}). Narrative done_when never auto-closes.
 DINOMEM_NEURON_AGENTS_BODY
 )
 BLOCK="$BEGIN
@@ -1443,7 +1384,28 @@ $END"
 
 touch "$AGENTS"
 if grep -qF "$BEGIN" "$AGENTS" 2>/dev/null; then
-  skip "AGENTS.md already wired (use --force to refresh)"
+  # Neuron block already present. Refresh it in place ONLY under --force, so
+  # upgrades from an older dinomem-neuron (longer inline block, no skill stubs)
+  # actually pick up the current short block instead of keeping stale text.
+  # Strip the old BEGIN..END span first, then append the fresh block
+  # (idempotent upsert — never stacks a second block). Targets neuron's OWN
+  # markers, so base's separate BEGIN:dinomem block is untouched.
+  if [ "$FORCE" = 1 ]; then
+    _tmp_agents="$(mktemp)"
+    # Delete the inclusive BEGIN..END region (fixed-string match), keep the rest.
+    awk -v b="$BEGIN" -v e="$END" '
+      index($0,b){skip=1}
+      !skip{print}
+      index($0,e){skip=0}
+    ' "$AGENTS" > "$_tmp_agents"
+    # Trim trailing blank lines the removal may leave, then append fresh block.
+    awk 'NF{last=NR} {lines[NR]=$0} END{for(i=1;i<=last;i++) print lines[i]}' "$_tmp_agents" > "$AGENTS"
+    rm -f "$_tmp_agents"
+    printf '\n%s\n' "$BLOCK" >> "$AGENTS"
+    ok "AGENTS.md block refreshed (old neuron block stripped, current block written)"
+  else
+    skip "AGENTS.md already wired (re-run with --force to refresh the managed block)"
+  fi
 else
   printf '\n%s\n' "$BLOCK" >> "$AGENTS"
   ok "AGENTS.md wired"

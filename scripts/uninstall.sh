@@ -89,6 +89,34 @@ if [ "$PURGE" = 1 ]; then
     scripts/calendar_oauth_setup.py; do
     [ -f "$WS/$f" ] && rm "$WS/$f" && ok "removed $f" || skip "$f not found"
   done
+
+  # Skills: remove neuron-EXCLUSIVE skills always. The shared-name skill
+  # (memory-pinning) is a neuron SUPERSET that overwrote base's copy, so only
+  # remove it when --with-base is set (otherwise leave it — base still uses it,
+  # and base's uninstaller owns its removal). Same principle for the
+  # dinomem-open-notes hook below.
+  for _sk in project-notes retrieval-routing note-claim; do
+    [ -d "$WS/skills/$_sk" ] && rm -rf "$WS/skills/$_sk" && ok "removed skills/$_sk/" || skip "skills/$_sk/ not found"
+  done
+  if [ "$WITH_BASE" = 1 ]; then
+    [ -d "$WS/skills/memory-pinning" ] && rm -rf "$WS/skills/memory-pinning" && ok "removed skills/memory-pinning/ (shared with base, --with-base)" || skip "skills/memory-pinning/ not found"
+  else
+    [ -d "$WS/skills/memory-pinning" ] && skip "skills/memory-pinning/ preserved (shared with base; use --with-base to remove)"
+  fi
+
+  # dinomem-open-notes hook: neuron's SUPERSET overwrote base's. Only remove it
+  # when --with-base (base still relies on the hook otherwise). Disable before
+  # removing so OpenClaw drops the registration cleanly.
+  if [ "$WITH_BASE" = 1 ] && [ -d "$WS/hooks/dinomem-open-notes" ]; then
+    if command -v openclaw >/dev/null 2>&1 && openclaw status >/dev/null 2>&1; then
+      openclaw hooks disable dinomem-open-notes >/dev/null 2>&1 \
+        && ok "dinomem-open-notes hook disabled" \
+        || warn "could not disable dinomem-open-notes hook (remove manually if needed)"
+    fi
+    rm -rf "$WS/hooks/dinomem-open-notes" && ok "removed hooks/dinomem-open-notes/ (shared with base, --with-base)" || warn "could not remove hooks/dinomem-open-notes/"
+  elif [ -d "$WS/hooks/dinomem-open-notes" ]; then
+    skip "hooks/dinomem-open-notes/ preserved (shared with base; use --with-base to remove)"
+  fi
 fi
 
 # ── Purge data (optional, explicit) ───────────────────────────────────────────
