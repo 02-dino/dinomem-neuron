@@ -27,19 +27,19 @@ re-opens the clobber race).
 
 - **Before the first edit:**
   ```bash
-  bash $WS/scripts/claim_note.sh claim <note> live-session-<agent-id>
+  bash DINOMEM_WORKSPACE_PLACEHOLDER/scripts/claim_note.sh claim <note> live-session-<agent-id>
   ```
   Exit `3` = another job holds it fresh → **do not fight**; pick another note or
   tell the user. Exit `0` = you hold it atomically → proceed.
 
 - **Each later turn that resumes the SAME note:**
   ```bash
-  bash $WS/scripts/claim_note.sh refresh <note> live-session-<agent-id>
+  bash DINOMEM_WORKSPACE_PLACEHOLDER/scripts/claim_note.sh refresh <note> live-session-<agent-id>
   ```
 
 - **When done / paused / abandoning:**
   ```bash
-  bash $WS/scripts/claim_note.sh release <note>
+  bash DINOMEM_WORKSPACE_PLACEHOLDER/scripts/claim_note.sh release <note>
   ```
 
 ## Why it matters

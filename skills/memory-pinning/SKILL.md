@@ -82,7 +82,7 @@ a request trips the project gate.
 
 **Action:**
 ```bash
-python3 $WS/procedures/memory_dedup_check.py --kind pin|note --title "<candidate title>" --body "<candidate body>"
+python3 DINOMEM_WORKSPACE_PLACEHOLDER/procedures/memory_dedup_check.py --kind pin|note --title "<candidate title>" --body "<candidate body>"
 ```
 Read the JSON on stdout:
 - `match:true` → an existing file already covers this topic. **OPEN `result.file`
