@@ -4,6 +4,19 @@ All notable changes to dinomem-neuron are documented here.
 
 ---
 
+## 1.7.3 — 2026-07-13
+
+**Memory-extraction false "FAILED" during large/first-time backlog (misleading orchestrator status).** `extract_memory.py` processes archived sessions through an LLM in small batches; the orchestrator (`auto_session_reset.py`, shared with base) wraps it in a hard `subprocess.run(timeout=300)`. On a large backlog (fresh install with lots of pre-existing history, an outage that let archives pile up, or just a busy `/new`-heavy user), one 300s tick can't clear everything, so the subprocess gets killed mid-batch and every 15-min run logged `"Memory extraction: ⚠️ FAILED"` — even though it wasn't broken: `extract_memory.py` dedups via `.processed_archives.json` and advances the backlog a bit further on every tick (self-healing over time). That's a **misleading false alarm**, not a real failure.
+
+### Fixed
+- **`extract_memory.py` now writes a status file after every batch, not just at the end.** `logs/.extract_memory_status.json` records whether the run is still draining a backlog vs. actually failed (0 archives cleared), and is refreshed after each batch so it survives the orchestrator's SIGKILL-on-timeout — the exact scenario that produced the false alarm.
+- **`auto_session_reset.py` (shared with base) reads it and reports accurately:** `"⏳ IN PROGRESS (N archive(s) remaining, self-healing — not a real failure)"` instead of a blanket `"⚠️ FAILED"` when it's just backlog draining, reserving `FAILED` for when nothing was actually cleared.
+- Backward-compatible: if the status file is missing (older `extract_memory.py`, or the subprocess died before writing anything), it falls back to the old blanket `FAILED` wording — never silently hides a real failure.
+- Ported in lockstep with the same fix on base `dinomem` to keep `extract_memory.py` (the neuron superset over base's copy) at parity; verified `main()` is now byte-identical between the two repos aside from neuron's `NO_REASONING_MODEL` routing elsewhere in the file.
+- Repro'd end-to-end on both repos: seeded a fake 20-archive backlog, hard-killed the extraction subprocess mid-batch (`timeout --signal=KILL`), confirmed the status file stayed fresh (`remaining_backlog>0`, `backlog_draining`) and the orchestrator correctly read it as not-a-real-failure.
+
+---
+
 ## 1.7.2 — 2026-07-12
 
 **Installer robustness — hook liveness self-check + global-dir self-heal (fixes silent hook no-op).** `openclaw hooks enable dinomem-open-notes` only flips the config `enabled` flag; it does not confirm the gateway can actually *load* the hook. When the installer's `$WS` is not the gateway's scanned workspace, the hook copied into `$WS/hooks/` lands in an unscanned dir and **silently never fires at bootstrap** — the exact failure the open-notes hook exists to prevent — while the installer still claims success.
