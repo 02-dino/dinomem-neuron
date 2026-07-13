@@ -165,10 +165,14 @@ def get_openclaw_config():
 
 
 # Topic-index generation is a no-reasoning summarization task — run it on the
-# cheap tier, not the agent's default reasoning chain. Default: gemini-flash 2.5
-# 404s through `capability model run` (gemini-cli misroute); swap via env once fixed.
-NO_REASONING_MODEL = os.environ.get(
-    "DINOMEM_NO_REASONING_MODEL", "ninerouter/gc/gemini-2.5-flash"
+# cheap tier via the standard DINOMEM_CHEAP_MODEL tag (matches the rest of
+# dinomem); legacy DINOMEM_NO_REASONING_MODEL kept as back-compat fallback.
+# Unset = OpenClaw default (default-safe — no hardcoded gemini that 404s on
+# buyers without that model).
+NO_REASONING_MODEL = (
+    os.environ.get("DINOMEM_CHEAP_MODEL", "").strip()
+    or os.environ.get("DINOMEM_NO_REASONING_MODEL", "").strip()
+    or None
 )
 
 def call_llm_gateway(prompt, max_tokens=2000):
@@ -188,12 +192,14 @@ def call_llm_gateway(prompt, max_tokens=2000):
     openclaw_bin = openclaw_bin or "openclaw"
 
     try:
+        _cmd = [openclaw_bin, "capability", "model", "run",
+                "--prompt", prompt,
+                "--gateway",
+                "--json"]
+        if NO_REASONING_MODEL:
+            _cmd += ["--model", NO_REASONING_MODEL]
         result = subprocess.run(
-            [openclaw_bin, "capability", "model", "run",
-             "--prompt", prompt,
-             "--gateway",
-             "--json",
-             "--model", NO_REASONING_MODEL],
+            _cmd,
             capture_output=True,
             text=True,
             timeout=120

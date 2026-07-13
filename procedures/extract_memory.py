@@ -277,8 +277,14 @@ CHEAP_MODEL = os.environ.get("DINOMEM_CHEAP_MODEL", "").strip() or None
 # Thinking level passed to the gateway for reasoning=True calls.
 REASONING_THINKING = os.environ.get("DINOMEM_REASONING_THINKING", "high").strip() or "high"
 # neuron: explicit cheap model for no-reasoning extraction calls.
-# Defaults to gemini-2.5-flash via ninerouter. Override via env.
-NO_REASONING_MODEL = os.environ.get("DINOMEM_NO_REASONING_MODEL", "ninerouter/gc/gemini-2.5-flash").strip() or None
+# Standard tag is DINOMEM_CHEAP_MODEL (matches the rest of dinomem); the legacy
+# DINOMEM_NO_REASONING_MODEL is kept as a back-compat fallback. Unset = OpenClaw
+# default (default-safe — no hardcoded gemini that 404s on buyers without it).
+NO_REASONING_MODEL = (
+    os.environ.get("DINOMEM_CHEAP_MODEL", "").strip()
+    or os.environ.get("DINOMEM_NO_REASONING_MODEL", "").strip()
+    or None
+)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

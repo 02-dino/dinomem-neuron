@@ -601,20 +601,37 @@ upsert_cron() {
 if [ "$DO_CRON" = 1 ]; then
   hr "Cron jobs"
 
-  # memory_graph — daily at 3:00 UTC (L2)
+  # crond does not inherit the interactive shell, so model-routing env vars must
+  # be baked into the cron lines or they are silently ignored on scheduled runs.
+  # CHEAP_ENV  -> non-reasoning crons (topic_index, docs_ingest): route to the
+  #              cheap model when DINOMEM_CHEAP_MODEL is set; unset = default-safe.
+  # REASON_ENV -> reasoning crons (synthesis, contradiction_check): carry the
+  #              thinking level when DINOMEM_REASONING_THINKING is set.
+  CHEAP_ENV=""
+  if [ -n "${DINOMEM_CHEAP_MODEL:-}" ]; then
+    CHEAP_ENV="DINOMEM_CHEAP_MODEL=$DINOMEM_CHEAP_MODEL "
+    ok "cron cheap model: $DINOMEM_CHEAP_MODEL"
+  fi
+  REASON_ENV=""
+  if [ -n "${DINOMEM_REASONING_THINKING:-}" ]; then
+    REASON_ENV="DINOMEM_REASONING_THINKING=$DINOMEM_REASONING_THINKING "
+    ok "cron reasoning thinking: $DINOMEM_REASONING_THINKING"
+  fi
+
+  # memory_graph — daily at 3:00 UTC (L2, no LLM — pure graph linking)
   GRAPH_CRON="0 3 * * * cd $WS && python3 procedures/memory_graph.py >> logs/memory_graph.log 2>&1"
   upsert_cron "memory_graph.py" "dinomem-neuron: L2 graph linking" "$GRAPH_CRON" "memory_graph cron (daily 3:00 UTC)"
 
-  # memory_synthesis + contradiction_check — daily at 3:30 UTC (L3)
-  SYNTH_CRON="30 3 * * * cd $WS && python3 procedures/memory_synthesis.py >> logs/memory_synthesis.log 2>&1 && python3 procedures/contradiction_check.py >> logs/contradiction_check.log 2>&1"
+  # memory_synthesis + contradiction_check — daily at 3:30 UTC (L3, reasoning=True)
+  SYNTH_CRON="30 3 * * * cd $WS && ${REASON_ENV}python3 procedures/memory_synthesis.py >> logs/memory_synthesis.log 2>&1 && ${REASON_ENV}python3 procedures/contradiction_check.py >> logs/contradiction_check.log 2>&1"
   upsert_cron "memory_synthesis.py" "dinomem-neuron: L3 synthesis + contradiction check" "$SYNTH_CRON" "memory_synthesis + contradiction_check cron (daily 3:30 UTC)"
 
-  # memory_promote + generate_topic_index — weekly Sunday at 4:00 UTC (L4)
-  PROMOTE_CRON="0 4 * * 0 cd $WS && python3 procedures/memory_promote.py >> logs/memory_promote.log 2>&1 && python3 procedures/generate_topic_index.py >> logs/topic_index.log 2>&1"
+  # memory_promote (no LLM) + generate_topic_index (no-reasoning) — weekly Sun 4:00 UTC (L4)
+  PROMOTE_CRON="0 4 * * 0 cd $WS && python3 procedures/memory_promote.py >> logs/memory_promote.log 2>&1 && ${CHEAP_ENV}python3 procedures/generate_topic_index.py >> logs/topic_index.log 2>&1"
   upsert_cron "memory_promote.py" "dinomem-neuron: L4 promotion + topic index (weekly)" "$PROMOTE_CRON" "memory_promote + generate_topic_index cron (weekly Sunday 4:00 UTC)"
 
-  # docs_ingest — daily at 4:00 UTC (RAG long docs)
-  DOCS_CRON="0 4 * * * cd $WS && python3 procedures/docs_ingest.py >> logs/docs_ingest.log 2>&1"
+  # docs_ingest — daily at 4:00 UTC (RAG long docs, no-reasoning)
+  DOCS_CRON="0 4 * * * cd $WS && ${CHEAP_ENV}python3 procedures/docs_ingest.py >> logs/docs_ingest.log 2>&1"
   upsert_cron "docs_ingest.py" "dinomem-neuron: RAG docs re-ingest (daily)" "$DOCS_CRON" "docs_ingest cron (daily 4:00 UTC)"
   # session_ingest is triggered automatically by auto_session_reset.py (every 15 min)
   # No separate cron needed.
@@ -1027,12 +1044,19 @@ def upsert_cron_job(job, idfile, label, idsdir):
     except Exception as e:
         print(f"  \033[33m[warn]\033[0m {label} upsert failed: {e}")
 
+# Deleter is a near-zero-cognition janitor (run script, grep output, send one
+# line) -> pin it to the cheap/non-reasoning model when DINOMEM_CHEAP_MODEL is
+# set. Unset -> agent default (default-safe). Advancer/Improver are intentionally
+# LEFT on the capable default: they write+debug+validate real artifacts unattended
+# and forcing them cheap would degrade that work.
+_cheap = os.environ.get("DINOMEM_CHEAP_MODEL", "").strip()
 job = {
     "name": "Verified Note Deleter (Component 1)",
     "schedule": {"kind": "cron", "expr": "25,55 * * * *", "tz": "UTC", "staggerMs": 30000},
     "enabled": False,
     "payload": {
         "kind": "agentTurn",
+        **({"model": _cheap} if _cheap else {}),
         "message": "Verified Note Deleter (Component 1). Deterministic janitor: delete project/task notes that carry verified: true, so the workspace stays clean after Component 2 has improved+validated them. This is a THIN wrapper around a script that does all the real work (zero-LLM gate, claim-respect, snapshot, distill-to-regular-memory, non-blocking lock).\n\nStep 1: Run exactly this command: python3 $WS/scripts/resolve_done_notes.py\n\nStep 2: Read its output. The script self-gates: if no status:done note exists it exits immediately (no work). It deletes ONLY notes with verified: true that are NOT freshly claimed by another job; before deleting each it snapshots it and DISTILLS its knowledge into normal schema memory entries (which then age/freeze on merit via the usual retention review). There is no _pin_ promotion — durable pins are authored directly as _pin_ files, never produced by note retirement.\n\nStep 3: ANNOUNCE only if it actually deleted something (grep the output for 'deleted verified note'). If so, send ONE terse line to the owner via the message tool using the agent's default owner channel (platform-appropriate; do not hardcode a chat id): e.g. 'Retired N verified note(s): <names>.' If it deleted nothing (gate exit, lock busy, or no verified notes), stay SILENT — no message.\n\nDo nothing else. Do not edit notes, do not re-check done_when, do not stamp verified — that is Component 2's job. You are the janitor.",
         "timeoutSeconds": 120
     },
@@ -1219,7 +1243,7 @@ fi
 # Premium: neuron only. Without this, done task_bound + non-verified done notes
 # would never auto-retire on a buyer install.
 python3 - <<PYEOF
-import subprocess, json
+import subprocess, json, os
 
 def _cron_add_argv(job):
     """Build a flag-based `openclaw cron add` argv from a job dict.
@@ -1334,11 +1358,17 @@ def upsert_selfsched(job, label):
     except Exception as e:
         print(f"  \033[33m[warn]\033[0m {label} upsert failed: {e}")
 
+# Daily Note Review is verification + rubric-driven GC (run locally-checkable
+# done_when conditions, flip/delete on the result) — not deep reasoning. Pin it
+# to the cheap/non-reasoning model when DINOMEM_CHEAP_MODEL is set; unset -> agent
+# default (default-safe).
+_cheap = os.environ.get("DINOMEM_CHEAP_MODEL", "").strip()
 job = {
     "name": "Daily Note Review",
     "schedule": {"kind": "cron", "expr": "0 6 * * *", "tz": "UTC"},
     "payload": {
         "kind": "agentTurn",
+        **({"model": _cheap} if _cheap else {}),
         "message": "Scan all memory/_note_*.md files in $WS/memory/. Resolve each note (today = current UTC date). FIRST, for every note read claimed_by and claimed_at (UTC ISO8601): if claimed_by STARTS WITH 'live-session' AND claimed_at < 120 minutes ago, OR claimed_by is any other value AND claimed_at < 30 minutes ago, SKIP that note entirely this run (another job or a live human owns it). Stale or future-dated claims are ignored (proceed). Then: 1) SKIP any note with an expires: field until today > expires; delete a time_bound note only once today > its expires date (generic time-based GC; no external calendar service). 2) task_bound notes (have done_when:): verify the done_when condition against workspace state (file exists, feature shipped, grep, exit 0). If verified, flip status to done and delete the note (its knowledge is distilled into regular memory by the Verified Note Deleter pipeline; do NOT copy it to _pin_ — pins are authored directly, not produced by retirement). Else leave pending. 3) type:project notes: these are normally advanced/closed by the Project Advancer and improved+retired by the Project Improver + Verified Note Deleter, BUT a project can be finished out-of-band by a human-driven session and left status:in_progress, or parked at a safety-gated final step (git push / external action) the Advancer is forbidden to run — so it would otherwise orphan here. For any type:project note, verify its done_when the SAME way as task_bound (run the locally-checkable condition; e.g. for a git-push done_when run git -C <repo> rev-parse HEAD vs @{u}). If done_when verifies and/or all steps are [x], flip status to done and delete it (no _pin_ promotion). If still in_progress with unchecked non-gated steps remaining, leave it for the Advancer. Never delete a project whose done_when does not verify. 4) stale_after GC: if a note is still pending/in_progress AND done_when was never met AND today > stale_after (default date+30d, or date+7d for reminder/quick-todo notes), delete it as abandoned. 5) Legacy notes with no schema fields: infer the task from content, delete if clearly resolved, else leave. Report what resolved, what was GC'd, what remains, and what was skipped (including claim-skips).",
         "timeoutSeconds": 120
     },

@@ -233,18 +233,24 @@ def _get_openclaw_model():
             pass
     return None
 
-_NO_REASONING_MODEL = os.environ.get(
-    "DINOMEM_NO_REASONING_MODEL", "ninerouter/gc/gemini-2.5-flash"
+# Standard cheap-model tag is DINOMEM_CHEAP_MODEL (matches the rest of dinomem);
+# legacy DINOMEM_NO_REASONING_MODEL kept as back-compat fallback. Unset = OpenClaw
+# default (default-safe — no hardcoded gemini that 404s on buyers without it).
+_NO_REASONING_MODEL = (
+    os.environ.get("DINOMEM_CHEAP_MODEL", "").strip()
+    or os.environ.get("DINOMEM_NO_REASONING_MODEL", "").strip()
+    or None
 )
 
 def _call_llm(prompt: str, max_tokens: int = 1500, model: str = None) -> Tuple[bool, str]:
-    """Call LLM via OpenClaw gateway (cheap model by default)."""
+    """Call LLM via OpenClaw gateway (cheap model when set, else OpenClaw default)."""
     import shutil as _shutil
     _oc = _shutil.which("openclaw") or "/home/linuxbrew/.linuxbrew/bin/openclaw"
     _model = model or _NO_REASONING_MODEL
     _cmd = [_oc, "capability", "model", "run",
-            "--prompt", prompt, "--gateway", "--json",
-            "--model", _model]
+            "--prompt", prompt, "--gateway", "--json"]
+    if _model:
+        _cmd += ["--model", _model]
     try:
         result = subprocess.run(_cmd, capture_output=True, text=True, timeout=90)
         if result.returncode == 0:
