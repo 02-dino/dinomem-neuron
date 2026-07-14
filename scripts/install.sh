@@ -1465,11 +1465,6 @@ TOOLS_BODY=$(cat <<'DINOMEM_NEURON_TOOLS_BODY'
       - semantic_search_archived_sessions
       - recency_weighted_reranking
       - list_indexed_sessions
-    when_to_use: |
-      Deep recall over recent CONVERSATION transcripts (not memory notes, not
-      long-doc KB). Use when memory_search is thin/uncertain AND the relevant
-      session is <7 days old AND transcript-level detail is needed. See AGENTS.md
-      session_deep_recall for the WHEN/policy; this is the HOW/capability spec.
     scope: |
       Indexes only archived session .jsonl within the last 7 days (MAX_AGE_DAYS),
       ingested by procedures/session_ingest.py (cron via auto_session_reset.py,
