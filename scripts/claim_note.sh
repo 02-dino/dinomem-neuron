@@ -183,6 +183,10 @@ strip_empty_frontmatter() {
 do_release() {
   write_claim "" ""
   strip_empty_frontmatter
+  # Remove our own flock lockfile so a released note leaves no orphaned
+  # <note>.claimlock behind (an empty stray lock can make the next Daily Note
+  # Review re-report a phantom note). Best-effort; harmless if already gone.
+  rm -f "$lockfile" 2>/dev/null || true
   echo "claim_note: OK — released '$note'"; exit 0
 }
 

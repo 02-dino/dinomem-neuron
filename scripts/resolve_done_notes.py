@@ -212,6 +212,14 @@ def main() -> int:
             if os.environ.get("DINOMEM_DISTILL_DONE_NOTES", "1") != "0":
                 _run_distiller(f, base)
             os.remove(f)
+            # Clean up the sibling flock lockfile claim_note.sh leaves behind
+            # (<note>.claimlock). It's never removed by claim_note.sh itself, so
+            # deleting the note without this orphans an empty lock that can make
+            # the next Daily Note Review re-report a phantom "pending" note.
+            try:
+                os.remove(f + ".claimlock")
+            except OSError:
+                pass
             deleted += 1
             log(f"deleted verified note: {base} (snapshot: {snap})")
     finally:
