@@ -10,10 +10,11 @@
 # to retire. resolve_done_notes.py remains the authority on WHAT gets deleted; this
 # only answers "is there anything at all?".
 #
-# Portable: workspace from $OPENCLAW_WORKSPACE (falls back to analyst home).
+# Portable: workspace from $OPENCLAW_WORKSPACE (install.sh sets it per-installer;
+# generic fallback for any host).
 set -euo pipefail
 
-WS="${OPENCLAW_WORKSPACE:-/root/.openclaw/workspace-analyst}"
+WS="${OPENCLAW_WORKSPACE:-$HOME/.openclaw/workspace}"
 MEM="$WS/memory"
 [ -d "$MEM" ] || exit 1
 

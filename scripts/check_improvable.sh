@@ -12,10 +12,11 @@
 #   - is not FRESHLY claimed by another job (live-session <120m, other <30m). Stale = ok.
 #     claimed_at is ALWAYS UTC ISO8601. Windows MUST match Advancer + C1 + C2 exactly.
 #
-# Portable: workspace from $OPENCLAW_WORKSPACE (falls back to analyst home).
+# Portable: workspace from $OPENCLAW_WORKSPACE (install.sh sets it per-installer;
+# generic fallback for any host).
 set -euo pipefail
 
-WS="${OPENCLAW_WORKSPACE:-/root/.openclaw/workspace-analyst}"
+WS="${OPENCLAW_WORKSPACE:-$HOME/.openclaw/workspace}"
 MEM="$WS/memory"
 [ -d "$MEM" ] || exit 1
 

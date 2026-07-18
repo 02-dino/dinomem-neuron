@@ -25,7 +25,7 @@
 # alerts; per-lane failures are logged, not fatal).
 set -uo pipefail
 
-WS="${OPENCLAW_WORKSPACE:-/root/.openclaw/workspace-analyst}"
+WS="${OPENCLAW_WORKSPACE:-$HOME/.openclaw/workspace}"
 SCRIPTS="$WS/scripts"
 
 # Job IDs (env-injected; install.sh substitutes real values). Empty => skip lane.

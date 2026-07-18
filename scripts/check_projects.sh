@@ -7,7 +7,7 @@
 # at `pending` and nothing moves it to in_progress on its own, so gating on
 # in_progress-only left brand-new project notes stalled forever (the
 # dinomem-open-notes hook already surfaces both statuses; this aligns the gate).
-WS="${OPENCLAW_WORKSPACE:-/root/.openclaw/workspace-analyst}"
+WS="${OPENCLAW_WORKSPACE:-$HOME/.openclaw/workspace}"
 
 for f in "$WS"/memory/_note_*.md; do
   [ -f "$f" ] || continue
