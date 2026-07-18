@@ -75,6 +75,12 @@ step list, `current_step`, claim fields, and `resume_state`. That format and its
 execution/turn-boundary rules live in the **`project-notes`** skill — read it when
 a request trips the project gate.
 
+**⚠️ A project note is born `status: in_progress`, NOT `pending`.** Do not copy the
+`pending | done` schema from the task_bound/time_bound section above — that's for
+todos/reminders only. Only two project statuses are valid: `in_progress` → `done`.
+A project born `pending` gets orphaned from the Project Advancer (the gate that
+wakes it keys on `in_progress`), so write `in_progress` from creation.
+
 ## The dedup gate (run BEFORE writing a new file)
 
 **When:** about to auto-write a NEW `memory/_pin_<slug>.md` or `memory/_note_<slug>.md`
