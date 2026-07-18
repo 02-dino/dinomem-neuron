@@ -1900,6 +1900,107 @@ PYEOF
   fi
 fi
 
+# ── Install note-claim-oncreate hook plugin (before_tool_call claim-on-write) ──
+# Companion to note-claim-refresh. That plugin REFRESHES an existing live-session
+# claim on any tool call; this one STAMPS the claim in the same turn a write/edit/
+# apply_patch first targets a memory/_note_*.md the session doesn't yet hold —
+# closing the last discipline-dependent sliver (a note first-edited mid-session
+# before the model runs claim_note.sh). before_tool_call, observe-only: it claims
+# as a side effect and NEVER blocks or rewrites the tool. Same persistent-extensions
+# install + openclaw.json wiring pattern as note-claim-refresh above.
+hr "Note-claim-oncreate hook plugin"
+PLUGIN_SRC="$SKILL_DIR/plugins/note-claim-oncreate"
+PLUGIN_DST="$OPENCLAW_DIR/extensions/note-claim-oncreate"
+if [ ! -d "$PLUGIN_SRC" ]; then
+  warn "plugin source $PLUGIN_SRC missing — skipping (claim-on-create stays manual)"
+else
+  mkdir -p "$PLUGIN_DST"
+  cp "$PLUGIN_SRC/openclaw.plugin.json" "$PLUGIN_SRC/package.json" "$PLUGIN_SRC/index.ts" "$PLUGIN_DST/"
+  ok "plugin files -> $PLUGIN_DST"
+  if [ ! -f "$OPENCLAW_JSON" ]; then
+    warn "openclaw.json not found — plugin copied but NOT wired. Add id 'note-claim-oncreate' to plugins.allow + its path to plugins.load.paths, then restart."
+  else
+    DINOMEM_DRY_RUN="$DRY_RUN" DINOMEM_OPENCLAW_JSON="$OPENCLAW_JSON" DINOMEM_PLUGIN_DST="$PLUGIN_DST" DINOMEM_WS="$WS" python3 - <<'PYEOF'
+import json, os
+
+path = os.environ["DINOMEM_OPENCLAW_JSON"]
+plugin_dst = os.environ["DINOMEM_PLUGIN_DST"]
+ws = os.environ["DINOMEM_WS"]
+PID = "note-claim-oncreate"
+with open(path) as f:
+    cfg = json.load(f)
+
+changed = []
+plugins = cfg.setdefault("plugins", {})
+
+# 1) allowlist (create if absent so the plugin is explicitly permitted)
+allow = plugins.get("allow")
+if not isinstance(allow, list):
+    allow = []
+    plugins["allow"] = allow
+if PID not in allow:
+    allow.append(PID)
+    changed.append(f"plugins.allow += {PID}")
+
+# 1b) bundledDiscovery — REQUIRED companion to plugins.allow on OpenClaw 2026.6.x+.
+#     Without it the new schema rejects the whole config and the gateway refuses
+#     to start. "compat" preserves legacy bundled provider/channel discovery.
+if plugins.get("bundledDiscovery") not in ("compat", "allowlist"):
+    plugins["bundledDiscovery"] = "compat"
+    changed.append('plugins.bundledDiscovery -> "compat"')
+
+# 2) load.paths -> abs plugin dir (dedup) + PRUNE stale workspace-relative paths.
+load = plugins.setdefault("load", {})
+paths = load.get("paths")
+if not isinstance(paths, list):
+    paths = []
+    load["paths"] = paths
+stale_paths = [p for p in paths
+               if isinstance(p, str)
+               and p.rstrip("/").endswith("/" + PID)
+               and p != plugin_dst]
+for sp in stale_paths:
+    paths.remove(sp)
+    changed.append(f"plugins.load.paths -= {sp} (stale)")
+if plugin_dst not in paths:
+    paths.append(plugin_dst)
+    changed.append(f"plugins.load.paths += {plugin_dst}")
+
+# 3) per-plugin config + enable -> plugins.entries.<PID>.config
+entries = plugins.setdefault("entries", {})
+if not isinstance(entries, dict):
+    entries = {}
+    plugins["entries"] = entries
+entry = entries.get(PID)
+if not isinstance(entry, dict):
+    entry = {}
+    entries[PID] = entry
+if entry.get("enabled") is not True:
+    entry["enabled"] = True
+    changed.append(f"plugins.entries.{PID}.enabled -> true")
+econf = entry.get("config")
+if not isinstance(econf, dict):
+    econf = {}
+    entry["config"] = econf
+if econf.get("workspaceDir") != ws:
+    econf["workspaceDir"] = ws
+    changed.append(f"plugins.entries.{PID}.config.workspaceDir -> {ws}")
+
+if changed and os.environ.get("DINOMEM_DRY_RUN") == "1":
+    for c in changed:
+        print(f"  \033[36m[plan]\033[0m wire openclaw.json: {c}")
+elif not changed:
+    print("  \033[33m[skip]\033[0m note-claim-oncreate already wired in openclaw.json")
+else:
+    with open(path, "w") as f:
+        json.dump(cfg, f, indent=2)
+    for c in changed:
+        print(f"  \033[32m[ok]\033[0m   wired: {c}")
+    print("  \033[33m[warn]\033[0m Restart OpenClaw to load the plugin: openclaw gateway restart")
+PYEOF
+  fi
+fi
+
 echo
 # ── (B) Post-install self-check summary ──────────────────────────────────────
 # One glanceable PASS/WARN table so an agent-installer immediately sees what

@@ -1,0 +1,20 @@
+{
+  "id": "note-claim-oncreate",
+  "name": "Note Claim On-Create",
+  "description": "before_tool_call hook that stamps a live-session claim on a memory/_note_*.md the instant a write/edit/apply_patch targets it — closing the last discipline-dependent sliver (a note first-edited mid-session before the model runs claim_note.sh). Observe-only: never blocks or rewrites the tool.",
+  "version": "1.0.0",
+  "kind": "hook",
+  "activation": {
+    "onStartup": true
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "workspaceDir": {
+        "type": "string",
+        "description": "Absolute path to the agent workspace whose memory/_note_*.md this plugin protects. If omitted, resolved dynamically from the target note path, OPENCLAW_WORKSPACE, the $HOME/.openclaw/workspace-<agentId> convention, or ctx."
+      }
+    }
+  }
+}
