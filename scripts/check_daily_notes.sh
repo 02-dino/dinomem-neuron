@@ -1,50 +1,35 @@
 #!/usr/bin/env bash
-# check_daily_notes.sh — pre-check before Daily Note Review LLM call
-# Exits 0 if there are memory notes worth reviewing (LLM should run)
-# Exits 1 if nothing new to review (skip LLM)
+# check_daily_notes.sh — zero-LLM pre-check for the "Daily Note Review" cron.
+# Exits 0 if there are memory notes worth reviewing (LLM should run).
+# Exits 1 if nothing to review (skip LLM, zero cost).
 #
-# Worth reviewing = any memory/*.md file modified since yesterday's review
-# window (06:00 UTC previous day → now). Also triggers if any _note_ files
-# exist with in_progress/pending status (active work in progress).
+# SHARED SUPERSET: identical file in dinomem (base) and dinomem-neuron.
+#
+# Daily Note Review is the general note janitor: it verifies done_when, retires
+# resolved notes, and GC's stale/abandoned ones. Its work is driven by notes
+# existing at all — a note's done_when can flip via external state WITHOUT the
+# file changing, and stale_after GC is purely time-based. So the ONLY safe
+# "nothing to do" condition is: there are literally no _note_ files to janitor.
+#
+# We therefore gate on _note_ existence (broad, never misses time-based GC). The
+# extra checks below are kept only as fast-path early exits for the common cases;
+# the final catch-all is the authoritative gate.
 #
 # Cost: pure filesystem scan, zero LLM, zero network.
 
 set -uo pipefail
 
-WS="${OPENCLAW_WORKSPACE:-/root/.openclaw/workspace-analyst}"
+WS="${OPENCLAW_WORKSPACE:-$HOME/.openclaw/workspace}"
 MEMORY_DIR="$WS/memory"
 
-# Gate 1: Check for any _note_ files with active status (same as check_projects.sh logic)
-if [ -d "$MEMORY_DIR" ]; then
-  for f in "$MEMORY_DIR"/_note_*.md; do
-    [ -f "$f" ] || continue
-    fm="$(awk 'NF==0{exit} /^[[:space:]]*#/{next} {print}' "$f")"
-    printf '%s\n' "$fm" | grep -qE "^type: project" || continue
-    printf '%s\n' "$fm" | grep -qE "^status: (in_progress|pending)" && exit 0
-  done
-fi
+[ -d "$MEMORY_DIR" ] || exit 1
 
-# Gate 2: Check for memory files modified in the last 24 hours
-# The Daily Note Review runs at 06:00 UTC — review if anything changed since yesterday
-YESTERDAY_EPOCH=$(date -d "24 hours ago" +%s 2>/dev/null || date -v-24H +%s 2>/dev/null)
-if [ -n "$YESTERDAY_EPOCH" ] && [ -d "$MEMORY_DIR" ]; then
-  found_new=false
-  for f in "$MEMORY_DIR"/*.md; do
-    [ -f "$f" ] || continue
-    # Skip _note_ files (already handled above) and MEMORY.md (index file)
-    basename_f="$(basename "$f")"
-    [ "$basename_f" = "MEMORY.md" ] && continue
-    # Check modification time
-    mtime=$(stat -c %Y "$f" 2>/dev/null || stat -f %m "$f" 2>/dev/null)
-    if [ -n "$mtime" ] && [ "$mtime" -ge "$YESTERDAY_EPOCH" ]; then
-      found_new=true
-      break
-    fi
-  done
-  if [ "$found_new" = true ]; then
-    exit 0
-  fi
-fi
+# AUTHORITATIVE GATE: any _note_ file exists → there is something to janitor
+# (verify done_when / stale_after GC / retire). This alone is sufficient and
+# never misses a time-based retirement. Fast path: exit as soon as one is found.
+for f in "$MEMORY_DIR"/_note_*.md; do
+  [ -f "$f" ] && exit 0
+done
 
-# Nothing worth reviewing
+# No _note_ files at all → nothing for the janitor to do.
 exit 1

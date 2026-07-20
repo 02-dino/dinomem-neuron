@@ -21,8 +21,18 @@
 #   3. Add a Lane block below (3 lines: if/check/trigger)
 #   4. Disable the worker cron's own schedule
 #
-# Built-in lanes: Advancer / Improver / Deleter (project-note trio)
-# Optional lanes: Daily Note Review (GATE_DAILY_NOTE_REVIEW_ID)
+# SUPERSET FILE: this same cron_gate.sh ships in BOTH dinomem (base) and
+# dinomem-neuron. Every lane is env-guarded — if a lane's GATE_*_ID env var is
+# empty, that lane is skipped silently. So a base-only install (which only sets
+# the note_review + pending_reminder ids) runs 2 lanes; a neuron install (which
+# also sets the project-trio ids) runs all 5 — from ONE gate cron, no duplicates.
+#
+# Lanes (all optional, enabled by their env var):
+#   GATE_ADVANCER_ID           -> Project Advancer            [neuron]
+#   GATE_IMPROVER_ID           -> Project Improver            [neuron]
+#   GATE_DELETER_ID            -> Verified Note Deleter        [neuron]
+#   GATE_DAILY_NOTE_REVIEW_ID  -> Daily Note Review            [base + neuron]
+#   GATE_PENDING_REMINDER_ID   -> Pending Note Reminder        [base + neuron]
 #
 # Portable: workspace from $OPENCLAW_WORKSPACE; job IDs from env (install.sh fills
 # them). If a job-id env var is empty, that lane is skipped silently.
@@ -42,6 +52,7 @@ IMPROVER_ID="${GATE_IMPROVER_ID:-}"
 DELETER_ID="${GATE_DELETER_ID:-}"
 # Optional lanes — set these env vars to enable:
 DAILY_NOTE_REVIEW_ID="${GATE_DAILY_NOTE_REVIEW_ID:-}"
+PENDING_REMINDER_ID="${GATE_PENDING_REMINDER_ID:-}"
 
 # Locate the openclaw CLI (cron command jobs run with the Gateway's PATH, but be safe).
 OPENCLAW_BIN="${OPENCLAW_BIN:-$(command -v openclaw || true)}"
@@ -84,11 +95,20 @@ if [ -n "$DELETER_ID" ] && [ -f "$SCRIPTS/check_deletable.sh" ]; then
   fi
 fi
 
-# Lane 4 — Daily Note Review (optional): run when memory/ has new/active notes.
+# Lane 4 — Daily Note Review (optional): run when memory/ has notes to janitor.
 # Enable by setting GATE_DAILY_NOTE_REVIEW_ID in the cron job's env.
 if [ -n "$DAILY_NOTE_REVIEW_ID" ] && [ -f "$SCRIPTS/check_daily_notes.sh" ]; then
   if bash "$SCRIPTS/check_daily_notes.sh"; then
     trigger "daily-note-review" "$DAILY_NOTE_REVIEW_ID"
+  fi
+fi
+
+# Lane 5 — Pending Note Reminder (optional): run when a task_bound note is past
+# its remind date. check_pending_notes.py exits 0 (JSON on stdout) when there is
+# work, 1 when nothing qualifies. Enable via GATE_PENDING_REMINDER_ID.
+if [ -n "$PENDING_REMINDER_ID" ] && [ -f "$SCRIPTS/check_pending_notes.py" ]; then
+  if python3 "$SCRIPTS/check_pending_notes.py" >/dev/null 2>&1; then
+    trigger "pending-reminder" "$PENDING_REMINDER_ID"
   fi
 fi
 

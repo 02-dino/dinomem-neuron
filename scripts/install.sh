@@ -735,7 +735,7 @@ def upsert_cron_job(job, idfile, label, idsdir):
             subprocess.run(['openclaw', 'cron', 'edit', existing_id, '--disable', '--message', msg],
                            capture_output=True, text=True, timeout=15)
             jid = existing_id
-            print(f"  \033[32m[ok]\033[0m   {label} OpenClaw cron updated + disabled (driven by Project Cron Gate)")
+            print(f"  \033[32m[ok]\033[0m   {label} OpenClaw cron updated + disabled (driven by Note Cron Gate)")
         else:
             ar = subprocess.run(_cron_add_argv(job),
                                 capture_output=True, text=True, timeout=15)
@@ -755,7 +755,7 @@ def upsert_cron_job(job, idfile, label, idsdir):
                 print(f"  \033[33m[warn]\033[0m   Add it manually via the OpenClaw cron tool, name='{name}'. Install continues.")
                 return
             jid = jid or vid
-            print(f"  \033[32m[ok]\033[0m   {label} OpenClaw cron registered (disabled; driven by Project Cron Gate) \u2713 verified")
+            print(f"  \033[32m[ok]\033[0m   {label} OpenClaw cron registered (disabled; driven by Note Cron Gate) \u2713 verified")
         os.makedirs(idsdir, exist_ok=True)
         open(idsdir + '/' + idfile, 'w').write(jid)
     except Exception as e:
@@ -879,7 +879,7 @@ def upsert_cron_job(job, idfile, label, idsdir):
             subprocess.run(['openclaw', 'cron', 'edit', existing_id, '--disable', '--message', msg],
                            capture_output=True, text=True, timeout=15)
             jid = existing_id
-            print(f"  \033[32m[ok]\033[0m   {label} OpenClaw cron updated + disabled (driven by Project Cron Gate)")
+            print(f"  \033[32m[ok]\033[0m   {label} OpenClaw cron updated + disabled (driven by Note Cron Gate)")
         else:
             ar = subprocess.run(_cron_add_argv(job),
                                 capture_output=True, text=True, timeout=15)
@@ -899,7 +899,7 @@ def upsert_cron_job(job, idfile, label, idsdir):
                 print(f"  \033[33m[warn]\033[0m   Add it manually via the OpenClaw cron tool, name='{name}'. Install continues.")
                 return
             jid = jid or vid
-            print(f"  \033[32m[ok]\033[0m   {label} OpenClaw cron registered (disabled; driven by Project Cron Gate) \u2713 verified")
+            print(f"  \033[32m[ok]\033[0m   {label} OpenClaw cron registered (disabled; driven by Note Cron Gate) \u2713 verified")
         os.makedirs(idsdir, exist_ok=True)
         open(idsdir + '/' + idfile, 'w').write(jid)
     except Exception as e:
@@ -1018,7 +1018,7 @@ def upsert_cron_job(job, idfile, label, idsdir):
             subprocess.run(['openclaw', 'cron', 'edit', existing_id, '--disable', '--message', msg],
                            capture_output=True, text=True, timeout=15)
             jid = existing_id
-            print(f"  \033[32m[ok]\033[0m   {label} OpenClaw cron updated + disabled (driven by Project Cron Gate)")
+            print(f"  \033[32m[ok]\033[0m   {label} OpenClaw cron updated + disabled (driven by Note Cron Gate)")
         else:
             ar = subprocess.run(_cron_add_argv(job),
                                 capture_output=True, text=True, timeout=15)
@@ -1038,7 +1038,7 @@ def upsert_cron_job(job, idfile, label, idsdir):
                 print(f"  \033[33m[warn]\033[0m   Add it manually via the OpenClaw cron tool, name='{name}'. Install continues.")
                 return
             jid = jid or vid
-            print(f"  \033[32m[ok]\033[0m   {label} OpenClaw cron registered (disabled; driven by Project Cron Gate) \u2713 verified")
+            print(f"  \033[32m[ok]\033[0m   {label} OpenClaw cron registered (disabled; driven by Note Cron Gate) \u2713 verified")
         os.makedirs(idsdir, exist_ok=True)
         open(idsdir + '/' + idfile, 'w').write(jid)
     except Exception as e:
@@ -1066,32 +1066,37 @@ job = {
 upsert_cron_job(job, "deleter", "verified_note_deleter", "$WS/.cron_ids")
 PYEOF
 
-# ── project_cron_gate — ZERO-LLM dispatcher (command cron) ────────────────────
-# The three jobs above (Advancer/Improver/Deleter) are registered DISABLED so they
-# never self-fire. This single command-kind cron runs every 15 min in the Gateway
-# process at $0 LLM, runs each cheap check_*.sh, and force-runs (openclaw cron run)
-# only the jobs whose check reports real work. That is the whole point of the
-# redesign: the 15-min heartbeat costs no LLM unless there is an actual project
-# note to advance/improve/retire.
+# ── Note Cron Gate — ZERO-LLM dispatcher (command cron) ───────────────────────
+# CANONICAL SINGLE GATE. Named "Note Cron Gate" in BOTH base and neuron. base's
+# installer may have already created it (driving the note_review + pending_reminder
+# lanes); if so we MERGE our project-trio + Daily lanes into that SAME gate's env
+# rather than creating a second one. Never two gates -> never double-dispatch.
+#
+# The trio jobs (Advancer/Improver/Deleter) + Daily Note Review are registered
+# DISABLED so they never self-fire. This one command-kind cron runs every 15 min
+# in the Gateway process at $0 LLM, runs each cheap check_*.sh, and force-runs
+# (openclaw cron run) only the jobs whose check reports real work.
 #
 # Command crons need the Gateway to allow command-kind jobs (operator.admin). If a
-# buyer's gateway refuses them, we FALL BACK by re-enabling the three agentTurn
-# jobs on their own schedules (the pre-redesign behavior) so nothing breaks — and
-# we print a LOUD warning, because that fallback path costs LLM on every idle tick.
-GATE_CHECK=$(python3 -c "
-import subprocess, json, sys
+# buyer's gateway refuses them, we FALL BACK by re-enabling the agentTurn jobs on
+# their own schedules (pre-redesign behavior) so nothing breaks — with a LOUD
+# warning, because that fallback costs LLM on every idle tick.
+#
+# LEGACY CLEANUP: older neuron installs created "Project Cron Gate". If that job
+# still exists we REMOVE it here so it can't keep firing alongside the new gate.
+LEGACY_GATE_ID=$(python3 -c "
+import subprocess, json
 try:
-    r = subprocess.run(['openclaw', 'cron', 'list', '--json'], capture_output=True, text=True, timeout=10)
+    r = subprocess.run(['openclaw','cron','list','--json'], capture_output=True, text=True, timeout=10)
     jobs = json.loads(r.stdout) if r.returncode == 0 else []
-    exists = any('project cron gate' in j.get('name','').lower() for j in (jobs if isinstance(jobs, list) else jobs.get('jobs', {}).get('jobs', [])))
-    print('exists' if exists else 'missing')
-except: print('skip')
+    jl = jobs if isinstance(jobs, list) else jobs.get('jobs', {}).get('jobs', [])
+    print(next((j.get('id','') for j in jl if j.get('name','').strip().lower()=='project cron gate'), ''))
+except: print('')
 " 2>/dev/null)
-if [ "$GATE_CHECK" = "exists" ]; then
-  skip "project_cron_gate OpenClaw cron (exists)"
-elif [ "$GATE_CHECK" = "skip" ]; then
-  warn "Could not check OpenClaw cron — add Project Cron Gate manually via OpenClaw"
-else
+if [ -n "$LEGACY_GATE_ID" ]; then
+  openclaw cron remove "$LEGACY_GATE_ID" >/dev/null 2>&1 && ok "removed legacy 'Project Cron Gate' (replaced by canonical 'Note Cron Gate')"
+fi
+if true; then
   python3 - <<PYEOF
 import subprocess, json, os
 
@@ -1161,6 +1166,26 @@ def readid(name):
 adv = readid("advancer"); imp = readid("improver"); dele = readid("deleter")
 dnr = readid("daily_note_review")  # optional lane; '' if not yet registered
 
+GATE_NAME = "Note Cron Gate"
+def _find_cron(name):
+    try:
+        lr = subprocess.run(['openclaw', 'cron', 'list', '--json'], capture_output=True, text=True, timeout=10)
+        if lr.returncode != 0:
+            return ''
+        data = json.loads(lr.stdout)
+        jl = data if isinstance(data, list) else data.get('jobs', {}).get('jobs', data.get('jobs', []))
+        return next((j.get('id','') for j in (jl or []) if j.get('name','').strip().lower()==name.strip().lower()), '')
+    except Exception:
+        return ''
+def _gate_env(gate_id):
+    try:
+        g = subprocess.run(['openclaw', 'cron', 'get', gate_id, '--json'], capture_output=True, text=True, timeout=15)
+        if g.returncode == 0:
+            return (json.loads(g.stdout).get('payload', {}) or {}).get('env', {}) or {}
+    except Exception:
+        pass
+    return {}
+
 # Fallback helper: re-enable the three agentTurn jobs on their own schedules so
 # behavior is preserved even without the zero-LLM gate.
 def reenable(label, jid):
@@ -1179,26 +1204,38 @@ def fallback(reason):
     print("  \033[33m[WARN]\033[0m ==================================================================")
     reenable("advancer", adv); reenable("improver", imp); reenable("deleter", dele)
 
-if not (adv and imp and dele):
+# Our lanes to add/merge. Trio + Daily; base already owns pending_reminder (and,
+# if base ran first, note_review too) inside the SAME gate's env — we never strip
+# those, only add ours.
+our_lanes = {}
+if adv:  our_lanes["GATE_ADVANCER_ID"] = adv
+if imp:  our_lanes["GATE_IMPROVER_ID"] = imp
+if dele: our_lanes["GATE_DELETER_ID"] = dele
+if dnr:  our_lanes["GATE_DAILY_NOTE_REVIEW_ID"] = dnr
+
+existing_gate = _find_cron(GATE_NAME)
+if existing_gate:
+    # Base (or a prior neuron run) already created the canonical gate. MERGE our
+    # lanes into its env — preserving base's note_review + pending_reminder ids.
+    env = _gate_env(existing_gate); env["OPENCLAW_WORKSPACE"] = env.get("OPENCLAW_WORKSPACE", WS); env.update(our_lanes)
+    args = ['openclaw', 'cron', 'edit', existing_gate]
+    for k, v in env.items():
+        args += ['--command-env', f'{k}={v}']
+    subprocess.run(args, capture_output=True, text=True, timeout=15)
+    subprocess.run(['openclaw', 'cron', 'enable', existing_gate], capture_output=True, text=True, timeout=15)
+    print("  \033[32m[ok]\033[0m   Note Cron Gate found — merged Advancer/Improver/Deleter + Daily lanes into its env (single gate, zero double-dispatch)")
+elif not (adv and imp and dele):
     fallback("one or more LLM job ids were not captured (cron add may have failed above).")
 else:
     gate = {
-        "name": "Project Cron Gate",
-        "description": "Zero-LLM dispatcher: checks project-note gates every 15min and force-runs Advancer/Improver/Deleter only when work exists",
+        "name": GATE_NAME,
+        "description": "Zero-LLM dispatcher: runs cheap note/project checks every 15min and force-runs a worker only when its check reports work.",
         "schedule": {"kind": "cron", "expr": "*/15 * * * *", "tz": "UTC"},
         "payload": {
             "kind": "command",
             "argv": ["sh", "-lc", "bash " + WS + "/scripts/cron_gate.sh"],
             "cwd": WS,
-            "env": {
-                "OPENCLAW_WORKSPACE": WS,
-                "GATE_ADVANCER_ID": adv,
-                "GATE_IMPROVER_ID": imp,
-                "GATE_DELETER_ID": dele,
-                # Daily Note Review lane — auto-wired so it ships gated out of the
-                # box (zero manual steps). Empty string => lane skipped safely.
-                **({"GATE_DAILY_NOTE_REVIEW_ID": dnr} if dnr else {}),
-            },
+            "env": {"OPENCLAW_WORKSPACE": WS, **our_lanes},
         },
         "delivery": {"mode": "none"},
     }
@@ -1229,7 +1266,7 @@ else:
             except Exception:
                 kind_ok = False
         if kind_ok:
-            print("  \033[32m[ok]\033[0m   project_cron_gate OpenClaw command-cron registered (*/15, zero-LLM) — drives Advancer/Improver/Deleter")
+            print("  \033[32m[ok]\033[0m   Note Cron Gate registered (*/15 command cron, zero-LLM) — drives Advancer/Improver/Deleter + Daily Note Review")
         else:
             # Gateway downgraded/refused a real command job — remove the bad gate and fall back.
             if gid:
