@@ -1159,6 +1159,7 @@ def readid(name):
     except Exception:
         return ""
 adv = readid("advancer"); imp = readid("improver"); dele = readid("deleter")
+dnr = readid("daily_note_review")  # optional lane; '' if not yet registered
 
 # Fallback helper: re-enable the three agentTurn jobs on their own schedules so
 # behavior is preserved even without the zero-LLM gate.
@@ -1194,6 +1195,9 @@ else:
                 "GATE_ADVANCER_ID": adv,
                 "GATE_IMPROVER_ID": imp,
                 "GATE_DELETER_ID": dele,
+                # Daily Note Review lane — auto-wired so it ships gated out of the
+                # box (zero manual steps). Empty string => lane skipped safely.
+                **({"GATE_DAILY_NOTE_REVIEW_ID": dnr} if dnr else {}),
             },
         },
         "delivery": {"mode": "none"},
@@ -1317,11 +1321,15 @@ def _cron_verify(name):
     return ''
 
 
-def upsert_selfsched(job, label):
-    """Upgrade-safe register for a SELF-scheduled agentTurn cron (no gate driving it).
-    If a job with job['name'] exists, refresh its prompt in place (--message) and keep
-    it ENABLED on its own schedule; else create it. Never duplicates, never freezes an
-    old prompt. (Contrast with gate-driven jobs, which get --disable.)"""
+def upsert_gated(job, idfile, label, idsdir, gate_env_key):
+    """Register a GATE-DRIVEN agentTurn cron: created DISABLED (never self-fires),
+    its id written to .cron_ids/<idfile>, then the already-created Project Cron Gate
+    cron gets this id injected into its command-env under <gate_env_key> so the gate
+    dispatches it. This makes the lane work fully automatically at install — no
+    manual env-var editing, no script edits. Upgrade-safe: if the job exists, refresh
+    its prompt AND force it disabled (in case an older install left it self-scheduled).
+    If the gate itself is missing (command-crons refused -> fallback path), we
+    RE-ENABLE this job on its own schedule so behavior is preserved."""
     name = job['name']
     existing_id = ''
     try:
@@ -1334,29 +1342,79 @@ def upsert_selfsched(job, label):
                     existing_id = j.get('id',''); break
     except Exception:
         existing_id = ''
+    jid = ''
     try:
         if existing_id:
+            jid = existing_id
             msg = job.get('payload', {}).get('message', '')
-            args = ['openclaw', 'cron', 'edit', existing_id, '--message', msg, '--enable']
+            args = ['openclaw', 'cron', 'edit', existing_id, '--message', msg]
             sched = job.get('schedule', {})
             if sched.get('kind') == 'cron' and sched.get('expr'):
                 args += ['--cron', sched['expr']]
             subprocess.run(args, capture_output=True, text=True, timeout=15)
-            print(f"  \033[32m[ok]\033[0m   {label} OpenClaw cron updated (prompt refreshed, stays enabled)")
+            print(f"  \033[32m[ok]\033[0m   {label} OpenClaw cron updated (prompt refreshed)")
         else:
-            ar = subprocess.run(_cron_add_argv(job),
-                                capture_output=True, text=True, timeout=15)
+            j2 = dict(job); j2['enabled'] = False  # create DISABLED
+            ar = subprocess.run(_cron_add_argv(j2), capture_output=True, text=True, timeout=15)
             if ar.returncode != 0:
                 print(f"  \033[33m[warn]\033[0m Could not register {label} cron: {ar.stderr[:120]}")
                 print(f"  \033[33m[warn]\033[0m   Add it manually via the OpenClaw cron tool, name='{name}'. Install continues.")
                 return
-            # (A) READ-BACK: confirm the gateway actually stored it.
-            if not _cron_verify(name):
-                print(f"  \033[31m[FAIL]\033[0m  {label} cron did NOT persist (read-back by name found nothing). Add it manually via the OpenClaw cron tool, name='{name}'. Install continues.")
+            try:
+                jid = json.loads(ar.stdout).get('id','')
+            except Exception:
+                jid = _cron_verify(name)
+            if not jid:
+                print(f"  \033[31m[FAIL]\033[0m  {label} cron did NOT persist (read-back by name found nothing). Add it manually. Install continues.")
                 return
             print(f"  \033[32m[ok]\033[0m   {label} OpenClaw cron registered \u2713 verified")
     except Exception as e:
         print(f"  \033[33m[warn]\033[0m {label} upsert failed: {e}")
+        return
+    if not jid:
+        return
+    # Persist the id for future upgrade runs.
+    try:
+        os.makedirs(idsdir, exist_ok=True)
+        open(idsdir + '/' + idfile, 'w').write(jid)
+    except Exception:
+        pass
+    # Locate the Project Cron Gate. If present (zero-LLM path succeeded), wire this
+    # lane's id into its env AND force this worker disabled. If ABSENT (fallback),
+    # re-enable this worker on its own schedule so it still runs (behavior-preserving).
+    gate_id = ''
+    try:
+        lr = subprocess.run(['openclaw', 'cron', 'list', '--json'], capture_output=True, text=True, timeout=10)
+        if lr.returncode == 0:
+            data = json.loads(lr.stdout)
+            joblist = data if isinstance(data, list) else data.get('jobs', {}).get('jobs', data.get('jobs', []))
+            for j in (joblist or []):
+                if j.get('name','').strip().lower() == 'project cron gate':
+                    gate_id = j.get('id',''); break
+    except Exception:
+        gate_id = ''
+    if gate_id:
+        # Force this worker DISABLED (gate drives it), then inject its id into the
+        # gate's existing env. --command-env is repeatable and REPLACES the env set,
+        # so we must re-send every existing key plus the new one.
+        subprocess.run(['openclaw', 'cron', 'edit', jid, '--disable'], capture_output=True, text=True, timeout=15)
+        existing_env = {}
+        try:
+            g = subprocess.run(['openclaw', 'cron', 'get', gate_id, '--json'], capture_output=True, text=True, timeout=15)
+            if g.returncode == 0:
+                existing_env = (json.loads(g.stdout).get('payload', {}) or {}).get('env', {}) or {}
+        except Exception:
+            existing_env = {}
+        existing_env[gate_env_key] = jid
+        envargs = ['openclaw', 'cron', 'edit', gate_id]
+        for k, v in existing_env.items():
+            envargs += ['--command-env', f'{k}={v}']
+        subprocess.run(envargs, capture_output=True, text=True, timeout=15)
+        print(f"  \033[32m[ok]\033[0m   {label} wired into Project Cron Gate ({gate_env_key}) — gate-driven, zero idle LLM")
+    else:
+        # No gate (command-crons refused). Re-enable on own schedule (fallback).
+        subprocess.run(['openclaw', 'cron', 'enable', jid], capture_output=True, text=True, timeout=15)
+        print(f"  \033[33m[warn]\033[0m {label}: no Project Cron Gate found — running on its own 06:00 schedule (costs 1 LLM/day). Enable command-crons + re-run for zero-cost gating.")
 
 # Daily Note Review is verification + rubric-driven GC (run locally-checkable
 # done_when conditions, flip/delete on the result) — not deep reasoning. Pin it
@@ -1375,7 +1433,7 @@ job = {
     "sessionTarget": "isolated",
     "delivery": {"mode": "none"}
 }
-upsert_selfsched(job, "daily_note_review")
+upsert_gated(job, "daily_note_review", "daily_note_review", "$WS/.cron_ids", "GATE_DAILY_NOTE_REVIEW_ID")
 PYEOF
 
 # ── Wire AGENTS.md ───────────────────────────────────────────────────────────
