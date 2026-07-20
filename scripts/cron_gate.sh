@@ -1,20 +1,28 @@
 #!/usr/bin/env bash
-# cron_gate.sh — zero-LLM dispatcher for the project-note cron trio.
+# cron_gate.sh — zero-LLM dispatcher (extensible gate pattern).
 #
-# WHY: Project Advancer / Improver / Verified-Note-Deleter are agentTurn crons.
-# An agentTurn fire spins up a full LLM session BEFORE its own "Step 0" gate
-# script runs — so the old design paid for an LLM turn every schedule tick
-# (~96 + 48 + 48 per day) just to run a bash check that exits 1 ~95% of the time.
+# PATTERN: Gate layer (this script) + Worker layer (disabled agentTurn crons).
 #
-# This script is registered as a COMMAND cron (payload.kind = shell), which runs
-# in the Gateway process with ZERO LLM cost. It runs each cheap check script and
-# ONLY when a check reports work (exit 0) does it `openclaw cron run <jobid>` to
-# force-enqueue that job's real LLM turn. The three LLM jobs have their own
-# schedules DISABLED so they never self-fire; they only ever run when triggered
-# here. `openclaw cron run` executes disabled jobs (verified 2026-07-10).
+# WHY: An agentTurn cron spins up a full LLM session BEFORE any internal check
+# can run — so a naive design pays for a model call every tick just to decide
+# "nothing to do." This script runs as a COMMAND cron (payload.kind = command)
+# inside the Gateway process: pure bash, zero LLM cost. It runs cheap check
+# scripts (file scans, exit 0/1). Only when a check reports work does it call
+# `openclaw cron run <jobid>` to dispatch the real LLM worker.
 #
-# Net effect: idle ticks cost $0 LLM; the LLM only spins up when there is
-# genuinely a project note to advance / improve / retire.
+# Worker crons have their own schedules DISABLED — they only ever fire when
+# triggered here. `openclaw cron run` executes disabled jobs.
+#
+# Net effect: idle ticks cost $0. LLM wakes only when there is real work.
+#
+# EXTENDING: Add a new lane by:
+#   1. Write a check script (exits 0 = work, 1 = nothing)
+#   2. Add a new env var for the worker job ID (install.sh fills it)
+#   3. Add a Lane block below (3 lines: if/check/trigger)
+#   4. Disable the worker cron's own schedule
+#
+# Built-in lanes: Advancer / Improver / Deleter (project-note trio)
+# Optional lanes: Daily Note Review (GATE_DAILY_NOTE_REVIEW_ID)
 #
 # Portable: workspace from $OPENCLAW_WORKSPACE; job IDs from env (install.sh fills
 # them). If a job-id env var is empty, that lane is skipped silently.
@@ -32,6 +40,8 @@ SCRIPTS="$WS/scripts"
 ADVANCER_ID="${GATE_ADVANCER_ID:-}"
 IMPROVER_ID="${GATE_IMPROVER_ID:-}"
 DELETER_ID="${GATE_DELETER_ID:-}"
+# Optional lanes — set these env vars to enable:
+DAILY_NOTE_REVIEW_ID="${GATE_DAILY_NOTE_REVIEW_ID:-}"
 
 # Locate the openclaw CLI (cron command jobs run with the Gateway's PATH, but be safe).
 OPENCLAW_BIN="${OPENCLAW_BIN:-$(command -v openclaw || true)}"
@@ -71,6 +81,14 @@ fi
 if [ -n "$DELETER_ID" ] && [ -f "$SCRIPTS/check_deletable.sh" ]; then
   if bash "$SCRIPTS/check_deletable.sh"; then
     trigger "deleter" "$DELETER_ID"
+  fi
+fi
+
+# Lane 4 — Daily Note Review (optional): run when memory/ has new/active notes.
+# Enable by setting GATE_DAILY_NOTE_REVIEW_ID in the cron job's env.
+if [ -n "$DAILY_NOTE_REVIEW_ID" ] && [ -f "$SCRIPTS/check_daily_notes.sh" ]; then
+  if bash "$SCRIPTS/check_daily_notes.sh"; then
+    trigger "daily-note-review" "$DAILY_NOTE_REVIEW_ID"
   fi
 fi
 
