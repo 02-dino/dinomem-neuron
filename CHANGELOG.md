@@ -4,6 +4,18 @@ All notable changes to dinomem-neuron are documented here.
 
 ---
 
+## 1.7.5 — 2026-07-20
+
+**Bare-relative filesystem paths stored in memory silently break on later reads.** The memory extractor (`extract_memory.py`) copies whatever path an agent typed during a session verbatim into `memory/YYYY-MM-DD_*.md`. When an agent wrote a workspace-relative path (e.g. `workspace-foo/kb/x.json`) instead of an absolute one, a *later* session reading that note from a different working directory would resolve it wrong — on installs where the working directory equals the workspace name, the path silently doubles (`workspace-foo/workspace-foo/kb/...`) and the read fails with ENOENT. Found live on one install: 59 memory files carried bare-relative paths, 4 of them written the same day (not stale backlog — actively-generated), producing a steady drip of ENOENT read failures against files that existed at the correct absolute path all along. The extractor prompt was **silent** on path format, so nothing steered the LLM toward absolute paths at authorship time.
+
+### Fixed
+- **Extractor prompt now mandates absolute filesystem paths.** Added an explicit `FILE PATHS MUST BE ABSOLUTE` rule to both `extract_memory.py` prompt templates (session-archive extraction and per-note distillation): filesystem paths must be stored as full absolute paths (starting with `/`), never workspace-relative, with an instruction to expand a relative path to absolute before storing. Fixing this at authorship (the prompt that *generates* the note) rather than with a post-hoc path-rewriting heuristic keeps the fix portable and workspace-agnostic — no hardcoded workspace root, no false-positive risk from guessing whether a string is a path that should be absolutized. This mirrors how 1.7.4 solved the `$WS`-undefined skill-example bug: fix the source of the relative reference, don't paper over it downstream.
+
+### Upgrade notes
+- `git pull` to pick up the extractor prompt change. No install re-run or gateway restart required — the new prompt applies on the next extraction run. Existing memory notes already written with relative paths are not rewritten by this change (they are harmless on installs whose working directory differs from the workspace name; on installs where they double, re-express the affected paths as absolute or let them expire).
+
+---
+
 ## 1.7.4 — 2026-07-14
 
 **Cheap-model 404 silently killed the memory pipeline for any buyer who never set `DINOMEM_CHEAP_MODEL`.** `extract_memory.py`, `generate_topic_index.py`, and `docs_ingest.py` all previously fell back to a *hardcoded* model (`DINOMEM_NO_REASONING_MODEL` env, or if unset, a literal `ninerouter/gc/gemini-2.5-flash`) when no cheap-tier override was configured. That default 404s through `capability model run` (a known gemini-cli misroute) — so anyone who installed neuron and never manually set `DINOMEM_CHEAP_MODEL` (the common case; it's opt-in and undocumented as a requirement) was silently failing **every single cheap-tier LLM call, permanently**, with no self-heal. Unlike the 1.7.3 backlog-draining fix, a 404 isn't transient — it never recovers on its own. This one was quietly starving the memory pipeline (extraction, topic indexing, docs ingest) on an unknown number of live installs.
