@@ -212,6 +212,59 @@ else
   skip "openclaw.json not found — plugin config left as-is"
 fi
 
+# ── OpenClaw crons (gate + all neuron-registered workers) ──────────────────
+# Neuron registers OpenClaw crons (NOT crontab lines): the project-executor trio
+# (Advancer / Improver / Deleter) plus the shared "Note Cron Gate" and its Daily/
+# Pending worker lanes. The crontab-pattern removal above never touches these, so
+# remove them here BY NAME. Exact case-insensitive allowlist so unrelated user
+# crons are never removed.
+#
+# Gate handling: if --with-base, we remove the gate here (whole stack going away).
+# Without --with-base the base survives, and the base's Daily/Pending lanes share
+# the same "Note Cron Gate" — so we LEAVE the gate + base lanes and remove ONLY
+# neuron's exclusive trio, so base keeps working. (Legacy "Project Cron Gate" is
+# always removed — it's neuron-exclusive and deprecated.)
+hr "OpenClaw crons"
+DINOMEM_WITH_BASE="$WITH_BASE" python3 - <<PYEOF
+import subprocess, json, os
+with_base = os.environ.get("DINOMEM_WITH_BASE", "0") == "1"
+# Neuron-EXCLUSIVE worker crons (always safe to remove on a neuron uninstall).
+NEURON_EXCLUSIVE = {
+    "project advancer",
+    "project improver (component 2)",
+    "verified note deleter (component 1)",
+    "project cron gate",   # legacy deprecated neuron gate name — always remove
+}
+# Shared with base — only remove when the base is going too (--with-base).
+SHARED_WITH_BASE = {
+    "note cron gate",
+    "daily note review",
+    "pending note reminder",
+}
+targets_names = set(NEURON_EXCLUSIVE)
+if with_base:
+    targets_names |= SHARED_WITH_BASE
+try:
+    r = subprocess.run(['openclaw', 'cron', 'list', '--json'], capture_output=True, text=True, timeout=10)
+    jobs = json.loads(r.stdout) if r.returncode == 0 else []
+    job_list = jobs if isinstance(jobs, list) else jobs.get('jobs', {}).get('jobs', [])
+    targets = [j for j in job_list if (j.get('name','') or '').strip().lower() in targets_names]
+    if not targets:
+        print("  \033[33m[skip]\033[0m no neuron OpenClaw crons found")
+    else:
+        for j in targets:
+            jid = j.get('id') or j.get('jobId')
+            rr = subprocess.run(['openclaw', 'cron', 'remove', jid], capture_output=True, text=True, timeout=10)
+            if rr.returncode == 0:
+                print(f"  \033[32m[ok]\033[0m   removed OpenClaw cron: {j.get('name')} ({jid})")
+            else:
+                print(f"  \033[33m[warn]\033[0m could not remove {j.get('name')} ({jid}): {rr.stderr.strip()[:120]}")
+    if not with_base:
+        print("  \033[33m[note]\033[0m 'Note Cron Gate' + base lanes preserved (base still installed; use --with-base to remove).")
+except Exception as e:
+    print(f"  \033[33m[warn]\033[0m Could not remove OpenClaw crons: {e}")
+PYEOF
+
 # -- Base uninstall (opt-in) --------------------------------------------------
 if [ "$WITH_BASE" = 1 ]; then
   hr "dinomem base uninstall (--with-base)"
