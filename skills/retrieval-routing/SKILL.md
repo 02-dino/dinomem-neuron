@@ -46,7 +46,8 @@ Key discriminators:
   scanned/mixed PDFs → auto-OCR of the visual pages; **audio/video → transcribe**;
   **`.zip` → unpack + ingest each member**. All automatic, no flags.
 - **Stream/video URL** (a link, nothing downloaded): `python3 DINOMEM_WORKSPACE_PLACEHOLDER/procedures/docs_ingest.py --url "<link>"` → confirm.
-  Grabs existing captions first (free); if none, downloads audio and transcribes.
+  Ladder: hosted caption API if `SUPADATA_API_KEY` is set (bypasses local IP
+  blocks) → else yt-dlp captions (free) → else download audio + transcribe.
 - **Pasted text:** save `docs/<slug>.md` → `... --file docs/<slug>.md` → confirm.
 
 **Media path:** inbound uploads land at `~/.openclaw/media/inbound/<uuid>` (from the
@@ -55,9 +56,11 @@ inbound files (images, audio, video) are detected by magic bytes.
 
 **Notes:** docs via pdftotext + pandoc; images/scans via the gateway vision model
 (no GPU); audio/video via a transcription ladder — existing captions → any
-`DEEPGRAM_API_KEY` → local `faster-whisper` (no GPU, no key, ~850MB RAM). Any
-missing tool degrades gracefully (that format skips with a logged hint; the rest
-still ingest). Re-ingested daily 04:00 UTC; ready for `docs_search` after.
+`DEEPGRAM_API_KEY` → local `faster-whisper` (no GPU, no key, ~850MB RAM). URL
+ingest adds a hosted-API rung on top (opt-in `SUPADATA_API_KEY`) for reliability
+on blocked/datacenter IPs where local yt-dlp scraping gets bot-walled. Any
+missing tool/key degrades gracefully (that path skips with a logged hint; the
+rest still ingest). Re-ingested daily 04:00 UTC; ready for `docs_search` after.
 **Never** save long docs to `memory/`. Row/count/range/aggregate over structured
 data → `data_query`, not `docs_search`.
 

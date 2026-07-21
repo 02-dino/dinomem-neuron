@@ -418,6 +418,26 @@ def _transcribe_media(src: Path) -> str:
         return txt
 
 
+def _ytdlp_auth_flags() -> List[str]:
+    """Optional YouTube/site auth for yt-dlp, threaded into every yt-dlp call.
+    Datacenter IPs get bot-walled ("Sign in to confirm you're not a bot"); a
+    logged-in cookie set is the only reliable escape. OPT-IN via env — nothing
+    required, auto-used if set, silently skipped if not (degrade-gracefully):
+      YT_COOKIES_FILE         → path to a Netscape cookies.txt (exported once)
+      YT_COOKIES_FROM_BROWSER → e.g. 'chrome' / 'firefox' (reads a live session)
+    File takes precedence over browser if both are set. A stale/missing file is
+    ignored with a one-line warning rather than breaking the call."""
+    cfile = os.environ.get("YT_COOKIES_FILE", "").strip()
+    cbrow = os.environ.get("YT_COOKIES_FROM_BROWSER", "").strip()
+    if cfile:
+        if os.path.isfile(cfile):
+            return ["--cookies", cfile]
+        log(f"  ⚠️  YT_COOKIES_FILE set but not found: {cfile} — ignoring")
+    if cbrow:
+        return ["--cookies-from-browser", cbrow]
+    return []
+
+
 def _fetch_url_subtitles(url: str, td: str) -> str:
     """Rung 1 of the URL ladder: try to pull an existing subtitle/caption track
     (manual first, else auto-captions) via yt-dlp — ZERO transcription cost.
@@ -427,7 +447,8 @@ def _fetch_url_subtitles(url: str, td: str) -> str:
         return ""
     base = os.path.join(td, "sub")
     subprocess.run(
-        ["yt-dlp", "--skip-download", "--write-subs", "--write-auto-subs",
+        ["yt-dlp", *_ytdlp_auth_flags(),
+         "--skip-download", "--write-subs", "--write-auto-subs",
          "--sub-langs", "en.*,id.*,.*", "--sub-format", "vtt/srt/best",
          "-o", base, url],
         capture_output=True, text=True, timeout=120)
@@ -449,20 +470,67 @@ def _fetch_url_subtitles(url: str, td: str) -> str:
     return "\n".join(out_lines).strip()
 
 
+def _hosted_caption_api(url: str) -> Tuple[str, str]:
+    """Rung 0 (OPT-IN, PRIMARY when configured): a hosted transcript API that
+    runs on the vendor's own IPs/proxies, so it SIDESTEPS this-machine's
+    YouTube bot-wall entirely — the one thing local scraping can't beat on a
+    flagged/datacenter IP. Zero-setup by default (skipped if no key); becomes
+    the primary path the moment a key is present. Currently supports Supadata
+    (only free-tier vendor with an AI fallback + multi-platform: YT/TikTok/IG/X).
+    Enable via env:  SUPADATA_API_KEY=sk-...
+    Returns (title, transcript) or ('','') to fall through to the yt-dlp ladder.
+    Best-effort: any error → empty → next rung. Never raises."""
+    key = os.environ.get("SUPADATA_API_KEY", "").strip()
+    if not key:
+        return ("", "")
+    try:
+        import requests
+        r = requests.get(
+            "https://api.supadata.ai/v1/transcript",
+            params={"url": url, "text": "true"},
+            headers={"x-api-key": key},
+            timeout=90,
+        )
+        if r.status_code != 200:
+            log(f"  ⚠️  hosted caption API HTTP {r.status_code} — falling through to yt-dlp")
+            return ("", "")
+        data = r.json()
+        # Supadata returns {content: "..."} for text=true, or a segment list.
+        text = data.get("content") or data.get("text") or ""
+        if not text and isinstance(data.get("transcript"), list):
+            text = "\n".join(seg.get("text", "") for seg in data["transcript"])
+        text = (text or "").strip()
+        if text:
+            log(f"  🌐  hosted caption API returned {len(text)} chars (bypassed local IP)")
+            return (url, text)
+        return ("", "")
+    except Exception as e:
+        log(f"  ⚠️  hosted caption API error ({e}) — falling through to yt-dlp")
+        return ("", "")
+
+
 def _transcribe_url(url: str) -> Tuple[str, str]:
     """URL transcription ladder for a stream link (YouTube/X/TikTok/Vimeo/...):
-      1. subtitle/caption grab (free, no ASR)
+      0. hosted caption API (OPT-IN via SUPADATA_API_KEY) — PRIMARY when set;
+         runs on vendor IPs so it beats a flagged/datacenter IP block
+      1. yt-dlp subtitle/caption grab (free, no ASR) — works on clean IPs
       2. download audio via yt-dlp → Deepgram-if-key → local faster-whisper
     Returns (title, transcript). transcript '' if every rung fails.
     Reuses the SAME ffmpeg+ASR ladder as local media — no new dependency."""
     import shutil as _shutil, tempfile, glob as _glob
+    # Rung 0: hosted API (opt-in). If it answers, we're done — no yt-dlp needed,
+    # no local IP exposure. This is the reliable primary on blocked IPs.
+    h_title, h_text = _hosted_caption_api(url)
+    if h_text:
+        return (h_title or url, h_text)
     if not _shutil.which("yt-dlp"):
-        log("  ⚠️  yt-dlp not found — cannot ingest URL. Install yt-dlp to enable.")
+        log("  ⚠️  yt-dlp not found and no SUPADATA_API_KEY set — cannot ingest URL.")
         return (url, "")
     # Best-effort title for the doc heading.
     title = url
     try:
-        r = subprocess.run(["yt-dlp", "--skip-download", "--print", "title", url],
+        r = subprocess.run(["yt-dlp", *_ytdlp_auth_flags(),
+                            "--skip-download", "--print", "title", url],
                            capture_output=True, text=True, timeout=60)
         if r.returncode == 0 and r.stdout.strip():
             title = r.stdout.strip().splitlines()[0]
@@ -477,12 +545,15 @@ def _transcribe_url(url: str) -> Tuple[str, str]:
         # Rung 2/3: download audio, then Deepgram-if-key → local ASR.
         abase = os.path.join(td, "audio")
         dl = subprocess.run(
-            ["yt-dlp", "-x", "--audio-format", "mp3", "--no-playlist",
+            ["yt-dlp", *_ytdlp_auth_flags(),
+             "-x", "--audio-format", "mp3", "--no-playlist",
              "-o", abase + ".%(ext)s", url],
             capture_output=True, text=True, timeout=900)
         got = sorted(_glob.glob(abase + ".*"))
         if dl.returncode != 0 or not got:
-            log(f"  ⚠️  URL download failed (may need cookies/login): {title[:60]}")
+            _hint = ("" if _ytdlp_auth_flags() else
+                     " — set YT_COOKIES_FILE=/path/cookies.txt to bypass YouTube bot-wall")
+            log(f"  ⚠️  URL download failed (may need cookies/login){_hint}: {title[:60]}")
             return (title, "")
         return (title, _transcribe_media(Path(got[0])))
 

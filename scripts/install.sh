@@ -417,6 +417,16 @@ if "$PY" -c 'import faster_whisper' 2>/dev/null; then ok "faster-whisper present
     && "$PY" -c 'import faster_whisper' 2>/dev/null && ok "faster-whisper installed" \
     || warn "  could not auto-install faster-whisper — audio/video transcription will skip unless a DEEPGRAM_API_KEY is set or captions exist. Install: $PY -m pip install faster-whisper"
 fi
+# Optional hosted transcript API (bulletproof URL ingest on blocked/datacenter IPs).
+# yt-dlp scrapes from THIS machine's IP; on a flagged/datacenter IP YouTube may
+# refuse it. A hosted API runs on the vendor's own IPs, sidestepping that wall —
+# it becomes the PRIMARY URL rung the moment a key is set, else silently skipped
+# (zero setup). No install action needed; this is just a heads-up in the log.
+if [ -n "${SUPADATA_API_KEY:-}" ]; then
+  ok "SUPADATA_API_KEY set — hosted caption API is the primary URL rung (bypasses local IP blocks)"
+else
+  echo "  ℹ️  SUPADATA_API_KEY not set (optional) — URL ingest uses yt-dlp (captions→whisper). Works on clean/residential IPs; set SUPADATA_API_KEY (free tier at supadata.ai) for bulletproof URL ingest on blocked/datacenter IPs."
+fi
 # Existing MEMORY.md
 if [ -f "$WS/MEMORY.md" ] && [ -s "$WS/MEMORY.md" ]; then
   warn "MEMORY.md already exists and has content."
