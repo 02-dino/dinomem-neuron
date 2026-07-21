@@ -26,13 +26,28 @@ from difflib import SequenceMatcher
 # behavior-similarity threshold: two descriptions this close = "same behavior"
 BEHAVIOR_SIM = 0.72
 
-# Action-kind buckets: two hooks/crons on the SAME structural signature (same event /
-# same schedule) that also share an action-kind are duplicates. Same signature but
-# DIFFERENT kind (one logs, one snapshots) is NOT a dup -> structural alone never blocks.
-# Patterns match the ACTION a behavior performs, not its trigger. Note 'message' is
-# deliberately EXCLUDED from 'send' — it's almost always the event noun ("when a message
-# arrives"), not the verb; use send/reply/respond/etc. for the actual send action.
-_ACTION_KINDS = {
+import re as _re
+
+# -- LANGUAGE-INDEPENDENT action-kind detection -------------------------------------------
+# The action-kind tiebreaker must NOT depend on the user's spoken language. Neuron users
+# write behavior descriptions in ANY language (Indonesian, Spanish, Chinese, ...), so prose
+# keywords are unreliable. PRIMARY signal = CODE/API tokens in the machine payload neuron
+# passes to base tools (--action TS snippet for hooks; --command/--message/--system-event
+# for crons). Code is language-neutral: sendMessage(, .push(, fs.appendFile(, unlink( read
+# the same in every human language. Prose keywords are a LAST-DITCH English fallback only.
+_CODE_KINDS = {
+    "send":     r"(sendmessage|\bsend\(|\breply\(|\.push\(|messages\.push|sendtext|postmessage|notify\(|api\.(send|reply|message))",
+    "log":      r"(console\.(log|warn|info)|appendfile|writefile.*log|logger?\.|fs\.append|>>\s*\S+\.log|logline)",
+    "snapshot": r"(backup|snapshot|archive|\bzip\b|\btar\b|cp\s+-r|rsync|dump\(|copyfile)",
+    "inject":   r"(messages\.unshift|prepend|inject|context\.\w+\s*=|bootstrap|preload|systemprompt)",
+    "cleanup":  r"(unlink\(|rm\s+-|rmdir|\bdelete\b|prune|purge|rotate|truncate|fs\.(rm|unlink))",
+    "fetch":    r"(fetch\(|axios|http\.(get|request)|\bcurl\b|\bwget\b|\.get\(|download|requests\.)",
+    "report":   r"(summar|digest|recap|report\(|buildreport|generatereport)",
+}
+
+# Prose keywords: ENGLISH fallback only (used when the payload carries no code tokens).
+# 'message' is EXCLUDED from 'send' (it's the event noun, not the verb).
+_PROSE_KINDS = {
     "send":     r"\b(send|reply|replies|respond|responds|notify|notifies|ping|announce|announces|dm|post|posts)\b",
     "log":      r"\b(log|logs|record|records|append|appends|audit|track|tracks)\b",
     "snapshot": r"\b(snapshot|snapshots|backup|back up|backs up|archive|archives|dump|dumps|zip|zips)\b",
@@ -41,13 +56,48 @@ _ACTION_KINDS = {
     "fetch":    r"\b(fetch|fetches|scrape|scrapes|pull|pulls|sync|syncs|download|downloads|poll|polls|refresh|refreshes)\b",
     "report":   r"\b(report|reports|summar|digest|digests|recap|recaps|brief|briefs)\b",
 }
-import re as _re
-
 
 def _action_kinds(text: str) -> frozenset:
-    """Which action-kind bucket(s) this behavior text falls into (0..n)."""
+    """Language-INDEPENDENT action-kind detection. Prefer CODE/API tokens (neutral across
+    all human languages); fall back to English prose keywords ONLY when no code is present.
+    Returns 0..n kinds; empty is SAFE (structural sig still dedups, kind-tiebreaker abstains)."""
     t = (text or "").lower()
-    return frozenset(k for k, pat in _ACTION_KINDS.items() if _re.search(pat, t))
+    if not t:
+        return frozenset()
+    code_hits = frozenset(k for k, pat in _CODE_KINDS.items() if _re.search(pat, t))
+    if code_hits:
+        return code_hits
+    return frozenset(k for k, pat in _PROSE_KINDS.items() if _re.search(pat, t))
+
+
+def _script_family(s: str) -> str:
+    """Coarse script bucket of dominant non-ASCII range, for gating cross-language fuzzy."""
+    counts = {"cjk": 0, "cyrillic": 0, "arabic": 0, "latin": 0, "other": 0}
+    for ch in s or "":
+        if ch.isascii():
+            continue
+        o = ord(ch)
+        if 0x4E00 <= o <= 0x9FFF or 0x3040 <= o <= 0x30FF or 0xAC00 <= o <= 0xD7AF:
+            counts["cjk"] += 1
+        elif 0x0400 <= o <= 0x04FF:
+            counts["cyrillic"] += 1
+        elif 0x0600 <= o <= 0x06FF:
+            counts["arabic"] += 1
+        elif 0x00C0 <= o <= 0x024F:
+            counts["latin"] += 1
+        else:
+            counts["other"] += 1
+    top = max(counts, key=counts.get)
+    return top if counts[top] > 0 else "ascii"
+
+def _same_script(a: str, b: str) -> bool:
+    """Cross-language fuzzy prose comparison is meaningless; only trust it within the same
+    script family. ASCII and latin are treated as compatible (English/romanized share it)."""
+    fa, fb = _script_family(a), _script_family(b)
+    compat = {"ascii", "latin"}
+    if fa in compat and fb in compat:
+        return True
+    return fa == fb
 
 
 # hook event aliases -> canonical (family listener == matches any action in family)
@@ -210,10 +260,14 @@ def check_duplicate(surface: str, slug: str, title: str, behavior_text: str,
             if shared and struct_match is None:
                 struct_match = (rname, shared)
 
-        # TIER 3 — fuzzy behavior fallback (for records with no clean event/schedule field)
-        bsim = _sim(proposed_behavior, rbehavior) if rbehavior else 0.0
-        if bsim > fuzzy_best[0]:
-            fuzzy_best = (bsim, rname)
+        # TIER 3 — fuzzy behavior fallback (for records with no clean event/schedule field).
+        # SCRIPT-GATED: cross-language prose similarity is meaningless ("kirim balasan" vs
+        # "reply to sender" ~ 0). Only trust fuzzy WITHIN the same script family; otherwise
+        # abstain — structural sig + name already cover the real double-fire case.
+        if rbehavior and _same_script(proposed_behavior, rbehavior):
+            bsim = _sim(proposed_behavior, rbehavior)
+            if bsim > fuzzy_best[0]:
+                fuzzy_best = (bsim, rname)
 
     if name_match:
         return {"duplicate": True, "source": "live", "match": name_match, "tier": "name",
