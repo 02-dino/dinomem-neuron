@@ -26,6 +26,68 @@ from difflib import SequenceMatcher
 # behavior-similarity threshold: two descriptions this close = "same behavior"
 BEHAVIOR_SIM = 0.72
 
+# Action-kind buckets: two hooks/crons on the SAME structural signature (same event /
+# same schedule) that also share an action-kind are duplicates. Same signature but
+# DIFFERENT kind (one logs, one snapshots) is NOT a dup -> structural alone never blocks.
+# Patterns match the ACTION a behavior performs, not its trigger. Note 'message' is
+# deliberately EXCLUDED from 'send' — it's almost always the event noun ("when a message
+# arrives"), not the verb; use send/reply/respond/etc. for the actual send action.
+_ACTION_KINDS = {
+    "send":     r"\b(send|reply|replies|respond|responds|notify|notifies|ping|announce|announces|dm|post|posts)\b",
+    "log":      r"\b(log|logs|record|records|append|appends|audit|track|tracks)\b",
+    "snapshot": r"\b(snapshot|snapshots|backup|back up|backs up|archive|archives|dump|dumps|zip|zips)\b",
+    "inject":   r"\b(inject|injects|prepend|prepends|prime|primes|bootstrap|preload|preloads|remind|reminds)\b",
+    "cleanup":  r"\b(clean|cleans|prune|prunes|delete|deletes|purge|purges|rotate|rotates|gc|retire|retires|sweep|sweeps)\b",
+    "fetch":    r"\b(fetch|fetches|scrape|scrapes|pull|pulls|sync|syncs|download|downloads|poll|polls|refresh|refreshes)\b",
+    "report":   r"\b(report|reports|summar|digest|digests|recap|recaps|brief|briefs)\b",
+}
+import re as _re
+
+
+def _action_kinds(text: str) -> frozenset:
+    """Which action-kind bucket(s) this behavior text falls into (0..n)."""
+    t = (text or "").lower()
+    return frozenset(k for k, pat in _ACTION_KINDS.items() if _re.search(pat, t))
+
+
+# hook event aliases -> canonical (family listener == matches any action in family)
+def _hook_signature(event: str) -> str:
+    ev = _norm(event)
+    if not ev:
+        return ""
+    # collapse family:action to family for matching a family listener
+    fam = ev.split(":", 1)[0] if ":" in ev else ev
+    return f"event:{ev}|family:{fam}"
+
+
+def _sig_overlap(a: str, b: str) -> bool:
+    """Do two signatures overlap? Split on '|' into token sets and require a shared token.
+    For hooks: an exact event OR a family listener match counts (event:message:received
+    overlaps family:message). For crons: exact schedule OR digits-skeleton match."""
+    at = set(t for t in a.split("|") if t and not t.endswith(":"))
+    bt = set(t for t in b.split("|") if t and not t.endswith(":"))
+    # drop empty-value tokens like 'skel:' or 'family:'
+    at = {t for t in at if t.split(":", 1)[-1]}
+    bt = {t for t in bt if t.split(":", 1)[-1]}
+    return bool(at & bt)
+
+
+def _cron_signature(schedule: str) -> str:
+    """Normalize a schedule to a comparable signature. every:DUR and cron:EXPR@TZ
+    both reduce to a cadence token; wall-clock crons compare on the cron expr."""
+    s = _norm(schedule)
+    if not s:
+        return ""
+    # strip kind prefixes the two repos use interchangeably
+    for pre in ("every:", "cron:", "at:", "schedule:"):
+        if s.startswith(pre):
+            s = s[len(pre):]
+            break
+    # a bare interval like '6h' vs '6 h' vs '0 */6 * * *' won't always align; we compare
+    # the raw normalized token AND a digits-only skeleton to catch spacing/format drift
+    skel = _re.sub(r"[^0-9*/]", "", s)
+    return f"sched:{s}|skel:{skel}"
+
 
 def _run_json(argv):
     """Run a CLI that emits JSON; return parsed list/dict or None on any failure."""
@@ -115,40 +177,63 @@ def check_duplicate(surface: str, slug: str, title: str, behavior_text: str,
              query_status: 'live'|'fs'|'none'}.
     """
     proposed_behavior = f"{title} {behavior_text}".strip()
+    prop_sig = _hook_signature(behavior_text) if surface == "hook" else _cron_signature(behavior_text)
+    prop_kinds = _action_kinds(proposed_behavior)
 
-    # 2a) re-stage guard: neuron already emitted this exact slug -> don't re-stamp.
+    # 0) re-stage guard: neuron already emitted this exact slug -> don't re-stamp.
     if staged_slugs and slug in set(staged_slugs):
-        return {"duplicate": True, "source": "staged", "match": slug,
+        return {"duplicate": True, "source": "staged", "match": slug, "tier": "staged",
                 "reason": "already staged/confirmed by neuron in a prior cycle — not re-staging",
                 "sim": 1.0, "query_status": "n/a"}
 
-    # 1) live-state dedup against what base actually installed.
     recs, qstatus = _live_records(surface)
-    best = (0.0, "", "")
+    ns = _norm(slug)
+    name_match = None
+    struct_match = None          # (name, shared_kinds)
+    fuzzy_best = (0.0, "")       # (sim, name)
+
     for rec in recs:
         rname, rbehavior = _record_text(rec)
-        # name signal: exact or substring either direction
-        ns = _norm(slug)
         nn = _norm(rname)
-        name_hit = bool(nn) and (ns == nn or ns in nn or nn in ns)
-        # behavior signal: fuzzy sim of descriptions
+
+        # TIER 1 — exact/substring NAME match (strongest, unambiguous)
+        if bool(nn) and (ns == nn or ns in nn or nn in ns):
+            name_match = rname
+
+        # TIER 2 — STRUCTURAL signature (event / schedule) + shared action-kind.
+        # Same signature alone is NOT enough (two hooks on message:received can differ);
+        # they must ALSO share at least one action-kind to be a real double-fire dup.
+        rsig = (_hook_signature(rec.get("event", "") or rbehavior) if surface == "hook"
+                else _cron_signature(rec.get("schedule", "") or rbehavior))
+        if prop_sig and rsig and _sig_overlap(prop_sig, rsig):
+            shared = prop_kinds & _action_kinds(rbehavior)
+            if shared and struct_match is None:
+                struct_match = (rname, shared)
+
+        # TIER 3 — fuzzy behavior fallback (for records with no clean event/schedule field)
         bsim = _sim(proposed_behavior, rbehavior) if rbehavior else 0.0
-        score = max(1.0 if name_hit else 0.0, bsim)
-        if score > best[0]:
-            best = (score, rname, "name" if name_hit and score >= bsim else "behavior")
+        if bsim > fuzzy_best[0]:
+            fuzzy_best = (bsim, rname)
 
-    if best[0] >= 1.0 and best[2] == "name":
-        return {"duplicate": True, "source": "live", "match": best[1],
+    if name_match:
+        return {"duplicate": True, "source": "live", "match": name_match, "tier": "name",
                 "reason": f"a {surface} named like '{slug}' is already installed",
-                "sim": round(best[0], 3), "query_status": qstatus}
-    if best[0] >= BEHAVIOR_SIM:
-        return {"duplicate": True, "source": "live", "match": best[1] or "(unnamed)",
-                "reason": (f"an installed {surface} '{best[1]}' already does this behavior "
-                           f"(similarity {best[0]:.2f}); installing would DOUBLE-fire"),
-                "sim": round(best[0], 3), "query_status": qstatus}
+                "sim": 1.0, "query_status": qstatus}
+    if struct_match:
+        nm, shared = struct_match
+        return {"duplicate": True, "source": "live", "match": nm or "(unnamed)", "tier": "structural",
+                "reason": (f"installed {surface} '{nm}' shares the same "
+                           f"{'event' if surface == 'hook' else 'schedule'} signature AND action "
+                           f"kind {sorted(shared)}; installing would DOUBLE-fire"),
+                "sim": 1.0, "query_status": qstatus}
+    if fuzzy_best[0] >= BEHAVIOR_SIM:
+        return {"duplicate": True, "source": "live", "match": fuzzy_best[1] or "(unnamed)", "tier": "fuzzy",
+                "reason": (f"an installed {surface} '{fuzzy_best[1]}' already does this behavior "
+                           f"(text similarity {fuzzy_best[0]:.2f}); installing would DOUBLE-fire"),
+                "sim": round(fuzzy_best[0], 3), "query_status": qstatus}
 
-    return {"duplicate": False, "source": None, "match": None,
-            "reason": "no live or staged duplicate found", "sim": round(best[0], 3),
+    return {"duplicate": False, "source": None, "match": None, "tier": None,
+            "reason": "no live or staged duplicate found", "sim": round(fuzzy_best[0], 3),
             "query_status": qstatus}
 
 
