@@ -30,27 +30,36 @@ Key discriminators:
 - `graph_search` — skip when relation_edges aren't populated yet; fall back to
   `memory_search`.
 
-## Documents & images → RAG (`docs_search`)
+## Documents, images, audio/video & URLs → RAG (`docs_search`)
 
-**When:** a doc/image is shared · a file is uploaded (pdf/docx/rtf/odt/html/
-epub/md/txt **OR** jpg/jpeg/png/webp/gif/bmp/tiff — screenshots, photos,
-scans) · "save/remember this" · content `>2000 chars`.
+**When:** any of these is shared/uploaded, or "save/remember this", or content `>2000 chars`:
+- **docs** — pdf/docx/rtf/odt/html/epub/md/txt
+- **images** — jpg/jpeg/png/webp/gif/bmp/tiff (screenshots, photos, scans)
+- **audio** — mp3/wav/m4a/flac/ogg/opus/aac (voice notes, recordings, podcasts)
+- **video** — mp4/mkv/mov/webm/avi (clips, screen recordings)
+- **archives** — `.zip` (walked: every readable member re-routed)
+- **stream/video URLs** — YouTube, X, TikTok, Vimeo, etc.
 
-**Action (same for docs AND images):**
-- **Uploaded file:** `python3 DINOMEM_WORKSPACE_PLACEHOLDER/procedures/docs_ingest.py --file <media path>` → confirm.
-  The script self-routes by type: pdf/docx/etc → text extract; **images → vision-OCR**;
-  scanned/mixed PDFs → auto-OCR of the visual pages. All automatic, no flags.
-- **Pasted text:** save `docs/<slug>.md` → `python3 DINOMEM_WORKSPACE_PLACEHOLDER/procedures/docs_ingest.py --file docs/<slug>.md` → confirm.
+**Action:**
+- **Uploaded file (any of the above):** `python3 DINOMEM_WORKSPACE_PLACEHOLDER/procedures/docs_ingest.py --file <media path>` → confirm.
+  The script self-routes by type: docs → text extract; **images → vision-OCR**;
+  scanned/mixed PDFs → auto-OCR of the visual pages; **audio/video → transcribe**;
+  **`.zip` → unpack + ingest each member**. All automatic, no flags.
+- **Stream/video URL** (a link, nothing downloaded): `python3 DINOMEM_WORKSPACE_PLACEHOLDER/procedures/docs_ingest.py --url "<link>"` → confirm.
+  Grabs existing captions first (free); if none, downloads audio and transcribes.
+- **Pasted text:** save `docs/<slug>.md` → `... --file docs/<slug>.md` → confirm.
 
 **Media path:** inbound uploads land at `~/.openclaw/media/inbound/<uuid>` (from the
-`<media:...>` placeholder); pass that path straight to `--file`. Works for images
-too — an extension-less inbound image is detected by magic bytes.
+`<media:...>` placeholder); pass that path straight to `--file`. Extension-less
+inbound files (images, audio, video) are detected by magic bytes.
 
-**Notes:** ingest auto-extracts via pdftotext + pandoc; images/scans via the
-gateway vision model (no GPU, no extra dep — reuses the configured model);
-re-ingested daily 04:00 UTC; ready for `docs_search` after. **Never** save long
-docs to `memory/`. Row/count/range/aggregate over structured data → `data_query`,
-not `docs_search`.
+**Notes:** docs via pdftotext + pandoc; images/scans via the gateway vision model
+(no GPU); audio/video via a transcription ladder — existing captions → any
+`DEEPGRAM_API_KEY` → local `faster-whisper` (no GPU, no key, ~850MB RAM). Any
+missing tool degrades gracefully (that format skips with a logged hint; the rest
+still ingest). Re-ingested daily 04:00 UTC; ready for `docs_search` after.
+**Never** save long docs to `memory/`. Row/count/range/aggregate over structured
+data → `data_query`, not `docs_search`.
 
 ## Structured data → `data_query` (exact SQL)
 

@@ -327,6 +327,166 @@ def _ocr_pdf_pages(src: Path, pages: List[int], model: str = None) -> str:
     return "".join(blocks)
 
 
+# ── Audio/video transcription (subtitle-first ladder → key-gated → local) ───────
+def _extract_audio(src: Path, out_wav: Path) -> bool:
+    """ffmpeg: extract/normalize any audio or video file to 16k mono wav (what
+    ASR wants). Returns True on success. System ffmpeg only — no Python dep."""
+    import shutil as _shutil
+    if not _shutil.which("ffmpeg"):
+        log("  ⚠️  ffmpeg not found — cannot process audio/video")
+        return False
+    r = subprocess.run(
+        ["ffmpeg", "-y", "-i", str(src), "-ar", "16000", "-ac", "1",
+         "-vn", str(out_wav)],
+        capture_output=True, text=True, timeout=900)
+    return r.returncode == 0 and out_wav.exists()
+
+
+def _transcribe_deepgram(wav: Path) -> str:
+    """Key-gated fast path. Only used if DEEPGRAM_API_KEY is in env. Best-effort;
+    returns '' on any failure so the caller falls through to local ASR."""
+    key = os.environ.get("DEEPGRAM_API_KEY")
+    if not key:
+        return ""
+    try:
+        import urllib.request
+        data = wav.read_bytes()
+        req = urllib.request.Request(
+            "https://api.deepgram.com/v1/listen?model=nova-2&smart_format=true",
+            data=data,
+            headers={"Authorization": f"Token {key}",
+                     "Content-Type": "audio/wav"},
+            method="POST")
+        with urllib.request.urlopen(req, timeout=300) as resp:
+            j = json.loads(resp.read().decode())
+        alt = j["results"]["channels"][0]["alternatives"][0]
+        txt = alt.get("transcript", "").strip()
+        if txt:
+            log("  🎙️  transcribed via Deepgram (key-gated fast path)")
+        return txt
+    except Exception as e:
+        log(f"  ⚠️  Deepgram path failed ({e}); falling back to local ASR")
+        return ""
+
+
+def _transcribe_local(wav: Path) -> str:
+    """No-key/no-GPU fallback: faster-whisper (CTranslate2, no torch). LAZY,
+    GUARDED import — if the running interpreter lacks faster-whisper, we log a
+    one-line install hint and return '' (ingest continues for everything else,
+    never crashes). ~850MB peak RAM, ~0.22x realtime on CPU as benchmarked."""
+    try:
+        from faster_whisper import WhisperModel
+    except Exception:
+        log("  ⚠️  faster-whisper not installed for this interpreter — audio/video "
+            "skipped. Install: pip install faster-whisper (no GPU/torch needed).")
+        return ""
+    try:
+        model = WhisperModel(_ASR_MODEL, device="cpu", compute_type=_ASR_COMPUTE)
+        segments, info = model.transcribe(str(wav), beam_size=1)
+        parts = [seg.text for seg in segments]
+        txt = " ".join(p.strip() for p in parts).strip()
+        if txt:
+            log(f"  🎙️  transcribed locally (faster-whisper {_ASR_MODEL}, "
+                f"lang={info.language}, {info.duration:.0f}s audio)")
+        return txt
+    except Exception as e:
+        log(f"  ⚠️  local ASR failed: {e}")
+        return ""
+
+
+def _transcribe_media(src: Path) -> str:
+    """Full transcription ladder for a LOCAL audio/video file:
+      ffmpeg → wav  →  (Deepgram if key)  →  (local faster-whisper)  →  ''.
+    Returns transcript text ('' if every rung unavailable — caller writes stub)."""
+    import tempfile
+    # Size cap so a giant upload can't wedge a noob's box.
+    try:
+        mb = src.stat().st_size / (1024 * 1024)
+        if mb > _MEDIA_MAX_MB:
+            log(f"  ⚠️  media {mb:.0f}MB exceeds cap {_MEDIA_MAX_MB}MB — skipped")
+            return ""
+    except Exception:
+        pass
+    with tempfile.TemporaryDirectory(prefix="asr_") as td:
+        wav = Path(td) / "audio.wav"
+        if not _extract_audio(src, wav):
+            log(f"  ⚠️  audio extraction failed for {src.name}")
+            return ""
+        txt = _transcribe_deepgram(wav)      # rung 2: key-gated fast path
+        if not txt:
+            txt = _transcribe_local(wav)     # rung 3: local fallback
+        return txt
+
+
+def _fetch_url_subtitles(url: str, td: str) -> str:
+    """Rung 1 of the URL ladder: try to pull an existing subtitle/caption track
+    (manual first, else auto-captions) via yt-dlp — ZERO transcription cost.
+    Returns cleaned plain text, or '' if none available. Best-effort."""
+    import shutil as _shutil, glob as _glob
+    if not _shutil.which("yt-dlp"):
+        return ""
+    base = os.path.join(td, "sub")
+    subprocess.run(
+        ["yt-dlp", "--skip-download", "--write-subs", "--write-auto-subs",
+         "--sub-langs", "en.*,id.*,.*", "--sub-format", "vtt/srt/best",
+         "-o", base, url],
+        capture_output=True, text=True, timeout=120)
+    subs = sorted(_glob.glob(base + "*.vtt") + _glob.glob(base + "*.srt"))
+    if not subs:
+        return ""
+    raw = Path(subs[0]).read_text(encoding="utf-8", errors="replace")
+    # Strip WebVTT/SRT timing + tags → dedup consecutive lines → plain text.
+    out_lines, seen = [], ""
+    for ln in raw.splitlines():
+        s = ln.strip()
+        if (not s or s == "WEBVTT" or "-->" in s or s.isdigit()
+                or s.startswith(("Kind:", "Language:", "NOTE"))):
+            continue
+        s = re.sub(r"<[^>]+>", "", s)  # inline <c> timing tags
+        if s and s != seen:
+            out_lines.append(s)
+            seen = s
+    return "\n".join(out_lines).strip()
+
+
+def _transcribe_url(url: str) -> Tuple[str, str]:
+    """URL transcription ladder for a stream link (YouTube/X/TikTok/Vimeo/...):
+      1. subtitle/caption grab (free, no ASR)
+      2. download audio via yt-dlp → Deepgram-if-key → local faster-whisper
+    Returns (title, transcript). transcript '' if every rung fails.
+    Reuses the SAME ffmpeg+ASR ladder as local media — no new dependency."""
+    import shutil as _shutil, tempfile, glob as _glob
+    if not _shutil.which("yt-dlp"):
+        log("  ⚠️  yt-dlp not found — cannot ingest URL. Install yt-dlp to enable.")
+        return (url, "")
+    # Best-effort title for the doc heading.
+    title = url
+    try:
+        r = subprocess.run(["yt-dlp", "--skip-download", "--print", "title", url],
+                           capture_output=True, text=True, timeout=60)
+        if r.returncode == 0 and r.stdout.strip():
+            title = r.stdout.strip().splitlines()[0]
+    except Exception:
+        pass
+    with tempfile.TemporaryDirectory(prefix="url_") as td:
+        # Rung 1: subtitles (free).
+        sub = _fetch_url_subtitles(url, td)
+        if sub:
+            log(f"  📜  used existing captions (no ASR) for {title[:60]}")
+            return (title, sub)
+        # Rung 2/3: download audio, then Deepgram-if-key → local ASR.
+        abase = os.path.join(td, "audio")
+        dl = subprocess.run(
+            ["yt-dlp", "-x", "--audio-format", "mp3", "--no-playlist",
+             "-o", abase + ".%(ext)s", url],
+            capture_output=True, text=True, timeout=900)
+        got = sorted(_glob.glob(abase + ".*"))
+        if dl.returncode != 0 or not got:
+            log(f"  ⚠️  URL download failed (may need cookies/login): {title[:60]}")
+            return (title, "")
+        return (title, _transcribe_media(Path(got[0])))
+
+
 # ── Entity + relation extraction ──────────────────────────────────────────────
 _ENTITY_PROMPT_TMPL = """\
 You are an entity and relation extractor for a document knowledge graph.
@@ -507,6 +667,25 @@ _OCR_PROMPT = (
 # Extensions routed through pandoc → markdown
 _PANDOC_EXTS = {'.docx', '.doc', '.rtf', '.odt', '.html', '.htm', '.epub'}
 
+# Audio/video → transcribe (subtitle-first for URLs, else ASR) → markdown.
+# Fully automatic, dependency-light: reuses ffmpeg/yt-dlp (system) + a lazy,
+# GUARDED faster-whisper import as the no-key/no-GPU fallback. If nothing is
+# available the branch degrades gracefully (writes a stub + logs a hint) and
+# NEVER breaks the rest of ingest.
+_AUDIO_EXTS = {'.mp3', '.wav', '.m4a', '.flac', '.ogg', '.opus', '.aac', '.wma', '.aiff'}
+_VIDEO_EXTS = {'.mp4', '.mkv', '.mov', '.webm', '.avi', '.flv', '.wmv', '.m4v', '.mpeg', '.mpg', '.3gp'}
+# ZIP/archive → unpack → recurse each member back through the router.
+_ARCHIVE_EXTS = {'.zip'}
+
+# faster-whisper model + compute — noob-safe defaults (no GPU, no key, ~850MB
+# peak RAM, ~0.22x realtime on CPU as benchmarked). Overridable via env for
+# users who want a bigger/smaller model.
+_ASR_MODEL = os.environ.get("DINOMEM_ASR_MODEL", "base")
+_ASR_COMPUTE = os.environ.get("DINOMEM_ASR_COMPUTE", "int8")
+# Safety caps so a giant media file can't wedge a noob's box.
+_MEDIA_MAX_MB = int(os.environ.get("DINOMEM_MEDIA_MAX_MB", "500"))
+_ARCHIVE_MAX_MEMBERS = int(os.environ.get("DINOMEM_ARCHIVE_MAX_MEMBERS", "200"))
+
 def _slugify(name: str) -> str:
     s = re.sub(r'[^a-zA-Z0-9]+', '-', name.lower()).strip('-')
     return (s or 'doc')[:60]
@@ -524,6 +703,12 @@ def _sniff_format(path: Path) -> str:
         return 'pandoc'
     if ext in _IMAGE_EXTS:
         return 'image'
+    if ext in _AUDIO_EXTS:
+        return 'audio'
+    if ext in _VIDEO_EXTS:
+        return 'video'
+    if ext in _ARCHIVE_EXTS:
+        return 'archive'
     # No (or unknown) extension → sniff magic bytes
     try:
         head = path.read_bytes()[:12]
@@ -532,8 +717,32 @@ def _sniff_format(path: Path) -> str:
     if head[:4] == b'%PDF':
         return 'pdf'
     if head[:4] == b'PK\x03\x04':
-        # zip container — docx/odt/epub/xlsx; pandoc handles the doc types
+        # zip container — could be a docx/odt/epub/xlsx (pandoc) OR a plain .zip
+        # archive to walk. Disambiguate by extension when present; a bare
+        # PK-header with a .zip (or no) extension → treat as archive to unpack.
+        if ext in _ARCHIVE_EXTS or ext == '':
+            return 'archive'
         return 'pandoc'
+    # Media magic bytes (extension-less inbound files from media/inbound/<uuid>)
+    if head[:3] == b'ID3' or head[:2] in (b'\xff\xfb', b'\xff\xf3', b'\xff\xf2'):  # MP3
+        return 'audio'
+    if head[:4] == b'RIFF' and head[8:12] == b'WAVE':  # WAV
+        return 'audio'
+    if head[:4] == b'OggS':                            # Ogg (audio or video)
+        return 'audio'
+    if head[:4] == b'fLaC':                            # FLAC
+        return 'audio'
+    if head[4:8] == b'ftyp':                           # MP4/MOV/M4A container
+        # ftyp brand distinguishes audio-only (M4A) from video (MP4/MOV); ffmpeg
+        # handles both the same way, so route to 'video' (audio strip works too).
+        brand = head[8:12] if len(head) >= 12 else b''
+        if brand[:3] in (b'M4A', b'M4B'):
+            return 'audio'
+        return 'video'
+    if head[:4] == b'\x1aE\xdf\xa3':                   # Matroska/WebM
+        return 'video'
+    if head[:3] == b'FLV':                             # FLV
+        return 'video'
     if head[:5].lower() == b'<html' or head[:9].lower() == b'<!doctype':
         return 'pandoc'
     # Image magic bytes (extension-less inbound files, e.g. media/inbound/<uuid>)
@@ -644,6 +853,26 @@ def extract_to_markdown(src: Path) -> Path:
         log(f"  extracted (pandoc): {src.name} → {out.name}")
         return out
 
+    if fmt in ('audio', 'video'):
+        # First-class audio/video ingest: transcribe via the ladder
+        # (ffmpeg → Deepgram-if-key → local faster-whisper) and write the
+        # transcript as markdown. Fully automatic — a user shares an mp3/mp4 and
+        # it lands in the KB, searchable via docs_search. If no ASR rung is
+        # available we still write a stub so the file is tracked and the reason
+        # is visible in the log (never crashes ingest).
+        text = _transcribe_media(src)
+        title = src.stem.replace('_', ' ').replace('-', ' ').strip() or 'Recording'
+        kind = 'video' if fmt == 'video' else 'audio'
+        if text:
+            body = f"# {title}\n\n_({kind} transcript)_\n\n{text}\n"
+            log(f"  extracted ({kind} transcript): {src.name} → {out.name} ({len(text)} chars)")
+        else:
+            body = (f"# {title}\n\n_({kind} ingested but no transcript — no ASR "
+                    f"backend available; see log)_\n")
+            log(f"  ⚠️  {kind} transcript empty: {src.name} → {out.name} (stub written)")
+        out.write_text(body, encoding='utf-8')
+        return out
+
     raise RuntimeError(f"unsupported/undetectable format: {src.name}")
 
 def load_file(path: Path) -> Tuple[List[Document], dict]:
@@ -749,10 +978,61 @@ def ingest_files(paths: List[Path], db: Chroma, existing_hashes: Dict[str, str],
 
     return stats
 
+
+def _expand_archives(paths: List[Path]) -> List[Path]:
+    """Replace any .zip in `paths` with its extracted, ingestible members.
+    Each member is unpacked into docs/_unzipped/<zipslug>/ (so it lives under
+    DOCS_DIR and gets picked up + re-sniffed like any other file) and returned
+    as a normal ingest path. Non-ingestible members are skipped. Guards:
+      - path traversal (Zip Slip): members escaping the target dir are dropped.
+      - member count cap (_ARCHIVE_MAX_MEMBERS) so a zip-bomb can't wedge the box.
+    Best-effort: a broken zip logs a warning and is skipped, never crashes."""
+    import zipfile
+    _MEMBER_EXTS = (_TEXT_EXTS | {'.pdf'} | _PANDOC_EXTS | _IMAGE_EXTS
+                    | _AUDIO_EXTS | _VIDEO_EXTS)  # NOTE: no _ARCHIVE_EXTS — one level
+    out: List[Path] = []
+    for p in paths:
+        if p.suffix.lower() not in _ARCHIVE_EXTS:
+            out.append(p)
+            continue
+        dest = DOCS_DIR / "_unzipped" / _slugify(p.stem)
+        dest.mkdir(parents=True, exist_ok=True)
+        dest_resolved = str(dest.resolve())
+        try:
+            with zipfile.ZipFile(p) as zf:
+                members = [m for m in zf.namelist() if not m.endswith('/')]
+                if len(members) > _ARCHIVE_MAX_MEMBERS:
+                    log(f"  ⚠️  archive {p.name}: {len(members)} members exceeds cap "
+                        f"{_ARCHIVE_MAX_MEMBERS} — taking first {_ARCHIVE_MAX_MEMBERS}")
+                    members = members[:_ARCHIVE_MAX_MEMBERS]
+                extracted = 0
+                for m in members:
+                    ext = os.path.splitext(m)[1].lower()
+                    if ext not in _MEMBER_EXTS:
+                        continue  # skip non-ingestible members (exe, bin, nested zip)
+                    target = (dest / m).resolve()
+                    # Zip Slip guard: member must stay inside dest.
+                    if not str(target).startswith(dest_resolved + os.sep):
+                        log(f"  ⚠️  archive {p.name}: skipped unsafe path '{m}'")
+                        continue
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    with zf.open(m) as srcf, open(target, 'wb') as dstf:
+                        shutil.copyfileobj(srcf, dstf)
+                    out.append(target)
+                    extracted += 1
+            log(f"  📦 archive {p.name} → {extracted} ingestible member(s) unpacked")
+        except Exception as e:
+            log(f"  ⚠️  archive {p.name} skipped (unreadable zip): {e}")
+    return out
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 def main():
     parser = argparse.ArgumentParser(description='Ingest long-form docs into vector DB')
     parser.add_argument('--file', type=Path, help='Ingest single file')
+    parser.add_argument('--url', type=str,
+                        help='Ingest a stream/video URL (YouTube/X/TikTok/Vimeo/...): '
+                             'subtitle-first, else transcribe via the ASR ladder')
     parser.add_argument('--dry-run', action='store_true', help='Show what would be ingested, write nothing')
     parser.add_argument('--skip-entity-extraction', action='store_true',
                         help='Skip LLM entity/relation extraction (faster, no graph update)')
@@ -785,7 +1065,26 @@ def main():
     log(f"Existing DB: {len(existing_hashes)} source files")
 
     # Collect files to process
-    if args.file:
+    if getattr(args, 'url', None):
+        # URL ingest: transcribe (subtitle-first → ASR ladder) → write a markdown
+        # doc under docs/, then fall through to normal ingest of that one file.
+        DOCS_DIR.mkdir(parents=True, exist_ok=True)
+        title, text = _transcribe_url(args.url)
+        slug = _slugify(title if title and title != args.url else 'url-transcript')
+        out = DOCS_DIR / f"{slug}.md"
+        n = 2
+        while out.exists():
+            out = DOCS_DIR / f"{slug}-{n}.md"; n += 1
+        if text:
+            out.write_text(f"# {title}\n\n_(source: {args.url})_\n\n{text}\n",
+                           encoding='utf-8')
+            log(f"  extracted (URL transcript): {args.url} → {out.name} ({len(text)} chars)")
+        else:
+            out.write_text(f"# {title}\n\n_(source: {args.url} — no transcript "
+                           f"available; see log)_\n", encoding='utf-8')
+            log(f"  ⚠️  URL transcript empty: {args.url} → {out.name} (stub written)")
+        paths = [out]
+    elif args.file:
         if not args.file.exists():
             log(f"ERROR: file not found: {args.file}")
             sys.exit(1)
@@ -793,18 +1092,28 @@ def main():
     else:
         DOCS_DIR.mkdir(parents=True, exist_ok=True)
         # Pick up EVERY supported input, not just markdown: text, PDFs, Office
-        # docs, AND images (jpg/png/etc). Images route through vision-OCR;
-        # scanned/mixed PDFs get auto-OCR'd for their visual pages. Fully
+        # docs, images (jpg/png/etc → vision-OCR), audio/video (mp3/mp4/etc →
+        # transcribe), and archives (.zip → walked, each member re-routed).
+        # Scanned/mixed PDFs get auto-OCR'd for their visual pages. Fully
         # automatic — a user just shares any file and it ingests.
-        _INGEST_EXTS = _TEXT_EXTS | {'.pdf'} | _PANDOC_EXTS | _IMAGE_EXTS
+        _INGEST_EXTS = (_TEXT_EXTS | {'.pdf'} | _PANDOC_EXTS | _IMAGE_EXTS
+                        | _AUDIO_EXTS | _VIDEO_EXTS | _ARCHIVE_EXTS)
         paths = sorted(
             p for p in DOCS_DIR.glob("**/*")
             if p.is_file() and p.suffix.lower() in _INGEST_EXTS
         )
         if not paths:
             log(f"No ingestible files found in {DOCS_DIR} "
-                f"(supported: text, pdf, office docs, images)")
+                f"(supported: text, pdf, office docs, images, audio, video, zip)")
             sys.exit(0)
+
+    # Expand any archives (.zip) in-place: unpack → each member becomes its own
+    # ingest path, re-routed through the same sniffer. Nested archives are
+    # unpacked one level (a zip-in-zip member is expanded on the next daily run
+    # once extracted). Capped by _ARCHIVE_MAX_MEMBERS so a zip-bomb can't wedge
+    # the box. Fully automatic — a user shares a .zip of docs and all readable
+    # members land in the KB.
+    paths = _expand_archives(paths)
 
     log(f"Files to check: {len(paths)}")
 

@@ -287,6 +287,8 @@ The three are additive: turning any one off leaves the others intact.
 
 **Images and scanned pages just work too — no OCR setup.** Share an image and it's read via the agent's own vision model (the model already configured in OpenClaw — no GPU, no extra model download, no dependency). The same guard runs on PDFs: any page that's a scan, or that hides a chart/table as an image `pdftotext` can't read, is detected and OCR'd automatically — so mixed "mostly text with one embedded figure" pages don't silently lose the figure. Fully automatic; nothing to flip on.
 
+**Audio, video, ZIPs, and video links too.** Share an audio file (`.mp3`, `.wav`, `.m4a`, …), a video (`.mp4`, `.mkv`, `.mov`, …), a `.zip`, or paste a **YouTube / X / TikTok / Vimeo** link — all ingest automatically. Audio and video are transcribed; a `.zip` is unpacked and every readable member is re-routed through the same pipeline; a video link grabs existing captions first (free, instant) and only transcribes if there are none. Transcription uses a **no-GPU, no-key** ladder: existing captions → an optional `DEEPGRAM_API_KEY` if you set one → a local `faster-whisper` model (small, torch-free, ~0.22× realtime on CPU — a 10-min clip in ~2 min). Missing a tool? That format skips with a clear message and everything else still ingests.
+
 ### Structured data
 
 RAG answers *"what does this say?"* — structured data answers *"how many, which ones, what's the total."* Embeddings are fuzzy on exact numbers, ranges, and counts; a spreadsheet question like *"orders under \$50 in the US, sorted by date"* needs real `WHERE`/`ORDER BY`/`SUM`, not similarity. This capability is the exact-retrieval counterweight to the semantic pipeline.

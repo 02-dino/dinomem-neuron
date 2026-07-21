@@ -392,6 +392,31 @@ if command -v pandoc &>/dev/null; then ok "pandoc present — docx/rtf/odt/html/
     && command -v pandoc &>/dev/null && ok "pandoc installed" \
     || warn "  could not auto-install — docx/Office ingest disabled until you install pandoc (https://pandoc.org/installing.html). Text/Markdown + PDF ingest still work."
 fi
+# Audio/video/URL ingest tools (optional — enable transcription).
+# ffmpeg extracts audio from any media; yt-dlp fetches stream URLs + captions;
+# faster-whisper is the no-key/no-GPU local ASR fallback (subtitle-first and any
+# DEEPGRAM_API_KEY are tried before it). All optional: missing → audio/video/URL
+# ingest degrades gracefully with a clear message; every other format still works.
+if command -v ffmpeg &>/dev/null; then ok "ffmpeg present — audio/video ingest enabled"; else
+  warn "ffmpeg missing — audio/video ingest needs it. Attempting install..."
+  pm_install ffmpeg \
+    && command -v ffmpeg &>/dev/null && ok "ffmpeg installed" \
+    || warn "  could not auto-install — audio/video ingest disabled until you install ffmpeg. Other formats still work."
+fi
+if command -v yt-dlp &>/dev/null; then ok "yt-dlp present — URL/stream ingest enabled"; else
+  warn "yt-dlp missing — URL ingest needs it. Attempting install (pip)..."
+  pip_install yt-dlp \
+    && ok "yt-dlp installed (pip)" \
+    || warn "  could not auto-install — URL ingest disabled until you install yt-dlp. File ingest still works."
+fi
+# faster-whisper: local ASR fallback. ~91MB deps (ctranslate2/av), NO torch, NO
+# GPU. Only the fallback rung — subtitle grab + any Deepgram key run first.
+if "$PY" -c 'import faster_whisper' 2>/dev/null; then ok "faster-whisper present — local transcription fallback enabled"; else
+  warn "faster-whisper missing — installing local ASR fallback (no GPU/torch)..."
+  pip_install faster-whisper \
+    && "$PY" -c 'import faster_whisper' 2>/dev/null && ok "faster-whisper installed" \
+    || warn "  could not auto-install faster-whisper — audio/video transcription will skip unless a DEEPGRAM_API_KEY is set or captions exist. Install: $PY -m pip install faster-whisper"
+fi
 # Existing MEMORY.md
 if [ -f "$WS/MEMORY.md" ] && [ -s "$WS/MEMORY.md" ]; then
   warn "MEMORY.md already exists and has content."
