@@ -158,6 +158,56 @@ def _sim(a: str, b: str) -> float:
     return SequenceMatcher(None, _norm(a), _norm(b)).ratio()
 
 
+# —— MULTILINGUAL semantic similarity (optional; reuses neuron's e5 model) ——————————————
+# When two behavior descriptions are in DIFFERENT languages, both string-fuzzy and English
+# keyword tiers go blind. Neuron already ships intfloat/multilingual-e5-small (EN/ID + all
+# majors) via tools/_embed.py. We reuse it for a language-crossing behavior match: it embeds
+# "balas pengirim" and "reply to sender" close together. Lazy + optional: if the embedding
+# stack isn't installed, this abstains (returns None) and we fall to keyword/structural —
+# the semantic tier only ever ADDS recall, never removes the safe degradation path.
+SEMANTIC_SIM = 0.82   # cosine threshold; e5 normalized -> dot == cosine. Higher than the
+                      # string-fuzzy 0.72 because e5 similarities run hotter (0.7+ common).
+_sem_embedder = None
+_sem_state = None     # None=untried, False=unavailable, True=ready
+
+def _get_semantic():
+    """Lazily load neuron's shared multilingual embedder. Returns callable(texts)->vectors
+    or None if unavailable. Never raises."""
+    global _sem_embedder, _sem_state
+    if _sem_state is not None:
+        return _sem_embedder if _sem_state else None
+    try:
+        import os as _os, sys as _sys
+        # tools/_embed.py lives one dir up from procedures/
+        _tools = _os.path.join(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))), "tools")
+        if _tools not in _sys.path:
+            _sys.path.insert(0, _tools)
+        import _embed  # type: ignore
+        emb = _embed.get_embeddings()
+        _sem_embedder = emb
+        _sem_state = True
+        return emb
+    except Exception:
+        _sem_state = False
+        _sem_embedder = None
+        return None
+
+def _semantic_sim(a: str, b: str):
+    """Cosine similarity of two descriptions via the multilingual model. Returns float in
+    [0,1] or None if the model is unavailable (caller then abstains from this tier)."""
+    emb = _get_semantic()
+    if emb is None or not (a and b):
+        return None
+    try:
+        va = emb.embed_query(a)
+        vb = emb.embed_query(b)
+        # e5 vectors are L2-normalized (encode_kwargs normalize_embeddings=True) -> dot=cosine
+        dot = sum(x * y for x, y in zip(va, vb))
+        return max(0.0, min(1.0, dot))
+    except Exception:
+        return None
+
+
 def _iter_records(payload):
     """OpenClaw list JSON shapes vary (list, {hooks:[...]}, {jobs:[...]}, {items:[...]}).
     Yield dict records defensively from whatever we got."""
@@ -241,6 +291,7 @@ def check_duplicate(surface: str, slug: str, title: str, behavior_text: str,
     name_match = None
     struct_match = None          # (name, shared_kinds)
     fuzzy_best = (0.0, "")       # (sim, name)
+    semantic_best = (0.0, "")    # (cosine, name) — multilingual, cross-script
 
     for rec in recs:
         rname, rbehavior = _record_text(rec)
@@ -268,6 +319,13 @@ def check_duplicate(surface: str, slug: str, title: str, behavior_text: str,
             bsim = _sim(proposed_behavior, rbehavior)
             if bsim > fuzzy_best[0]:
                 fuzzy_best = (bsim, rname)
+        # TIER 3.5 — MULTILINGUAL semantic match (cross-language, cross-script). Catches the
+        # case string-fuzzy can't: same behavior described in different languages. Optional;
+        # abstains cleanly if the embedding model isn't installed.
+        if rbehavior:
+            ssim = _semantic_sim(proposed_behavior, rbehavior)
+            if ssim is not None and ssim > semantic_best[0]:
+                semantic_best = (ssim, rname)
 
     if name_match:
         return {"duplicate": True, "source": "live", "match": name_match, "tier": "name",
@@ -285,9 +343,16 @@ def check_duplicate(surface: str, slug: str, title: str, behavior_text: str,
                 "reason": (f"an installed {surface} '{fuzzy_best[1]}' already does this behavior "
                            f"(text similarity {fuzzy_best[0]:.2f}); installing would DOUBLE-fire"),
                 "sim": round(fuzzy_best[0], 3), "query_status": qstatus}
+    if semantic_best[0] >= SEMANTIC_SIM:
+        return {"duplicate": True, "source": "live", "match": semantic_best[1] or "(unnamed)", "tier": "semantic",
+                "reason": (f"an installed {surface} '{semantic_best[1]}' does the same thing described "
+                           f"in another language (multilingual similarity {semantic_best[0]:.2f}); "
+                           f"installing would DOUBLE-fire"),
+                "sim": round(semantic_best[0], 3), "query_status": qstatus}
 
     return {"duplicate": False, "source": None, "match": None, "tier": None,
-            "reason": "no live or staged duplicate found", "sim": round(fuzzy_best[0], 3),
+            "reason": "no live or staged duplicate found",
+            "sim": round(max(fuzzy_best[0], semantic_best[0]), 3),
             "query_status": qstatus}
 
 
