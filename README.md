@@ -416,7 +416,7 @@ All signals must align. One-off or low-confidence insights stay in synthesis —
 | gate-driven | Verified Note Deleter (OpenClaw cron, self-schedule disabled) | Deterministic janitor: delete notes tagged `verified: true` (snapshot first, `promote: pin` support, non-blocking lock, claim-aware); only fires when the gate finds a `verified` note |
 | Daily 6:00 UTC | Daily Note Review (OpenClaw cron) | General note janitor: retire `task_bound` notes whose `done_when` is met, projects finished out-of-band, and abandoned notes past `stale_after`; claim-aware |
 | Weekly Sun 4:00 UTC | `memory_promote.py` + `generate_topic_index.py` | L4 — Knowledge Promotion + MEMORY.md enrichment; triggers `skill_extract.py` after each run |
-| On project completion / L3 / L4 | `skill_extract.py` | Skill Promotion — extracts reusable procedures from completed projects, L3 clusters, and PERSISTENT.md best practices; promotes at convergence ≥ 3 |
+| On project completion / L3 / L4 | `skill_extract.py` | Behavior Promotion — distills reusable patterns from completed projects, L3 clusters, and PERSISTENT.md best practices; at convergence ≥ 3, routes each to its surface (skill auto-written; hook/cron staged for confirmation) |
 
 ---
 
@@ -456,7 +456,7 @@ All signals must align. One-off or low-confidence insights stay in synthesis —
 │   ├── generate_topic_index.py # L4 — topic index + MEMORY.md enrichment
 │   ├── docs_ingest.py          # RAG — ingest long docs
 │   ├── data_register.py        # Structured data — register csv/json/parquet into the DuckDB store + catalog
-│   ├── skill_extract.py        # Skill Promotion — extract from completed projects, L3 clusters, PERSISTENT.md best practices
+│   ├── skill_extract.py        # Behavior Promotion — distill patterns from projects/L3/PERSISTENT.md; route to skill (auto) / hook / cron (staged)
 │   └── run_log.py              # Per-run audit trail — append-only JSONL log for all cron scripts
 ├── tools/
 │   ├── docs_search.py          # RAG — semantic search over long docs (HyDE query expansion enabled by default)
