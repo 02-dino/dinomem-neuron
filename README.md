@@ -283,7 +283,9 @@ Contracts, books, legal text, manuals — anything too long to live in memory. `
 
 The three are additive: turning any one off leaves the others intact.
 
-**Seamless ingest.** You don't drop files in a folder or convert anything. Share a document in chat — PDF, Word (`.docx`), `.rtf`, `.odt`, HTML, EPUB, or plain text/markdown — and the agent detects the intent, extracts it to markdown, and ingests it automatically, ready for `docs_search`. This works on any chat channel that downloads attachments to OpenClaw's shared media store (Telegram, WhatsApp, Discord, Slack, and others), not just one. PDF extraction uses `pdftotext` and Office/HTML uses `pandoc`; the installer auto-installs both when possible, and if either is unavailable, text/markdown ingest still works while the affected formats degrade gracefully with a clear message.
+**Seamless ingest.** You don't drop files in a folder or convert anything. Share a document *or an image* in chat — PDF, Word (`.docx`), `.rtf`, `.odt`, HTML, EPUB, plain text/markdown, **or a screenshot/photo/scan (JPG, PNG, etc.)** — and the agent detects the intent, extracts it to markdown, and ingests it automatically, ready for `docs_search`. This works on any chat channel that downloads attachments to OpenClaw's shared media store (Telegram, WhatsApp, Discord, Slack, and others), not just one. PDF extraction uses `pdftotext` and Office/HTML uses `pandoc`; the installer auto-installs both when possible, and if either is unavailable, text/markdown ingest still works while the affected formats degrade gracefully with a clear message.
+
+**Images and scanned pages just work too — no OCR setup.** Share an image and it's read via the agent's own vision model (the model already configured in OpenClaw — no GPU, no extra model download, no dependency). The same guard runs on PDFs: any page that's a scan, or that hides a chart/table as an image `pdftotext` can't read, is detected and OCR'd automatically — so mixed "mostly text with one embedded figure" pages don't silently lose the figure. Fully automatic; nothing to flip on.
 
 ### Structured data
 

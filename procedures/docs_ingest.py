@@ -267,6 +267,66 @@ def _call_llm(prompt: str, max_tokens: int = 1500, model: str = None) -> Tuple[b
     return False, ""
 
 
+# ── Vision OCR (reuses the SAME gateway model-run endpoint as _call_llm) ───────
+# No GPU, no vLLM, no extra Python dep. A user installs dinomem-neuron and shares
+# an image or scanned PDF — this reads it via the configured vision model.
+def _ocr_image(image_path: Path, model: str = None) -> Tuple[bool, str]:
+    """Transcribe text/tables/charts from an image via the OpenClaw gateway
+    vision endpoint (openclaw capability model run --file). Returns (ok, text)."""
+    import shutil as _shutil
+    _oc = _shutil.which("openclaw") or "/home/linuxbrew/.linuxbrew/bin/openclaw"
+    _model = model or _NO_REASONING_MODEL
+    _cmd = [_oc, "capability", "model", "run",
+            "--file", str(image_path),
+            "--prompt", _OCR_PROMPT, "--gateway", "--json"]
+    if _model:
+        _cmd += ["--model", _model]
+    try:
+        result = subprocess.run(_cmd, capture_output=True, text=True, timeout=180)
+        if result.returncode == 0:
+            out = json.loads(result.stdout)
+            if out.get("ok") and out.get("outputs"):
+                text = out["outputs"][0].get("text", "").strip()
+                if text:
+                    return True, text
+        log(f"  ⚠️  OCR call failed: {(result.stderr or '')[:200]}")
+    except subprocess.TimeoutExpired:
+        log("  ⚠️  OCR call timed out")
+    except Exception as e:
+        log(f"  ⚠️  OCR call error: {e}")
+    return False, ""
+
+
+def _ocr_pdf_pages(src: Path, pages: List[int], model: str = None) -> str:
+    """Rasterize the given PDF page numbers to PNG (pdftoppm) and OCR each.
+    Returns concatenated markdown, one block per page. Pages that fail OCR are
+    skipped silently (best-effort augmentation, never blocks ingest)."""
+    import shutil as _shutil, tempfile
+    if not _shutil.which("pdftoppm"):
+        log("  ⚠️  pdftoppm not found — cannot OCR scanned PDF pages")
+        return ""
+    blocks = []
+    with tempfile.TemporaryDirectory(prefix="ocr_pdf_") as td:
+        for p in pages:
+            base = os.path.join(td, f"page_{p}")
+            r = subprocess.run(
+                ["pdftoppm", "-png", "-r", "150", "-f", str(p), "-l", str(p),
+                 str(src), base],
+                capture_output=True, text=True, timeout=120)
+            png = None
+            for cand in sorted(Path(td).glob(f"page_{p}*.png")):
+                png = cand
+                break
+            if r.returncode != 0 or png is None:
+                log(f"  ⚠️  rasterize failed for page {p}")
+                continue
+            ok, text = _ocr_image(png, model=model)
+            if ok and text:
+                blocks.append(f"\n\n## (page {p} — OCR)\n\n{text}")
+                log(f"  🖼️  OCR'd scanned/mixed page {p} ({len(text)} chars)")
+    return "".join(blocks)
+
+
 # ── Entity + relation extraction ──────────────────────────────────────────────
 _ENTITY_PROMPT_TMPL = """\
 You are an entity and relation extractor for a document knowledge graph.
@@ -430,6 +490,20 @@ import shutil
 
 # Extensions read directly as text (no conversion needed)
 _TEXT_EXTS = {'.md', '.markdown', '.txt', '.text'}
+# Image extensions → routed straight through vision-OCR → markdown.
+# First-class ingest inputs: a user can drop a screenshot / photo / scanned page
+# and it gets read + embedded automatically, no manual step, no config toggle.
+_IMAGE_EXTS = {'.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp', '.tif', '.tiff'}
+
+# Vision OCR prompt — reused for standalone images AND scanned/mixed PDF pages.
+_OCR_PROMPT = (
+    "Transcribe ALL text visible in this image exactly and completely, as plain "
+    "text. If it contains a table, render it as a GitHub-flavored markdown table. "
+    "If it contains a chart or diagram, first transcribe any labels/legend/axis "
+    "text, then add a one-line description of what the chart shows. Preserve "
+    "reading order. Output ONLY the transcription/markdown, no preamble, no "
+    "commentary."
+)
 # Extensions routed through pandoc → markdown
 _PANDOC_EXTS = {'.docx', '.doc', '.rtf', '.odt', '.html', '.htm', '.epub'}
 
@@ -448,9 +522,11 @@ def _sniff_format(path: Path) -> str:
         return 'pdf'
     if ext in _PANDOC_EXTS:
         return 'pandoc'
+    if ext in _IMAGE_EXTS:
+        return 'image'
     # No (or unknown) extension → sniff magic bytes
     try:
-        head = path.read_bytes()[:8]
+        head = path.read_bytes()[:12]
     except Exception:
         return 'unknown'
     if head[:4] == b'%PDF':
@@ -460,6 +536,19 @@ def _sniff_format(path: Path) -> str:
         return 'pandoc'
     if head[:5].lower() == b'<html' or head[:9].lower() == b'<!doctype':
         return 'pandoc'
+    # Image magic bytes (extension-less inbound files, e.g. media/inbound/<uuid>)
+    if head[:3] == b'\xff\xd8\xff':                     # JPEG
+        return 'image'
+    if head[:8] == b'\x89PNG\r\n\x1a\n':                # PNG
+        return 'image'
+    if head[:6] in (b'GIF87a', b'GIF89a'):             # GIF
+        return 'image'
+    if head[:4] == b'RIFF' and head[8:12] == b'WEBP':  # WEBP
+        return 'image'
+    if head[:2] == b'BM':                              # BMP
+        return 'image'
+    if head[:4] in (b'II*\x00', b'MM\x00*'):           # TIFF
+        return 'image'
     # Assume utf-8 text as a last resort (covers extension-less .md/.txt)
     return 'text'
 
@@ -489,6 +578,24 @@ def extract_to_markdown(src: Path) -> Path:
         log(f"  extracted (text): {src.name} → {out.name}")
         return out
 
+    if fmt == 'image':
+        # First-class image ingest: OCR the image via the gateway vision model
+        # (no GPU, no extra dep) and write the transcription as markdown. Fully
+        # automatic — a user just shares a screenshot/photo/scan and it lands in
+        # the KB. If OCR yields nothing, we still write a stub so the file is
+        # tracked (and the failure is visible in the log) rather than silently
+        # vanishing.
+        ok, text = _ocr_image(src)
+        title = src.stem.replace('_', ' ').replace('-', ' ').strip() or 'Image'
+        if ok and text:
+            body = f"# {title}\n\n{text}\n"
+            log(f"  extracted (image OCR): {src.name} → {out.name} ({len(text)} chars)")
+        else:
+            body = f"# {title}\n\n_(image ingested but OCR returned no text)_\n"
+            log(f"  ⚠️  image OCR empty: {src.name} → {out.name} (stub written)")
+        out.write_text(body, encoding='utf-8')
+        return out
+
     if fmt == 'pdf':
         if not shutil.which('pdftotext'):
             raise RuntimeError(
@@ -500,6 +607,28 @@ def extract_to_markdown(src: Path) -> Path:
         if r.returncode != 0 or not out.exists():
             raise RuntimeError(f"pdftotext failed: {r.stderr.strip()[:200]}")
         log(f"  extracted (pdf): {src.name} → {out.name}")
+        # AUTO visual-gap recovery: probe the PDF for scanned/mixed pages whose
+        # visual content pdftotext can't see (full-page scans OR embedded
+        # charts/tables-as-image). Any such pages get OCR'd and appended. Fully
+        # automatic — no flag, no manual step. Best-effort: never blocks ingest.
+        try:
+            import importlib.util as _ilu
+            probe_path = Path(__file__).parent / 'pdf_visual_probe.py'
+            if probe_path.exists() and shutil.which('pdftoppm'):
+                _spec = _ilu.spec_from_file_location('pdf_visual_probe', probe_path)
+                _pvp = _ilu.module_from_spec(_spec)
+                _spec.loader.exec_module(_pvp)
+                verdict = _pvp.probe(src)
+                targets = verdict.get('ocr_targets', []) if isinstance(verdict, dict) else []
+                pages = sorted({t['page'] for t in targets if 'page' in t})
+                if pages:
+                    log(f"  🔎 visual-gap: {len(pages)} page(s) need OCR ({verdict.get('ocr_needed')}) → recovering")
+                    ocr_md = _ocr_pdf_pages(src, pages)
+                    if ocr_md:
+                        with open(out, 'a', encoding='utf-8') as _f:
+                            _f.write(ocr_md)
+        except Exception as _e:
+            log(f"  ⚠️  visual-gap probe skipped: {_e}")
         return out
 
     if fmt == 'pandoc':
@@ -663,9 +792,18 @@ def main():
         paths = [args.file]
     else:
         DOCS_DIR.mkdir(parents=True, exist_ok=True)
-        paths = sorted(DOCS_DIR.glob("**/*.md"))
+        # Pick up EVERY supported input, not just markdown: text, PDFs, Office
+        # docs, AND images (jpg/png/etc). Images route through vision-OCR;
+        # scanned/mixed PDFs get auto-OCR'd for their visual pages. Fully
+        # automatic — a user just shares any file and it ingests.
+        _INGEST_EXTS = _TEXT_EXTS | {'.pdf'} | _PANDOC_EXTS | _IMAGE_EXTS
+        paths = sorted(
+            p for p in DOCS_DIR.glob("**/*")
+            if p.is_file() and p.suffix.lower() in _INGEST_EXTS
+        )
         if not paths:
-            log(f"No .md files found in {DOCS_DIR}")
+            log(f"No ingestible files found in {DOCS_DIR} "
+                f"(supported: text, pdf, office docs, images)")
             sys.exit(0)
 
     log(f"Files to check: {len(paths)}")

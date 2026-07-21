@@ -1,6 +1,6 @@
 ---
 name: retrieval-routing
-description: Pick the right retrieval tool for a query and ingest long documents / structured data correctly in dinomem-neuron. Read this when deciding between docs_search / session_search / memory_search / data_query / graph_search / grep, when a long document is shared or uploaded, or when a query is a row/count/range/filter/aggregate over structured data (csv/json/parquet).
+description: Pick the right retrieval tool for a query and ingest documents / images / structured data correctly in dinomem-neuron. Read this when deciding between docs_search / session_search / memory_search / data_query / graph_search / grep, when a document OR image is shared or uploaded (pdf/docx/etc OR jpg/png/screenshot/photo/scan), or when a query is a row/count/range/filter/aggregate over structured data (csv/json/parquet).
 ---
 
 # Retrieval routing (dinomem-neuron)
@@ -30,20 +30,24 @@ Key discriminators:
 - `graph_search` — skip when relation_edges aren't populated yet; fall back to
   `memory_search`.
 
-## Long documents → RAG (`docs_search`)
+## Documents & images → RAG (`docs_search`)
 
-**When:** a long doc is shared · a doc file is uploaded (pdf/docx/rtf/odt/html/
-epub/md/txt) · "save/remember this doc" · content `>2000 chars`.
+**When:** a doc/image is shared · a file is uploaded (pdf/docx/rtf/odt/html/
+epub/md/txt **OR** jpg/jpeg/png/webp/gif/bmp/tiff — screenshots, photos,
+scans) · "save/remember this" · content `>2000 chars`.
 
-**Action:**
+**Action (same for docs AND images):**
 - **Uploaded file:** `python3 DINOMEM_WORKSPACE_PLACEHOLDER/procedures/docs_ingest.py --file <media path>` → confirm.
-  The script self-extracts pdf/docx/etc → `docs/<slug>.md`.
+  The script self-routes by type: pdf/docx/etc → text extract; **images → vision-OCR**;
+  scanned/mixed PDFs → auto-OCR of the visual pages. All automatic, no flags.
 - **Pasted text:** save `docs/<slug>.md` → `python3 DINOMEM_WORKSPACE_PLACEHOLDER/procedures/docs_ingest.py --file docs/<slug>.md` → confirm.
 
 **Media path:** inbound uploads land at `~/.openclaw/media/inbound/<uuid>` (from the
-`<media:...>` placeholder); pass that path straight to `--file`.
+`<media:...>` placeholder); pass that path straight to `--file`. Works for images
+too — an extension-less inbound image is detected by magic bytes.
 
-**Notes:** ingest auto-extracts via pdftotext + pandoc (no manual convert);
+**Notes:** ingest auto-extracts via pdftotext + pandoc; images/scans via the
+gateway vision model (no GPU, no extra dep — reuses the configured model);
 re-ingested daily 04:00 UTC; ready for `docs_search` after. **Never** save long
 docs to `memory/`. Row/count/range/aggregate over structured data → `data_query`,
 not `docs_search`.
