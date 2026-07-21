@@ -96,6 +96,21 @@ CRON_SIGNALS = [
     (r"\b(schedule|recurring|periodically|every day|each day)\b", ("cron", "unspecified")),
 ]
 
+def _safety_validate(kind: str, slug: str, ev_or_kind: str, action_text: str) -> dict:
+    """Run the runtime-mutating safety validator (hooks/crons). Import is lazy so a missing
+    validator degrades safe: if it can't load, treat as a BLOCKER for hooks (fail closed),
+    pass-with-warning for crons (native cron guardrails still apply)."""
+    try:
+        import importlib
+        ps = importlib.import_module("promotion_safety")
+    except Exception as e:
+        if kind == "hook":
+            return {"ok": False, "blockers": [f"promotion_safety validator unavailable ({e}); refusing to stage a runtime-mutating hook unchecked"], "warnings": []}
+        return {"ok": True, "blockers": [], "warnings": [f"promotion_safety unavailable ({e}); cron staged on native guardrails only"]}
+    if kind == "hook":
+        return ps.validate_hook(slug, ev_or_kind, action_text)
+    return ps.validate_cron(slug, ev_or_kind, action_text)
+
 def classify_surface(title: str, steps: list) -> dict:
     """Classify a converged pattern into a target surface.
     Order mirrors route.py: schedule (cron) -> event (hook) -> skill (default).
@@ -342,8 +357,9 @@ def _load_candidate_parse(slug: str) -> dict:
     return {"title": title, "steps": steps}
 
 def stage_hook_proposal(slug: str, cls: dict, parse: dict):
-    """Runtime-mutating: DO NOT auto-install. Stage a hook proposal + the exact
-    dinomem-base hook_tool command for a human to confirm."""
+    """Runtime-mutating: DO NOT auto-install. SAFETY-VALIDATE first (loops, silent-dead,
+    pipeline stalls); a BLOCKER means the proposal is rejected, never staged. Then stage
+    the proposal + the exact dinomem-base hook_tool command for a human to confirm."""
     HOOK_PROPOSALS_DIR.mkdir(parents=True, exist_ok=True)
     d = HOOK_PROPOSALS_DIR / slug
     d.mkdir(parents=True, exist_ok=True)
@@ -351,6 +367,19 @@ def stage_hook_proposal(slug: str, cls: dict, parse: dict):
     title = parse["title"]
     steps = parse.get("steps", [])
     action = "; ".join(s["text"] for s in steps[:4]) or title
+
+    safety = _safety_validate("hook", slug, event, action)
+    if not safety["ok"]:
+        proposal = {
+            "slug": slug, "surface": "hook", "event": event, "title": title,
+            "staged": today_str(), "status": "rejected_unsafe",
+            "blockers": safety["blockers"], "warnings": safety.get("warnings", []),
+            "note": "Rejected by promotion_safety: staging a hook like this could break the agent. Fix the blocker(s) in the source pattern before it can be promoted.",
+        }
+        (d / "PROPOSAL.json").write_text(json.dumps(proposal, indent=2, ensure_ascii=False), encoding="utf-8")
+        print(f"  [rejected:hook] {slug} (event={event}) — unsafe: {'; '.join(safety['blockers'])[:180]}")
+        return
+
     cmd = (f'python3 <dinomem-base>/tools/hook_tool.py scaffold {slug} '
            f'--event {event} --emoji "\U0001FA9D" --desc "{title[:80]}" '
            f'--action "{action[:200]}"  # then review + --confirmed')
@@ -358,10 +387,12 @@ def stage_hook_proposal(slug: str, cls: dict, parse: dict):
         "slug": slug, "surface": "hook", "event": event, "title": title,
         "matched_signal": cls.get("matched"), "staged": today_str(),
         "apply_command": cmd, "status": "awaiting_confirmation",
-        "note": "Hooks are runtime-mutating. Neuron does NOT auto-install. Review and run the base hook_tool with --confirmed.",
+        "safety_warnings": safety.get("warnings", []),
+        "note": "Hooks are runtime-mutating. Neuron does NOT auto-install. Review safety_warnings, then run the base hook_tool with --confirmed.",
     }
     (d / "PROPOSAL.json").write_text(json.dumps(proposal, indent=2, ensure_ascii=False), encoding="utf-8")
-    print(f"  [staged:hook] {slug} (event={event}) → kb/memory_neuron/hook_candidates/{slug}/ [awaiting confirmation]")
+    warn = f" [{len(safety['warnings'])} warning(s)]" if safety.get("warnings") else ""
+    print(f"  [staged:hook] {slug} (event={event}){warn} → kb/memory_neuron/hook_candidates/{slug}/ [awaiting confirmation]")
 
 def stage_cron_proposal(slug: str, cls: dict, parse: dict):
     """Runtime-mutating: DO NOT auto-install. Stage a cron proposal + the exact
@@ -373,6 +404,7 @@ def stage_cron_proposal(slug: str, cls: dict, parse: dict):
     title = parse["title"]
     steps = parse.get("steps", [])
     payload = "; ".join(s["text"] for s in steps[:4]) or title
+    safety = _safety_validate("cron", slug, kind, payload)
     cmd = (f'python3 <dinomem-base>/tools/cron_tool.py add {slug} '
            f'--{kind} "<fill schedule: {cls.get("hint", "unspecified")}>" '
            f'--desc "{title[:80]}"  # classify tier, then --confirmed')
@@ -380,10 +412,12 @@ def stage_cron_proposal(slug: str, cls: dict, parse: dict):
         "slug": slug, "surface": "cron", "cron_kind": kind, "hint": cls.get("hint"),
         "title": title, "payload": payload[:200], "matched_signal": cls.get("matched"),
         "staged": today_str(), "apply_command": cmd, "status": "awaiting_confirmation",
-        "note": "Crons are runtime-mutating + recurring cost. Neuron does NOT auto-install. Review, classify cost tier, run base cron_tool with --confirmed.",
+        "safety_warnings": safety.get("warnings", []),
+        "note": "Crons are runtime-mutating + recurring cost. Neuron does NOT auto-install. Review safety_warnings + classify cost tier, then run base cron_tool with --confirmed.",
     }
     (d / "PROPOSAL.json").write_text(json.dumps(proposal, indent=2, ensure_ascii=False), encoding="utf-8")
-    print(f"  [staged:cron] {slug} (kind={kind}) → kb/memory_neuron/cron_candidates/{slug}/ [awaiting confirmation]")
+    warn = f" [{len(safety['warnings'])} warning(s)]" if safety.get("warnings") else ""
+    print(f"  [staged:cron] {slug} (kind={kind}){warn} → kb/memory_neuron/cron_candidates/{slug}/ [awaiting confirmation]")
 
 def promote_converged(slug: str):
     """Single promotion dispatcher: classify the converged candidate's surface, then

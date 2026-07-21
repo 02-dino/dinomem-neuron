@@ -358,6 +358,17 @@ The surface classifier uses the **same discriminator logic as dinomem-base `rout
 
 **Why skills auto-write but hooks/crons only stage:** a skill is a passive markdown file. A hook or cron is **runtime-mutating** — it edits `openclaw.json` and actually *runs*. Neuron never auto-installs those. Each staged proposal carries the **exact dinomem-base `hook_tool`/`cron_tool` command** to run (with `--confirmed`) after a human reviews it. This mirrors neuron's existing safety-gate philosophy: local/passive work proceeds unattended, runtime-mutating work pauses for approval.
 
+**Pre-stage safety validation (`promotion_safety.py`).** A confirm prompt isn't enough on its own — a bad hook can break the agent in ways that aren't obvious at a glance. So before a hook/cron proposal is ever staged, it runs a validator grounded in OpenClaw's actual runtime behavior. A **blocker** means the proposal is *rejected, never staged* (`status: rejected_unsafe`); a **warning** stages but is surfaced at confirm time. Hooks get the heavy checks because hooks are where an agent actually breaks:
+
+| Check | Why it matters | Result |
+| ----- | -------------- | ------ |
+| **Self-trigger loop** — sends/pushes a message on a loop-prone event (`message:received`, `message:sent`, `command:*`) | `message:sent` fires on *every* outbound; a hook that sends here re-triggers itself. Internal hooks are react-only and OpenClaw does **not** break self-loops. | **blocker** |
+| **Silent-dead event** — event isn't one of OpenClaw's 16 emitted events or a family listener | A typo'd event name leaves the hook silently dead (only a log warning). | **blocker** |
+| **Silent no-op push** — pushes `event.messages` on a non-replyable surface | Pushed messages are delivered only on `command:new/reset` + compaction; anywhere else they're silently ignored. | warning |
+| **Pipeline stall** — heavy/blocking work in the handler | Hooks run *during* command processing; a slow handler stalls every command. | warning |
+
+**Crons get lighter checks** — and deliberately so. OpenClaw's cron already ships strong native guardrails (retry backoff, `maxConcurrentRuns`, per-run timeouts, top-of-hour staggering, dead-endpoint skip), and the base `cron_tool` already refuses an unconditional recurring model-turn without `--confirmed`. So the validator only surfaces the one thing a human must consciously accept: a recurring job that wakes a reasoning model on every fire burns tokens — prefer a deterministic `--command` or a `--gate` (LLM only on a real hit). Nothing here blocks; cron's native safety net plus the confirm gate is the real protection.
+
 - **Source 1 — completed projects**: fires when a project note flips `status: done`
 - **Source 2 — L3 clusters**: fires after memory synthesis; procedural clusters (size ≥ 3, action-verb pattern) become candidates
 - **Source 3 — PERSISTENT.md**: fires after L4 promotion; best-practice insights ("always X", "prefer X over Y") become low-confidence candidates
