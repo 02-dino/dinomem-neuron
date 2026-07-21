@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 """
-skill_extract.py — Feature 3: Skill Promotion for dinomem-neuron.
+skill_extract.py — Feature 3: Behavior Promotion for dinomem-neuron.
+
+Converges repeated procedural patterns and promotes them to the RIGHT surface:
+skill (auto), hook (staged), or cron (staged). Same convergence engine, three outputs.
+(No root-file promotion — that is knowledge/persistent promotion, already handled by
+memory_promote.py.)
 
 Promotion mode (default):
   python3 skill_extract.py
@@ -8,7 +13,16 @@ Promotion mode (default):
   - Extracts steps into a PROPOSAL.md candidate
   - Writes kb/memory_neuron/skill_candidates/<slug>/PROPOSAL.md + meta.json
   - Checks convergence (fuzzy match >=0.75 against existing candidates)
-  - At convergence_count >= 3: promotes to skills/<name>/SKILL.md
+  - At convergence_count >= 3: classify_surface() routes the converged pattern:
+      * skill -> promote_to_skill()  -> skills/<slug>/SKILL.md          (auto: passive .md, safe)
+      * hook  -> stage_hook_proposal() -> kb/memory_neuron/hook_candidates/<slug>/PROPOSAL.json
+      * cron  -> stage_cron_proposal() -> kb/memory_neuron/cron_candidates/<slug>/PROPOSAL.json
+    Hooks/crons are runtime-mutating -> NEVER auto-installed. Each staged proposal carries the
+    exact dinomem-base hook_tool/cron_tool command to run (with --confirmed) after human review.
+
+Status:
+  python3 skill_extract.py --status
+  - Lists routed candidates (skill/hook/cron) + staged hook/cron proposals awaiting confirmation.
 
 Review mode (self-fix):
   python3 skill_extract.py --review <slug>
@@ -43,6 +57,57 @@ FUZZY_MATCH_THRESHOLD = 0.75
 PRUNE_DAYS = 60  # delete zero-convergence candidates older than this
 
 SAFETY_KEYWORDS = {"delete", "overwrite", "drop", "rm", "truncate", "unlink", "shutil.rmtree"}
+
+# ── Surface classification (skill | hook | cron) ─────────────────────────────
+# A converged procedural pattern is not always a skill. Same discriminator logic as
+# dinomem-base route.py: a schedule signal -> cron, a gateway-event signal -> hook,
+# otherwise -> skill (on-demand procedure). Skills are passive .md (safe to auto-write);
+# hooks/crons are runtime-mutating, so they are STAGED as proposals for human confirmation
+# and never auto-installed. Base scaffolding (hook_tool.py/cron_tool.py) is reused, not
+# re-implemented — neuron emits the exact base-tool command in the proposal.
+
+HOOKS_DIR = BASE / "hooks"
+HOOK_PROPOSALS_DIR = BASE / "kb/memory_neuron/hook_candidates"
+CRON_PROPOSALS_DIR = BASE / "kb/memory_neuron/cron_candidates"
+
+# Gateway-event signals -> hook. Ordered; first match wins. Value = base hook_tool event.
+HOOK_SIGNALS = [
+    (r"\b(every ?time|whenever|on each|each time)\b.*\b(message|inbound|dm|reply)\b", "message:received"),
+    (r"\b(inbound|incoming)\b.*\bmessage\b", "message:received"),
+    (r"\bon /?(new|reset)\b|\b/reset\b|\b/new\b", "command:reset"),
+    (r"\bon /?stop\b|\b/stop\b", "command:stop"),
+    (r"\b(session|agent) (start|bootstrap)\b|\bat (start|bootstrap|boot)\b|\bat every session\b", "agent:bootstrap"),
+    (r"\bbefore (compaction|compact)\b|\bon compaction\b", "compaction:before"),
+    (r"\b(gateway) (start|restart|boot|lifecycle)\b", "gateway:ready"),
+]
+
+# Schedule signals -> cron. Ordered; first match wins. Value = (kind, hint).
+CRON_SIGNALS = [
+    (r"\bevery ?morning\b|\bdaily\b|\beach day\b|\bevery day\b", ("cron", "daily")),
+    (r"\bevery ?\d+ ?(hour|hr|h)s?\b", ("every", "hours")),
+    (r"\bevery ?\d+ ?(min|minute)s?\b", ("every", "minutes")),
+    (r"\bevery ?(week|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b", ("cron", "weekly")),
+    (r"\bat \d{1,2}(:\d{2})? ?(am|pm|utc)?\b", ("cron", "time_of_day")),
+    (r"\bin \d+ ?(hour|min|minute|day)s?\b", ("at", "one_shot")),
+    (r"\b(hourly|weekly|monthly)\b", ("cron", "interval")),
+    # "schedule/recurring/periodically" are genuine schedule words. "reminder"/"remind me"
+    # are NOT alone — a reminder can be event-driven ("remind at session start"). Require an
+    # explicit recurrence word so hook signals get first shot at event-anchored reminders.
+    (r"\b(schedule|recurring|periodically|every day|each day)\b", ("cron", "unspecified")),
+]
+
+def classify_surface(title: str, steps: list) -> dict:
+    """Classify a converged pattern into a target surface.
+    Order mirrors route.py: schedule (cron) -> event (hook) -> skill (default).
+    Returns {surface, event?, cron_kind?, hint?, matched?}."""
+    text = (title + " " + " ".join(s.get("text", "") for s in steps)).lower()
+    for pat, (kind, hint) in CRON_SIGNALS:
+        if re.search(pat, text):
+            return {"surface": "cron", "cron_kind": kind, "hint": hint, "matched": pat}
+    for pat, event in HOOK_SIGNALS:
+        if re.search(pat, text):
+            return {"surface": "hook", "event": event, "matched": pat}
+    return {"surface": "skill", "matched": None}
 
 
 def now_iso():
@@ -255,6 +320,93 @@ def promote_to_skill(slug: str, proposal_path: Path):
     skill_path.write_text(proposal_path.read_text(encoding="utf-8"), encoding="utf-8")
     print(f"  [promoted] {slug} → skills/{slug}/SKILL.md")
 
+def _load_candidate_parse(slug: str) -> dict:
+    """Re-derive title+steps for a converged candidate from its source, so the surface
+    classifier has text to read at promotion time. Falls back to meta.title only."""
+    meta = load_meta(slug)
+    title = meta.get("title", slug)
+    src = meta.get("source_project")
+    if src:
+        note_path = MEMORY_DIR / src
+        if note_path.exists():
+            p = parse_note(note_path)
+            return {"title": p["meta"].get("title", title), "steps": p["steps"]}
+    # cluster / persistent sources: reconstruct steps from the PROPOSAL body
+    prop = CANDIDATES_DIR / slug / "PROPOSAL.md"
+    steps = []
+    if prop.exists():
+        for line in prop.read_text(encoding="utf-8").splitlines():
+            m = re.match(r"^\d+\.\s+(.+)", line.strip())
+            if m:
+                steps.append({"done": False, "text": m.group(1).strip()})
+    return {"title": title, "steps": steps}
+
+def stage_hook_proposal(slug: str, cls: dict, parse: dict):
+    """Runtime-mutating: DO NOT auto-install. Stage a hook proposal + the exact
+    dinomem-base hook_tool command for a human to confirm."""
+    HOOK_PROPOSALS_DIR.mkdir(parents=True, exist_ok=True)
+    d = HOOK_PROPOSALS_DIR / slug
+    d.mkdir(parents=True, exist_ok=True)
+    event = cls.get("event", "agent:bootstrap")
+    title = parse["title"]
+    steps = parse.get("steps", [])
+    action = "; ".join(s["text"] for s in steps[:4]) or title
+    cmd = (f'python3 <dinomem-base>/tools/hook_tool.py scaffold {slug} '
+           f'--event {event} --emoji "\U0001FA9D" --desc "{title[:80]}" '
+           f'--action "{action[:200]}"  # then review + --confirmed')
+    proposal = {
+        "slug": slug, "surface": "hook", "event": event, "title": title,
+        "matched_signal": cls.get("matched"), "staged": today_str(),
+        "apply_command": cmd, "status": "awaiting_confirmation",
+        "note": "Hooks are runtime-mutating. Neuron does NOT auto-install. Review and run the base hook_tool with --confirmed.",
+    }
+    (d / "PROPOSAL.json").write_text(json.dumps(proposal, indent=2, ensure_ascii=False), encoding="utf-8")
+    print(f"  [staged:hook] {slug} (event={event}) → kb/memory_neuron/hook_candidates/{slug}/ [awaiting confirmation]")
+
+def stage_cron_proposal(slug: str, cls: dict, parse: dict):
+    """Runtime-mutating: DO NOT auto-install. Stage a cron proposal + the exact
+    dinomem-base cron_tool command for a human to confirm."""
+    CRON_PROPOSALS_DIR.mkdir(parents=True, exist_ok=True)
+    d = CRON_PROPOSALS_DIR / slug
+    d.mkdir(parents=True, exist_ok=True)
+    kind = cls.get("cron_kind", "cron")
+    title = parse["title"]
+    steps = parse.get("steps", [])
+    payload = "; ".join(s["text"] for s in steps[:4]) or title
+    cmd = (f'python3 <dinomem-base>/tools/cron_tool.py add {slug} '
+           f'--{kind} "<fill schedule: {cls.get("hint", "unspecified")}>" '
+           f'--desc "{title[:80]}"  # classify tier, then --confirmed')
+    proposal = {
+        "slug": slug, "surface": "cron", "cron_kind": kind, "hint": cls.get("hint"),
+        "title": title, "payload": payload[:200], "matched_signal": cls.get("matched"),
+        "staged": today_str(), "apply_command": cmd, "status": "awaiting_confirmation",
+        "note": "Crons are runtime-mutating + recurring cost. Neuron does NOT auto-install. Review, classify cost tier, run base cron_tool with --confirmed.",
+    }
+    (d / "PROPOSAL.json").write_text(json.dumps(proposal, indent=2, ensure_ascii=False), encoding="utf-8")
+    print(f"  [staged:cron] {slug} (kind={kind}) → kb/memory_neuron/cron_candidates/{slug}/ [awaiting confirmation]")
+
+def promote_converged(slug: str):
+    """Single promotion dispatcher: classify the converged candidate's surface, then
+    route to skill (auto-write, safe) OR stage a hook/cron proposal (needs human confirm).
+    Called wherever convergence_count >= CONVERGENCE_THRESHOLD is reached."""
+    parse = _load_candidate_parse(slug)
+    cls = classify_surface(parse["title"], parse.get("steps", []))
+    surface = cls["surface"]
+    if surface == "hook":
+        stage_hook_proposal(slug, cls, parse)
+    elif surface == "cron":
+        stage_cron_proposal(slug, cls, parse)
+    else:
+        proposal_path = CANDIDATES_DIR / slug / "PROPOSAL.md"
+        if proposal_path.exists():
+            promote_to_skill(slug, proposal_path)
+    # record the routed surface on the candidate meta
+    m = load_meta(slug)
+    if m:
+        m["promoted_surface"] = surface
+        m["promoted_at"] = today_str()
+        save_meta(slug, m)
+
 
 def run_promote():
     """Main promotion loop: scan done project notes → extract → converge → promote."""
@@ -291,11 +443,9 @@ def run_promote():
             save_meta(target_slug, existing_meta)
             print(f"  [converge] {slug} → {target_slug} (count={existing_meta['convergence_count']})")
 
-            # Promote if threshold reached
+            # Promote if threshold reached (classify surface: skill | hook | cron)
             if existing_meta["convergence_count"] >= CONVERGENCE_THRESHOLD:
-                proposal_path = CANDIDATES_DIR / target_slug / "PROPOSAL.md"
-                if proposal_path.exists():
-                    promote_to_skill(target_slug, proposal_path)
+                promote_converged(target_slug)
         else:
             # New candidate
             target_slug = slug
@@ -463,9 +613,7 @@ def run_from_cluster(cluster_title: str, cluster_insights: list, source_file: st
         save_meta(target_slug, existing_meta)
         print(f"  [cluster converge] {slug} → {target_slug} (count={existing_meta['convergence_count']})")
         if existing_meta["convergence_count"] >= CONVERGENCE_THRESHOLD:
-            proposal_path = CANDIDATES_DIR / target_slug / "PROPOSAL.md"
-            if proposal_path.exists():
-                promote_to_skill(target_slug, proposal_path)
+            promote_converged(target_slug)
     else:
         target_slug = slug
         proposal_path = CANDIDATES_DIR / target_slug / "PROPOSAL.md"
@@ -590,9 +738,7 @@ def run_from_persistent(insight_text: str, source_file: str):
         save_meta(target_slug, existing_meta)
         print(f"  [persistent converge] {slug} → {target_slug} (count={existing_meta['convergence_count']})")
         if existing_meta["convergence_count"] >= CONVERGENCE_THRESHOLD:
-            proposal_path = CANDIDATES_DIR / target_slug / "PROPOSAL.md"
-            if proposal_path.exists():
-                promote_to_skill(target_slug, proposal_path)
+            promote_converged(target_slug)
     else:
         target_slug = slug
         proposal_path = CANDIDATES_DIR / target_slug / "PROPOSAL.md"
@@ -639,12 +785,53 @@ def run_prune():
         except Exception as e:
             print(f"  [warn] {meta_path}: {e}")
     print(f"  [done] pruned {pruned} stale candidate(s)")
+    # also drop staged hook/cron proposal dirs whose source candidate is gone
+    for pd in (HOOK_PROPOSALS_DIR, CRON_PROPOSALS_DIR):
+        if not pd.exists():
+            continue
+        for d in list(pd.glob("*")):
+            if d.is_dir() and not (CANDIDATES_DIR / d.name / "meta.json").exists():
+                import shutil
+                shutil.rmtree(d, ignore_errors=True)
+                print(f"  [pruned:{pd.name}] {d.name} (source candidate gone)")
 
+def run_status():
+    """Observability: list converged candidates and where each was routed (skill/hook/cron),
+    plus any staged hook/cron proposals awaiting human confirmation."""
+    promoted = {"skill": [], "hook": [], "cron": []}
+    if CANDIDATES_DIR.exists():
+        for meta_path in sorted(CANDIDATES_DIR.glob("*/meta.json")):
+            try:
+                m = json.loads(meta_path.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            surf = m.get("promoted_surface")
+            if surf in promoted:
+                promoted[surf].append((meta_path.parent.name, m.get("convergence_count", 1)))
+    print("  Promoted / routed candidates:")
+    any_routed = False
+    for surf in ("skill", "hook", "cron"):
+        for slug, cc in promoted[surf]:
+            any_routed = True
+            print(f"    [{surf}] {slug} (convergence={cc})")
+    if not any_routed:
+        print("    (none yet)")
+    for pd, label in ((HOOK_PROPOSALS_DIR, "hook"), (CRON_PROPOSALS_DIR, "cron")):
+        if not pd.exists():
+            continue
+        for prop in sorted(pd.glob("*/PROPOSAL.json")):
+            try:
+                p = json.loads(prop.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            if p.get("status") == "awaiting_confirmation":
+                print(f"  ⚠️  [{label} awaiting confirm] {p['slug']} — run: {p.get('apply_command','')}")
 
 def main():
     ap = argparse.ArgumentParser(description="skill_extract.py — Skill Promotion (Feature 3)")
     ap.add_argument("--review", metavar="SLUG", help="Self-fix mode: re-extract skill from source note")
     ap.add_argument("--prune", action="store_true", help="Delete zero-convergence candidates older than 60d")
+    ap.add_argument("--status", action="store_true", help="Show routed surfaces + staged hook/cron proposals awaiting confirmation")
     ap.add_argument("--from-cluster", metavar="JSON_FILE",
                     help="Extract skill from L3 cluster JSON {title, insights: [], source_file}")
     ap.add_argument("--from-persistent", metavar="INSIGHT_TEXT",
@@ -655,6 +842,8 @@ def main():
 
     if args.review:
         run_review(args.review)
+    elif args.status:
+        run_status()
     elif args.prune:
         run_prune()
     elif args.from_cluster:

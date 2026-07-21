@@ -344,16 +344,27 @@ resume_state: <paths / decisions the next turn needs to resume blind>
 
 Resolution: once `done_when` is met, the neuron's **Daily Note Review** cron (06:00 UTC, installed by this skill) deletes or promotes the note — covering *all* note types, including `task_bound` notes and projects finished out-of-band, plus `stale_after` garbage collection. It is claim-aware (skips freshly-claimed notes). See [`references/architecture.md`](references/architecture.md) for the full spec.
 
-### Skill Promotion
+### Behavior Promotion (skill / hook / cron)
 
-`skill_extract.py` runs automatically from three sources and distills reusable procedures into skill candidates under `kb/memory_neuron/skill_candidates/<slug>/`. At **convergence ≥ 3**, a candidate is promoted to `skills/<name>/SKILL.md` and becomes available as a named skill.
+`skill_extract.py` runs automatically from three sources and distills reusable procedures into candidates under `kb/memory_neuron/skill_candidates/<slug>/`. At **convergence ≥ 3**, the candidate is **classified by surface** and routed to the right place — not always a skill:
+
+| The converged pattern… | …is promoted as | How |
+| ---------------------- | --------------- | --- |
+| on-demand procedure (a how-to, a checklist) | **skill** | **auto-written** to `skills/<slug>/SKILL.md` — a skill is a passive `.md`, safe |
+| reacts to a gateway event ("every time a message comes in", "on /reset", "at session start") | **hook** | **staged** to `kb/memory_neuron/hook_candidates/<slug>/PROPOSAL.json` |
+| runs on a schedule ("every morning", "every 6 hours", "daily") | **cron** | **staged** to `kb/memory_neuron/cron_candidates/<slug>/PROPOSAL.json` |
+
+The surface classifier uses the **same discriminator logic as dinomem-base `route.py`** (schedule signal → cron, event signal → hook, else → skill). There is **no root-file promotion** — that's knowledge/persistent promotion, already handled by `memory_promote.py`.
+
+**Why skills auto-write but hooks/crons only stage:** a skill is a passive markdown file. A hook or cron is **runtime-mutating** — it edits `openclaw.json` and actually *runs*. Neuron never auto-installs those. Each staged proposal carries the **exact dinomem-base `hook_tool`/`cron_tool` command** to run (with `--confirmed`) after a human reviews it. This mirrors neuron's existing safety-gate philosophy: local/passive work proceeds unattended, runtime-mutating work pauses for approval.
 
 - **Source 1 — completed projects**: fires when a project note flips `status: done`
 - **Source 2 — L3 clusters**: fires after memory synthesis; procedural clusters (size ≥ 3, action-verb pattern) become candidates
 - **Source 3 — PERSISTENT.md**: fires after L4 promotion; best-practice insights ("always X", "prefer X over Y") become low-confidence candidates
 
+- **Status** (`--status`) — lists routed candidates (skill/hook/cron) and any staged hook/cron proposals awaiting confirmation, with their apply commands.
 - **Review mode** (`--review <slug>`) — re-extracts from the source note and overwrites an existing skill; used when a skill is flagged as stale or broken.
-- **Prune mode** (`--prune`) — deletes zero-convergence candidates older than 60 days.
+- **Prune mode** (`--prune`) — deletes zero-convergence candidates older than 60 days (and orphaned hook/cron proposal dirs).
 - Safety scan flags any step containing destructive keywords (delete, rm, truncate, etc.) with an inline ⚠️ warning in the generated SKILL.md.
 
 ### Session deep recall
