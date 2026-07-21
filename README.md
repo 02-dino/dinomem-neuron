@@ -369,6 +369,13 @@ The surface classifier uses the **same discriminator logic as dinomem-base `rout
 
 **Crons get lighter checks** — and deliberately so. OpenClaw's cron already ships strong native guardrails (retry backoff, `maxConcurrentRuns`, per-run timeouts, top-of-hour staggering, dead-endpoint skip), and the base `cron_tool` already refuses an unconditional recurring model-turn without `--confirmed`. So the validator only surfaces the one thing a human must consciously accept: a recurring job that wakes a reasoning model on every fire burns tokens — prefer a deterministic `--command` or a `--gate` (LLM only on a real hit). Nothing here blocks; cron's native safety net plus the confirm gate is the real protection.
 
+**Cross-repo dedup (`promotion_dedup.py`).** Neuron installs *on top of* dinomem-base. Base's `hook_tool`/`cron_tool` block same-**name** collisions inside their own repo — but neuron promotes with its **own slug** for a behavior base may already have installed under a *different* name. Base's name check passes, and a **duplicate hook/cron installs — firing twice** (double reply, double cron). So before neuron stages a hook/cron proposal it runs a dedup gate that checks two things:
+
+- **Live runtime state** — queries `openclaw hooks list --json` / `openclaw cron list --json` (the *same* source base's tools read) and matches by **name AND fuzzy behavior** (description similarity ≥ 0.72). A same-behavior-different-slug duplicate is caught, not just a same-name one. If an installed hook/cron already does this, the proposal is **skipped** (`status: skipped_duplicate`), never staged — no double-fire.
+- **Already staged/confirmed** — if neuron staged (or you confirmed) this same proposal in a prior cycle, it isn't re-stamped. A confirmed hook stops reappearing in `--status` as "awaiting confirmation" every promotion run.
+
+The gate degrades **open** (if the live query is unavailable it relies on the human confirm step as the final backstop) — deduplication prevents clutter and double-fire, but the confirm gate is still the last line.
+
 - **Source 1 — completed projects**: fires when a project note flips `status: done`
 - **Source 2 — L3 clusters**: fires after memory synthesis; procedural clusters (size ≥ 3, action-verb pattern) become candidates
 - **Source 3 — PERSISTENT.md**: fires after L4 promotion; best-practice insights ("always X", "prefer X over Y") become low-confidence candidates

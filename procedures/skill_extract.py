@@ -96,6 +96,34 @@ CRON_SIGNALS = [
     (r"\b(schedule|recurring|periodically|every day|each day)\b", ("cron", "unspecified")),
 ]
 
+def _staged_slugs(surface: str) -> set:
+    """Slugs neuron already staged/confirmed for this surface (re-stage guard)."""
+    pd = HOOK_PROPOSALS_DIR if surface == "hook" else CRON_PROPOSALS_DIR
+    out = set()
+    if not pd.exists():
+        return out
+    for prop in pd.glob("*/PROPOSAL.json"):
+        try:
+            p = json.loads(prop.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        # only guard against proposals that are live/handled, NOT rejected ones
+        if p.get("status") in ("awaiting_confirmation", "confirmed", "installed"):
+            out.add(p.get("slug", prop.parent.name))
+    return out
+
+def _dedup_check(surface: str, slug: str, title: str, behavior: str) -> dict:
+    """Cross-repo dedup: is this hook/cron already installed (by base) or already staged?
+    Lazy import; degrades OPEN on failure (dedup is a clutter/safety optimization, not a
+    correctness gate — the human confirm step is the final backstop)."""
+    try:
+        import importlib
+        pd = importlib.import_module("promotion_dedup")
+    except Exception as e:
+        return {"duplicate": False, "source": None, "match": None,
+                "reason": f"dedup unavailable ({e}); relying on human confirm", "query_status": "none"}
+    return pd.check_duplicate(surface, slug, title, behavior, staged_slugs=_staged_slugs(surface))
+
 def _safety_validate(kind: str, slug: str, ev_or_kind: str, action_text: str) -> dict:
     """Run the runtime-mutating safety validator (hooks/crons). Import is lazy so a missing
     validator degrades safe: if it can't load, treat as a BLOCKER for hooks (fail closed),
@@ -368,6 +396,20 @@ def stage_hook_proposal(slug: str, cls: dict, parse: dict):
     steps = parse.get("steps", [])
     action = "; ".join(s["text"] for s in steps[:4]) or title
 
+    # CROSS-REPO DEDUP: skip if base already installed this (by name or behavior) or
+    # neuron already staged it — prevents a DOUBLE-firing hook across the base/neuron seam.
+    dup = _dedup_check("hook", slug, title, f"{event} {action}")
+    if dup.get("duplicate"):
+        proposal = {
+            "slug": slug, "surface": "hook", "event": event, "title": title,
+            "staged": today_str(), "status": "skipped_duplicate",
+            "dedup": dup,
+            "note": "Not staged: an equivalent hook already exists (installed by base or previously staged). Staging it would double-fire.",
+        }
+        (d / "PROPOSAL.json").write_text(json.dumps(proposal, indent=2, ensure_ascii=False), encoding="utf-8")
+        print(f"  [skip:hook:dup] {slug} — {dup.get('reason')} (match={dup.get('match')})")
+        return
+
     safety = _safety_validate("hook", slug, event, action)
     if not safety["ok"]:
         proposal = {
@@ -404,6 +446,17 @@ def stage_cron_proposal(slug: str, cls: dict, parse: dict):
     title = parse["title"]
     steps = parse.get("steps", [])
     payload = "; ".join(s["text"] for s in steps[:4]) or title
+    # CROSS-REPO DEDUP: skip if base already installed this cron or neuron already staged it.
+    dup = _dedup_check("cron", slug, title, f"{kind} {payload}")
+    if dup.get("duplicate"):
+        proposal = {
+            "slug": slug, "surface": "cron", "cron_kind": kind, "title": title,
+            "staged": today_str(), "status": "skipped_duplicate", "dedup": dup,
+            "note": "Not staged: an equivalent cron already exists (installed by base or previously staged). Staging it would double-fire.",
+        }
+        (d / "PROPOSAL.json").write_text(json.dumps(proposal, indent=2, ensure_ascii=False), encoding="utf-8")
+        print(f"  [skip:cron:dup] {slug} — {dup.get('reason')} (match={dup.get('match')})")
+        return
     safety = _safety_validate("cron", slug, kind, payload)
     cmd = (f'python3 <dinomem-base>/tools/cron_tool.py add {slug} '
            f'--{kind} "<fill schedule: {cls.get("hint", "unspecified")}>" '
