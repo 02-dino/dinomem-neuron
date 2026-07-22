@@ -38,12 +38,25 @@ if _WS_DEFAULT.startswith("DINOMEM_"):  # sed did not run
     _WS_DEFAULT = str(Path(__file__).resolve().parent.parent)
 _WS = Path(_os.environ.get("DINOMEM_WORKSPACE", _WS_DEFAULT))
 _L3 = _WS / "kb/memory_neuron/l3_synthesis"
+_L4 = _WS / "kb/memory_neuron/l4_promoted"
 INSIGHT_HISTORY = _L3 / "insight_history.jsonl"
 CONTRADICTION_LOG = _L3 / "contradiction_log.jsonl"
 CONTRADICTION_QUEUE = _L3 / "contradiction_queue.jsonl"
+PROMOTION_STATE = _L4 / "promotion_state.json"  # {key: entry} reinforce_count/last_reinforced source
+DEMOTION_QUEUE = _L3 / "demotion_queue.jsonl"   # incumbents a challenger out-weighed -> memory_promote demotes
 
 TOPIC_SIM_THRESHOLD = 0.20  # lowered: short statements vs long explanations need looser match
 MIN_KEYWORDS_OVERLAP = 2   # need at least 2 meaningful shared keywords to consider related
+
+# --- reinforcement-weighted resolution (kills first-mover bias) ----------------
+# A blocking contradiction no longer auto-blocks the challenger. We compare the
+# challenger's reinforcement strength (recurrence x recency) against the
+# incumbent's. If the challenger is meaningfully stronger AND fresher, the
+# incumbent is queued for demotion instead and the challenger passes. This lets
+# a correct-but-late insight overturn a bad-but-early trusted one.
+RESOLVE_RECENCY_HALF_LIFE_DAYS = 30.0  # mirror memory_promote injection recency
+RESOLVE_WIN_MARGIN = 1.5    # challenger strength must exceed incumbent by this factor
+RESOLVE_MIN_CHALLENGER_REINFORCE = 2  # challenger needs >=2 recurrences to overturn
 
 
 def load_history():
@@ -130,6 +143,90 @@ _STOPWORDS = {
     'only', 'so', 'than', 'too', 'very', 'just', 'now', 'also', 'two', 'how',
     'our', 'well', 'way', 'even', 'because', 'any', 'give', 'day', 'most', 'us'
 }
+
+
+def _load_promotion_state():
+    """{normalized_pattern: entry} from L4 promotion_state.json for reinforce lookup."""
+    if not PROMOTION_STATE.exists():
+        return {}
+    try:
+        state = json.loads(PROMOTION_STATE.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    out = {}
+    for entry in (state.values() if isinstance(state, dict) else []):
+        pat = (entry.get("pattern") or "").strip().lower()
+        if pat:
+            out[pat] = entry
+    return out
+
+
+def _reinforce_meta(insight, state_by_pattern):
+    """Return (reinforce_count, last_reinforced_iso) for an insight, from L4 state."""
+    pat = (insight.get("pattern") or "").strip().lower()
+    entry = state_by_pattern.get(pat, {})
+    rc = entry.get("reinforce_count", insight.get("reinforce_count", 1)) or 1
+    last = (entry.get("last_reinforced") or entry.get("first_promoted")
+            or insight.get("first_seen"))
+    return rc, last
+
+
+def _strength(reinforce_count, last_reinforced_iso):
+    """reinforce_count x recency_weight (0.5 ** days/half_life). Higher = stronger claim."""
+    weight = 1.0
+    if last_reinforced_iso:
+        try:
+            last = datetime.fromisoformat(str(last_reinforced_iso).replace("Z", "+00:00"))
+            days = max(0.0, (datetime.now(last.tzinfo) - last).total_seconds() / 86400.0)
+            weight = 0.5 ** (days / RESOLVE_RECENCY_HALF_LIFE_DAYS)
+        except Exception:
+            weight = 1.0
+    return max(0.0, reinforce_count) * weight
+
+
+def resolve_by_reinforcement(candidate, existing, state_by_pattern):
+    """Decide who wins a blocking contradiction by reinforcement strength.
+
+    Returns dict: {winner: 'challenger'|'incumbent', demote_incumbent: bool,
+                   challenger_strength, incumbent_strength, reason}.
+    Challenger overturns the incumbent ONLY if it has enough recurrences AND is
+    stronger by RESOLVE_WIN_MARGIN. Otherwise the incumbent stands (challenger
+    blocked as before) — so a one-shot fluke can never demote a trusted insight.
+    """
+    c_rc, c_last = _reinforce_meta(candidate, state_by_pattern)
+    e_rc, e_last = _reinforce_meta(existing, state_by_pattern)
+    c_str = _strength(c_rc, c_last)
+    e_str = _strength(e_rc, e_last)
+
+    challenger_wins = (
+        c_rc >= RESOLVE_MIN_CHALLENGER_REINFORCE
+        and c_str >= e_str * RESOLVE_WIN_MARGIN
+    )
+    return {
+        "winner": "challenger" if challenger_wins else "incumbent",
+        "demote_incumbent": bool(challenger_wins),
+        "challenger_reinforce": c_rc,
+        "incumbent_reinforce": e_rc,
+        "challenger_strength": round(c_str, 4),
+        "incumbent_strength": round(e_str, 4),
+        "reason": (
+            f"challenger x{c_rc} str={c_str:.2f} overturns incumbent x{e_rc} str={e_str:.2f}"
+            if challenger_wins else
+            f"incumbent x{e_rc} str={e_str:.2f} holds vs challenger x{c_rc} str={c_str:.2f}"
+        ),
+    }
+
+
+def queue_demotion(existing_insight, resolution):
+    """Queue an out-weighed incumbent for demotion (memory_promote reads this)."""
+    entry = {
+        "timestamp": datetime.now().isoformat(),
+        "pattern": existing_insight.get("pattern", ""),
+        "reason": "outweighed_by_reinforced_challenger",
+        "resolution": resolution,
+    }
+    with DEMOTION_QUEUE.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
 
 def keyword_overlap(a, b):
@@ -253,6 +350,7 @@ def check_contradiction(candidate_insight, verbose=False):
             "contradictions": [],
         }
 
+    state_by_pattern = _load_promotion_state()
     contradictions = []
     for existing in history:
         # Dual pre-filter: text similarity OR keyword overlap
@@ -268,15 +366,32 @@ def check_contradiction(candidate_insight, verbose=False):
 
         result = llm_contradiction_check(candidate_insight, existing)
         if result.get("contradiction"):
-            contradictions.append({
+            severity = result.get("severity", "warning")
+            detail = {
                 "existing_pattern": existing.get("pattern", ""),
                 "existing_date": existing.get("first_seen", "unknown"),
                 "existing_confidence": existing.get("confidence", 0),
-                "severity": result.get("severity", "warning"),
+                "severity": severity,
                 "reason": result.get("reason", ""),
                 "topic_similarity": round(sim, 2),
                 "keyword_overlap": k_overlap,
-            })
+            }
+            # Reinforcement-weighted resolution: a blocking contradiction is
+            # RE-RESOLVED, not auto-applied. If the challenger is stronger
+            # (recurrence x recency) by RESOLVE_WIN_MARGIN, the incumbent is
+            # queued for demotion and this contradiction downgraded so it no
+            # longer blocks the challenger. Otherwise the incumbent stands.
+            if severity == "blocking":
+                res = resolve_by_reinforcement(candidate_insight, existing, state_by_pattern)
+                detail["resolution"] = res
+                if res["demote_incumbent"]:
+                    queue_demotion(existing, res)
+                    detail["severity"] = "overturned"
+                    detail["reason"] = (
+                        f"{detail['reason']} | RESOLVED: {res['reason']} "
+                        f"-> incumbent queued for demotion, challenger passes"
+                    )
+            contradictions.append(detail)
 
     blocking = [c for c in contradictions if c["severity"] == "blocking"]
     warnings = [c for c in contradictions if c["severity"] == "warning"]

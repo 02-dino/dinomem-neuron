@@ -336,6 +336,34 @@ def run(dry_run=False):
     MEMORY_DIR = Path(str(WORKSPACE_ROOT)) / "memory"
     pinned_slugs = {f.stem.replace("_pin_", "") for f in MEMORY_DIR.glob("_pin_*.md")} if MEMORY_DIR.exists() else set()
 
+    # ── Demotion-queue pass (reinforcement-weighted contradiction resolution) ──
+    # contradiction_check.py queues incumbents that a stronger, fresher challenger
+    # out-weighed. Consume the queue here so those bad-but-early trusted insights
+    # are actually demoted (closes the loop; kills first-mover bias end-to-end).
+    DEMOTION_QUEUE = L3_DIR / "demotion_queue.jsonl"
+    if DEMOTION_QUEUE.exists():
+        demote_pats = []
+        for line in DEMOTION_QUEUE.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                demote_pats.append(json.loads(line).get("pattern", ""))
+            except Exception:
+                continue
+        for pat in demote_pats:
+            if not pat:
+                continue
+            mk, me = find_match(state, pat)
+            if me and me.get("status") == "trusted":
+                actions["demoted"] += 1
+                if not dry_run:
+                    log_action("demoted", me, {"reason": "outweighed_by_reinforced_challenger"})
+                    del state[mk]
+        if not dry_run:
+            # Queue consumed; clear it so incumbents aren't re-demoted next run.
+            DEMOTION_QUEUE.write_text("", encoding="utf-8")
+
     # ── Decay pass (before reinforcement, so this run's reinforcement can rescue) ──
     for k in list(state.keys()):
         e = state[k]

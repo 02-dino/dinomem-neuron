@@ -4,6 +4,21 @@ All notable changes to dinomem-neuron are documented here.
 
 ---
 
+## 1.8.1 — 2026-07-22
+**Contradiction resolution is no longer first-mover-biased — a correct-but-late insight can now overturn a bad-but-early one.** Before this release, when a new insight contradicted an existing *trusted* one, the newcomer was always blocked — even if it was reinforced far more, and far more recently, than the stale incumbent it conflicted with. That baked in a subtle failure mode: whichever wrong idea got promoted *first* was effectively permanent, and the right idea that arrived later kept getting rejected for contradicting it. 1.8.1 replaces the auto-block with a **reinforcement-weighted resolution**: the challenger and the incumbent are scored by strength = *recurrence × recency*, and the challenger only overturns the incumbent if it has genuinely recurred (≥2 distinct runs) **and** is stronger by a clear margin (≥1.5×). A one-shot fluke still can never demote a trusted insight — the guardrail against noise is intact.
+
+### Added
+- **Reinforcement-weighted contradiction resolution (`contradiction_check.py`).** A blocking contradiction is now *re-resolved* instead of auto-applied. New helpers `resolve_by_reinforcement`, `_strength` (reinforce_count × recency, 30-day half-life), and `_load_promotion_state` compare challenger vs incumbent using the L4 promotion state. If the challenger wins, the incumbent is written to a new **`demotion_queue.jsonl`** and the contradiction is downgraded to `overturned` so the challenger passes; otherwise the incumbent stands and the challenger is blocked exactly as before.
+- **Demotion-queue consumer (`memory_promote.py`).** The weekly promotion cycle now drains `demotion_queue.jsonl` *before* the decay pass: any queued incumbent that is still `trusted` is demoted (logged as `outweighed_by_reinforced_challenger`) and the queue is cleared. This closes the loop end-to-end — a challenger that out-weighs a bad incumbent actually removes it, rather than merely being marked.
+
+### Safety
+- **Fluke guard preserved.** Overturning requires the challenger to have recurred across ≥2 distinct synthesis runs AND to out-score the incumbent by ≥1.5×; a single-shot contradicting insight can never demote a trusted one. Recency decay (30-day half-life) is what lets a fresh, repeatedly-confirmed insight outrank a stale high-count one — same recency model neuron already uses for injection ranking.
+
+### Upgrade notes
+- `git pull` then re-run `scripts/install.sh --force`. No new cron; the demotion consumer runs inside the existing L4 promotion cycle. No gateway restart required.
+
+---
+
 ## 1.8.0 — 2026-07-21
 **Behavior Promotion — your agent now turns repeated workflows into reusable automation, not just skills.** Until now, neuron's convergence engine could only promote a repeated procedure into a **skill** (an on-demand playbook the agent reads when relevant). 1.8.0 expands that same engine to also recognize when a repeated pattern is really a **hook** (something that should fire automatically on an event, e.g. "whenever a message comes in, log the sender") or a **cron** (something that should run on a schedule, e.g. "snapshot state every night at 3am"), and route it to the right surface. Skills still auto-install as before; hooks and crons are **never auto-installed** — they're prepared as *staged proposals* with the exact command to run, and only go live after **you confirm**. New `--status` shows what's promoted/pending; `prune` cleans orphaned proposals.
 
