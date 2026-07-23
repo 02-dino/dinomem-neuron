@@ -169,11 +169,25 @@ def get_openclaw_config():
 # dinomem); legacy DINOMEM_NO_REASONING_MODEL kept as back-compat fallback.
 # Unset = OpenClaw default (default-safe — no hardcoded gemini that 404s on
 # buyers without that model).
-NO_REASONING_MODEL = (
-    os.environ.get("DINOMEM_CHEAP_MODEL", "").strip()
-    or os.environ.get("DINOMEM_NO_REASONING_MODEL", "").strip()
-    or None
-)
+def _resolve_no_reasoning_model():
+    """Cheap model via the single compaction anchor (procedures/_cheap_model.py):
+    DINOMEM_CHEAP_MODEL env -> agents.defaults.compaction.model -> legacy env.
+    Falls back to raw env if the helper is unavailable (portable ship-safe)."""
+    try:
+        import importlib.util as _ilu
+        _hp = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_cheap_model.py")
+        _spec = _ilu.spec_from_file_location("_cheap_model", _hp)
+        _cm = _ilu.module_from_spec(_spec)
+        _spec.loader.exec_module(_cm)
+        return _cm.cheap_model() or None
+    except Exception:
+        return (
+            os.environ.get("DINOMEM_CHEAP_MODEL", "").strip()
+            or os.environ.get("DINOMEM_NO_REASONING_MODEL", "").strip()
+            or None
+        )
+
+NO_REASONING_MODEL = _resolve_no_reasoning_model()
 
 def call_llm_gateway(prompt, max_tokens=2000):
     """Call LLM via OpenClaw gateway (cheap no-reasoning model)."""
