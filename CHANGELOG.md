@@ -4,6 +4,18 @@ All notable changes to dinomem-neuron are documented here.
 
 ---
 
+## 1.8.2 — 2026-07-23
+**Cheap-model routing now follows YOUR OpenClaw compaction default — no more hardcoded model that could break on an unknown provider; and the note-system self-resolves completed notes more reliably.** Two robustness fixes. (1) `DINOMEM_CHEAP_MODEL` now resolves through a single anchored control point: your env override → your OpenClaw `agents.defaults.compaction.model` → legacy env → empty (degrade to your OpenClaw default). No hardcoded model id ships in the box, so nothing 404s if you run a provider we've never seen. (2) A `done_when` prose-lint in `claim_note.sh` warns (non-blocking) when a project note's `done_when` isn't machine-checkable — which is what lets the Daily Note Review / Advancer janitors auto-verify against real state (git/grep/exit 0) and self-resolve a finished note, instead of getting stuck on stale checkboxes.
+
+### Added
+- **Compaction-anchored cheap-model resolution.** `procedures/_cheap_model.py` (from the dinomem base install) resolves the cheap/no-reasoning model from your own OpenClaw config's `compaction.model` when `DINOMEM_CHEAP_MODEL` isn't set. `extract_memory.py`, `generate_topic_index.py`, and `docs_ingest.py` all route through it. Set the model once (or let it follow compaction) and every cheap-LLM cron follows.
+- **`done_when` prose-lint (`scripts/claim_note.sh`).** Claiming a `type: project` note whose `done_when` has no runnable check (git / grep / exit 0 / test -f / rev-parse) now prints a non-blocking WARN telling you to make it locally checkable, so the janitors can auto-resolve it.
+
+### Upgrade notes
+- Extract the new ZIP and run `bash scripts/install.sh`. The installer auto-updates the dinomem base too. Internet must be on during install (dependency download). No gateway restart required.
+
+---
+
 ## 1.8.1 — 2026-07-22
 **Contradiction resolution is no longer first-mover-biased — a correct-but-late insight can now overturn a bad-but-early one.** Before this release, when a new insight contradicted an existing *trusted* one, the newcomer was always blocked — even if it was reinforced far more, and far more recently, than the stale incumbent it conflicted with. That baked in a subtle failure mode: whichever wrong idea got promoted *first* was effectively permanent, and the right idea that arrived later kept getting rejected for contradicting it. 1.8.1 replaces the auto-block with a **reinforcement-weighted resolution**: the challenger and the incumbent are scored by strength = *recurrence × recency*, and the challenger only overturns the incumbent if it has genuinely recurred (≥2 distinct runs) **and** is stronger by a clear margin (≥1.5×). A one-shot fluke still can never demote a trusted insight — the guardrail against noise is intact.
 
