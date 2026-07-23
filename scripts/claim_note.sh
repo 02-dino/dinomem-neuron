@@ -129,6 +129,54 @@ write_claim() {
   mv -f "$tmp" "$note"
 }
 
+# ── done_when prose-lint (WARN, non-blocking) ────────────────────────────────
+# The project-notes skill requires every done_when to be LOCALLY CHECKABLE
+# (file exists / grep / exit 0 / git rev-parse HEAD == @{u}). A NARRATIVE
+# ("4 components shipped") done_when cannot be auto-verified by the Daily Note
+# Review / Advancer janitors, so they fall back to conservative checkbox-reading
+# and a completed note can sit un-resolved. This lint catches that AT CLAIM TIME.
+# It only WARNS (never blocks) — matches the soft-warn contract: the human/agent
+# MUST see it, but the claim still proceeds. Fires only for type: project notes.
+lint_done_when() {
+  # Extract the note type + the done_when value (handles both frontmatter formats:
+  # fenced --- block, or `# Heading` + bare key:value until first blank line, and
+  # also a `done_when:` that opens a YAML block scalar `>` spanning lines).
+  local typ dw
+  typ="$(awk '
+    NR==1 && $0=="---" { infm=1; fenced=1; next }
+    NR==1 && /^#/       { infm=1; next }
+    NR==1 { exit }
+    infm && fenced && $0=="---" { exit }
+    infm && !fenced && NF==0 { exit }
+    infm && /^type:/ { sub(/^type:[ \t]*/,""); print; exit }
+  ' "$note")"
+  [ "$typ" = "project" ] || return 0   # lint only applies to project notes
+
+  # Grab the done_when value INCLUDING a `>`/`|` block scalar body (indented lines
+  # following `done_when:` until a non-indented key or blank line).
+  dw="$(awk '
+    /^done_when:/ { grab=1; line=$0; sub(/^done_when:[ \t]*/,"",line); buf=line; next }
+    grab==1 {
+      if ($0 ~ /^[ \t]+/) { buf=buf " " $0; next }   # indented continuation
+      else { exit }                                     # block ended
+    }
+    END { print buf }
+  ' "$note")"
+
+  # Runnable tokens that make a done_when machine-checkable.
+  if printf '%s' "$dw" | grep -qiE 'git |grep|exit 0|test -f|rev-parse|@\{u\}|\bls \b|python3|bash |\[ -f|\[ -d|== *@|all steps \[x\]|steps? .*\[x\]'; then
+    return 0   # has a runnable/verifiable check -> OK
+  fi
+  # No runnable token -> WARN (non-blocking).
+  printf '\033[33m[warn]\033[0m claim_note: %s has a PROSE done_when (no runnable check).\n' "$note" >&2
+  printf '        The Daily Note Review / Advancer janitors cannot auto-verify a\n' >&2
+  printf '        narrative done_when and will fall back to checkbox-reading, so a\n' >&2
+  printf '        completed note may not self-resolve. Rewrite done_when as a locally\n' >&2
+  printf '        checkable condition, e.g.  git -C <repo> rev-parse HEAD == @{u}  or\n' >&2
+  printf '        test -f <artifact>  or  grep -q <marker> <file>  (proceeding anyway).\n' >&2
+  return 0
+}
+
 # Serialize per-note via flock if available (best-effort; degrades gracefully).
 lockfile="${note}.claimlock"
 run_locked() {
@@ -148,6 +196,7 @@ do_claim() {
     held)
       echo "claim_note: BUSY — held by '$cur_by' since $cur_at (not yours)"; exit 3 ;;
     free|stale|mine)
+      lint_done_when   # WARN (non-blocking) if a project note has a prose done_when
       write_claim "$claimant" "$(now_iso)"
       # verify our write stuck
       parsed="$(read_claim)"; cur_by="${parsed%%$'\t'*}"
