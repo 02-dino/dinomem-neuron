@@ -281,15 +281,156 @@ def _call_llm(prompt: str, max_tokens: int = 1500, model: str = None) -> Tuple[b
     return False, ""
 
 
-# ── Vision OCR (reuses the SAME gateway model-run endpoint as _call_llm) ───────
+# ── Vision OCR ─────────────────────────────────────────────────────────────
 # No GPU, no vLLM, no extra Python dep. A user installs dinomem-neuron and shares
 # an image or scanned PDF — this reads it via the configured vision model.
+#
+# EFFICIENCY (2026-07-23): `openclaw capability model run --file` COLD-BOOTS a
+# fresh ~600-790MB Node/OpenClaw runtime PER IMAGE just to relay one call to the
+# remote vision model — pure boot waste that, batched across many PDF pages, can
+# swap-thrash a small VPS. So the PRIMARY path is now a direct provider-HTTP POST
+# reusing the buyer's OWN already-configured model + key (the same resolver the
+# memory pipeline already relies on — ZERO new setup for the noob installer). The
+# CLI subprocess stays as an automatic FALLBACK, so anyone whose provider/model
+# can't take images (or where HTTP resolution fails) keeps working exactly as
+# before. No config to enable, no gateway-endpoint dependency, no port/token
+# assumptions — it self-configures from whatever the user already has.
+def _ocr_resolve_provider(model: str):
+    """Resolve (model, api_key, api_base, api_format) from the user's OpenClaw
+    config for the given model — no hardcoded provider. Returns key=None when
+    nothing is resolvable, in which case the HTTP path is skipped (CLI fallback).
+    Mirrors extract_memory.py's proven resolvers so behavior stays consistent."""
+    cfg_path = Path.home() / ".openclaw" / "openclaw.json"
+    if not model or not cfg_path.exists():
+        return model, None, None, "openai"
+    try:
+        cfg = json.loads(cfg_path.read_text())
+    except Exception:
+        return model, None, None, "openai"
+    env = cfg.get("env", {}) or {}
+    providers = cfg.get("models", {}).get("providers", {}) or {}
+
+    def _pick(names, env_key=None):
+        for n in names:
+            p = providers.get(n, {}) or {}
+            if p.get("apiKey"):
+                return p.get("apiKey"), p.get("baseUrl"), p.get("api", "openai")
+        ek = env.get(env_key) if env_key else None
+        return ek, None, "openai"
+
+    key = base = None
+    fmt = "openai"
+    ml = model.lower()
+    if ml.startswith("kimi") or "/kimi" in ml:
+        key, base, fmt = _pick(["kimi-coding", "kimi-code"], "KIMI_API_KEY")
+    elif ml.startswith("gemini") or "/gemini" in ml or ml.startswith("google"):
+        key, base, fmt = _pick(["google"], "GEMINI_API_KEY")
+        if base is None:
+            fmt = "google"
+    elif ml.startswith("openrouter"):
+        key, base, fmt = _pick(["openrouter"], "OPENROUTER_API_KEY")
+    elif "/" in model:
+        prefix = model.split("/", 1)[0]
+        p = providers.get(prefix, {}) or {}
+        key = p.get("apiKey") or env.get(f"{prefix.upper().replace('-', '_')}_API_KEY")
+        base = p.get("baseUrl")
+        fmt = p.get("api", "openai")
+        if not key:
+            orp = providers.get("openrouter", {}) or {}
+            key = orp.get("apiKey") or env.get("OPENROUTER_API_KEY")
+            base = orp.get("baseUrl") or base
+    return model, key, base, fmt
+
+
+def _ocr_via_http(image_path: Path, model: str, timeout: int = 120) -> Tuple[bool, str]:
+    """PRIMARY OCR path: direct provider-HTTP POST with an image_url part, using
+    the buyer's own configured key/base. No Node cold-start. Best-effort — any
+    failure (no key, non-vision model, network) returns (False,'') so the caller
+    falls back to the CLI subprocess. Supports openai-compatible + google formats;
+    anthropic-format providers fall through to CLI (kept simple/robust)."""
+    import base64 as _b64, urllib.request as _u
+    _model, key, base, fmt = _ocr_resolve_provider(model)
+    if not key or not base:
+        return False, ""
+    try:
+        suffix = image_path.suffix.lower()
+        mime = "image/png" if suffix == ".png" else (
+            "image/webp" if suffix == ".webp" else "image/jpeg")
+        b64 = _b64.b64encode(image_path.read_bytes()).decode()
+        data_uri = f"data:{mime};base64,{b64}"
+        if fmt == "google":
+            headers = {"Content-Type": "application/json"}
+            body = {"contents": [{"role": "user", "parts": [
+                {"text": _OCR_PROMPT},
+                {"inline_data": {"mime_type": mime, "data": b64}},
+            ]}], "generationConfig": {"maxOutputTokens": 4000, "temperature": 0.1}}
+            endpoint = f"{base}/models/{_model}:generateContent?key={key}"
+        elif fmt == "anthropic-messages":
+            # Keep the HTTP path OpenAI/Google only; anthropic-format -> CLI fallback.
+            return False, ""
+        else:  # openai-compatible (ninerouter, openrouter, kimi, xai, etc.)
+            headers = {"Content-Type": "application/json",
+                       "Authorization": f"Bearer {key}"}
+            _mid = _model
+            _parts = _model.split("/")
+            if len(_parts) >= 3:
+                _mid = "/".join(_parts[1:])
+            body = {"model": _mid, "messages": [{"role": "user", "content": [
+                {"type": "text", "text": _OCR_PROMPT},
+                {"type": "image_url", "image_url": {"url": data_uri}},
+            ]}], "max_tokens": 4000, "temperature": 0.1, "stream": False}
+            endpoint = f"{base.rstrip('/')}/chat/completions"
+        req = _u.Request(endpoint, data=json.dumps(body).encode(), headers=headers, method="POST")
+        with _u.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read().decode("utf-8")
+        # Handle SSE-style streamed responses defensively.
+        if raw.lstrip().startswith("data:"):
+            chunks = []
+            for line in raw.splitlines():
+                line = line.strip()
+                if not line.startswith("data:"):
+                    continue
+                payload = line[5:].strip()
+                if not payload or payload == "[DONE]":
+                    continue
+                try:
+                    d = json.loads(payload).get("choices", [{}])[0].get("delta", {})
+                    if d.get("content"):
+                        chunks.append(d["content"])
+                except Exception:
+                    pass
+            text = "".join(chunks).strip()
+        else:
+            out = json.loads(raw)
+            if fmt == "google":
+                cands = out.get("candidates", [{}])
+                parts = (cands[0].get("content", {}) or {}).get("parts", []) if cands else []
+                text = "".join(p.get("text", "") for p in parts).strip()
+            else:
+                text = (out.get("choices", [{}])[0].get("message", {}) or {}).get("content", "").strip()
+        if text and text.upper() != "NONE":
+            return True, text
+    except Exception as e:
+        log(f"  ℹ️  OCR HTTP path unavailable ({str(e)[:120]}) — falling back to CLI")
+    return False, ""
+
+
 def _ocr_image(image_path: Path, model: str = None) -> Tuple[bool, str]:
-    """Transcribe text/tables/charts from an image via the OpenClaw gateway
-    vision endpoint (openclaw capability model run --file). Returns (ok, text)."""
+    """Transcribe text/tables/charts from an image. PRIMARY: direct provider-HTTP
+    (no Node cold-start). FALLBACK: `openclaw capability model run --file`.
+    Returns (ok, text)."""
+    _model = model or _NO_REASONING_MODEL
+
+    # PRIMARY: direct provider HTTP — reuses the buyer's own configured model/key,
+    # zero new setup, no 600MB Node cold-boot per image.
+    ok, text = _ocr_via_http(image_path, _model)
+    if ok:
+        return True, text
+
+    # FALLBACK: the original CLI subprocess. Rare path now (non-vision model,
+    # anthropic-format provider, or HTTP failure). Keeps every install working.
     import shutil as _shutil
     _oc = _shutil.which("openclaw") or "/home/linuxbrew/.linuxbrew/bin/openclaw"
-    _model = model or _NO_REASONING_MODEL
     _cmd = [_oc, "capability", "model", "run",
             "--file", str(image_path),
             "--prompt", _OCR_PROMPT, "--gateway", "--json"]

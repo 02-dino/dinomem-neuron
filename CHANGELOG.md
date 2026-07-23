@@ -4,6 +4,18 @@ All notable changes to dinomem-neuron are documented here.
 
 ---
 
+## 1.8.3 — 2026-07-23
+**Image/OCR ingest no longer cold-boots a ~600–790MB process per image — it now reuses YOUR already-configured model over direct HTTP, with automatic fallback so nothing breaks.** Every scanned page, screenshot, or shared image previously ran through `openclaw capability model run --file`, which spins up a **fresh ~600–790MB Node/OpenClaw runtime per image** just to relay one call to the remote vision model. Batched across a multi-page PDF that stacks fast and can swap-thrash a small VPS. Now the OCR path does a **direct provider-HTTP POST with an `image_url` part**, using the **same model + API key you already configured** for the memory pipeline — zero new setup, no endpoint to enable, no gateway token, no port assumptions. If that path can't resolve (a non-vision model, an anthropic-format provider, or any HTTP failure) it **automatically falls back to the original CLI subprocess**, so every install keeps working exactly as before. Pure upside for the common case, zero regression for the edge cases.
+
+### Changed
+- **`procedures/docs_ingest.py` OCR is now HTTP-primary, CLI-fallback.** New `_ocr_via_http()` sends the image as a base64 data-URI (openai-compatible) or `inline_data` (google format) to your own provider, resolved by new `_ocr_resolve_provider()` (mirrors `extract_memory.py`'s proven key/base resolvers — no hardcoded provider). `_ocr_image()` tries HTTP first, then falls back to `openclaw capability model run --file` unchanged. Result: **0 Node cold-start on the hot path** (measured: 0 spawned infer workers during a live OCR), ~600MB → ~0MB local overhead per image.
+- Self-configuring: uses whatever provider/key/base you already have. Anthropic-format providers and unresolvable models transparently use the CLI fallback.
+
+### Upgrade notes
+- Extract the new ZIP and run `bash scripts/install.sh`. No config changes required, no gateway restart. The efficiency win applies automatically to any provider whose model accepts images; everything else keeps working via the fallback.
+
+---
+
 ## 1.8.2 — 2026-07-23
 **Cheap-model routing now follows YOUR OpenClaw compaction default — no more hardcoded model that could break on an unknown provider; and the note-system self-resolves completed notes more reliably.** Two robustness fixes. (1) `DINOMEM_CHEAP_MODEL` now resolves through a single anchored control point: your env override → your OpenClaw `agents.defaults.compaction.model` → legacy env → empty (degrade to your OpenClaw default). No hardcoded model id ships in the box, so nothing 404s if you run a provider we've never seen. (2) A `done_when` prose-lint in `claim_note.sh` warns (non-blocking) when a project note's `done_when` isn't machine-checkable — which is what lets the Daily Note Review / Advancer janitors auto-verify against real state (git/grep/exit 0) and self-resolve a finished note, instead of getting stuck on stale checkboxes.
 
