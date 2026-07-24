@@ -16,19 +16,37 @@ query, plus how to ingest long docs and structured data.
 | meaning · "explain" · "like this" · passage / semantic | `docs_search` |
 | recent conversation detail (**<7d**) | `session_search` |
 | fact · decision · preference · todo | `memory_search` |
+| **why did X change · what led to Z · what touches Y · trace / chain / depends_on / affects** | `graph_search` (fallback: `memory_search`) |
+| **what changed in memory · recent memory edits · what got added/merged/deleted** | read `memory/.diffs/` (newest JSON) |
 | row · count · range · filter · sort · aggregate · field lookup (csv/json/parquet) | `data_query` (exact SQL) |
-| complex relational query (depends_on / affects / trace / chain) | `graph_search` (fallback: `memory_search`) |
 | exact pattern · regex · grep · exact-string over raw text/logs | `exec` (ripgrep/grep) |
 
 Key discriminators:
 - **Structured lookup ≠ semantic.** `row|count|range|filter|aggregate` over
   registered data → `data_query`, **NOT** `docs_search` and **NOT** `memory_search`
   (memory has no `<`, `>`, `=`, `COUNT`, `SUM`).
+- **`memory_search` is the DEFAULT recall tool; `session_search` is the escalation.**
+  Reach for `session_search` ONLY when (a) `memory_search` came back thin/empty
+  AND (b) the ask is a *recent-conversation detail* (“what did we say/decide
+  yesterday”, verbatim exchange, a thread that may not have distilled to memory yet)
+  — NOT a durable fact/decision/preference (those are `memory_search`). Recency
+  boundary: `session_search` only indexes the last **<7d** of transcripts; older
+  than that lives in `memory_search` only. When unsure, `memory_search` first.
 - **`session_search` embeds queries too**, so the natural-language query rule (M3)
   applies to it as well: prefer natural language, avoid technical
   identifiers / code terms / exact strings / variable names.
-- `graph_search` — skip when relation_edges aren't populated yet; fall back to
-  `memory_search`.
+- **`graph_search` fires on IMPLICIT relational intent, not just literal keywords.**
+  Causal/dependency/impact questions route here even when the words
+  “depends_on / affects / trace” are absent — e.g. “why did X break”, “what led
+  to Z”, “what touches Y”, “what’s downstream of…”, “what caused…”. Use
+  `--cluster-drill` to enter via topic cluster then descend, and `--trajectory`
+  to see the score-path (why a node surfaced). Skip when relation_edges aren't
+  populated yet; fall back to `memory_search`.
+- **`memory/.diffs/` is the memory audit log** (one JSON per extraction run:
+  adds/updates/deletes with before/after). Route meta-questions about *memory
+  itself* here — “what changed / was merged / was deleted recently” — not to
+  `memory_search` (which returns memory *content*, not its edit history). Newest
+  file = latest run; `_memory_diff.py --list` / `--show <run_id>` to inspect.
 
 ## Documents, images, audio/video & URLs → RAG (`docs_search`)
 
