@@ -245,6 +245,162 @@ def format_json(
     return json.dumps(output, indent=2, ensure_ascii=False)
 
 
+# ─── Cluster / hierarchical retrieval (additive; ported concept from OpenViking's
+# directory-recursive retrieval) ──────────────────────────────────────────────
+#
+# Constraint (verified): memory_graph.json is a FLAT similarity graph, not a
+# directory tree -- there is no viking://-style hierarchy to drill into. The
+# honest equivalent is: treat each CONNECTED COMPONENT (cluster of nodes linked
+# by high-confidence similarity edges) as the "directory", score the cluster by
+# its best-matching member first, then only expand into that cluster's members
+# instead of scanning all 2000+ nodes flat. This gives the same practical win
+# OpenViking's tree-drill gives (coarse-to-fine, avoid scanning everything) using
+# the data structure that actually exists here -- no rewrite of the flat graph.
+#
+# This is purely ADDITIVE: existing find_start_node/build_adjacency/bfs_traverse/
+# format_text/format_json/main() are untouched, so all current CLI behavior is
+# unchanged. New behavior only activates via the --cluster-drill flag.
+
+def build_similarity_adjacency(graph, min_sim=0.80):
+    """Undirected adjacency from similarity edges only (>= min_sim), used purely
+    to discover connected components (clusters) -- separate from build_adjacency's
+    typed-edge traversal so we never touch that existing function's behavior."""
+    adj = defaultdict(set)
+    for edge in graph.get("edges", []):
+        a, b = edge.get("a"), edge.get("b")
+        sim = edge.get("neural_score", edge.get("sim", 0.0))
+        if a is None or b is None:
+            continue
+        if sim >= min_sim:
+            adj[a].add(b)
+            adj[b].add(a)
+    return adj
+
+
+def find_clusters(graph, min_sim=0.80):
+    """Connected components over the similarity graph. Returns list of sets of node idxs.
+    Singletons (no edge >= min_sim) are each their own 1-node cluster."""
+    nodes = graph.get("nodes", [])
+    adj = build_similarity_adjacency(graph, min_sim)
+    seen = set()
+    clusters = []
+    for i in range(len(nodes)):
+        if i in seen:
+            continue
+        comp = set()
+        q = deque([i])
+        seen.add(i)
+        while q:
+            cur = q.popleft()
+            comp.add(cur)
+            for nxt in adj.get(cur, ()):
+                if nxt not in seen:
+                    seen.add(nxt)
+                    q.append(nxt)
+        clusters.append(comp)
+    return clusters
+
+
+def cluster_drill_search(query, graph, min_sim=0.80, top_clusters=3, per_cluster=5):
+    """
+    Two-stage retrieval (coarse-to-fine), the cluster-drill equivalent of
+    OpenViking's directory-recursive retrieval:
+      Stage 1: fuzzy-score EVERY node (cheap, difflib -- same primitive
+               find_start_node already uses), group into clusters, rank
+               clusters by their single best-scoring member.
+      Stage 2: only within the top-N clusters, return the top-per-cluster
+               matches -- so the agent gets "here's the neighborhood, and
+               the best items in it" instead of one flat top-k list with no
+               structural context.
+
+    Also builds a TRAJECTORY (ported concept: OpenViking's "observable
+    retrieval" -- every query preserves its browsing path so a bad result is
+    debuggable). Returned under 'trajectory'.
+    """
+    nodes = graph.get("nodes", [])
+    query_lower = query.lower()
+
+    scores = {}
+    for i, node in enumerate(nodes):
+        title = node.get("title", "")
+        snippet = node.get("snippet", "")
+        combined = f"{title} {snippet}".lower()
+        if query_lower in combined:
+            score = 1.0 if query_lower in title.lower() else 0.85
+        else:
+            title_score = difflib.SequenceMatcher(None, query_lower, title.lower()).ratio()
+            snippet_score = difflib.SequenceMatcher(None, query_lower, combined).ratio()
+            score = max(title_score, snippet_score * 0.9)
+        scores[i] = score
+
+    clusters = find_clusters(graph, min_sim)
+    cluster_best = []
+    for ci, comp in enumerate(clusters):
+        best = max((scores.get(i, 0.0) for i in comp), default=0.0)
+        cluster_best.append((best, ci, comp))
+    cluster_best.sort(key=lambda t: -t[0])
+
+    trajectory = []
+    matched = []
+    for rank, (best_score, ci, comp) in enumerate(cluster_best):
+        considered = rank < max(top_clusters * 3, top_clusters)
+        entered = rank < top_clusters and best_score > 0.0
+        if considered:
+            trajectory.append({
+                "cluster_idx": ci,
+                "cluster_size": len(comp),
+                "best_score": round(best_score, 4),
+                "entered": entered,
+            })
+        if not entered:
+            continue
+        members = sorted(comp, key=lambda i: -scores.get(i, 0.0))[:per_cluster]
+        for idx in members:
+            node = nodes[idx]
+            matched.append({
+                "idx": idx,
+                "cluster_idx": ci,
+                "score": round(scores.get(idx, 0.0), 4),
+                "title": node.get("title", f"node_{idx}"),
+                "snippet": node.get("snippet", ""),
+                "file": node.get("file", ""),
+            })
+
+    return {
+        "query": query,
+        "total_clusters": len(clusters),
+        "clusters_entered": sum(1 for t in trajectory if t["entered"]),
+        "trajectory": trajectory,
+        "matches": matched,
+    }
+
+
+def format_cluster_drill_text(result):
+    lines = []
+    lines.append(f'Cluster-drill search: "{result["query"]}"')
+    lines.append(f'{result["total_clusters"]} total clusters, '
+                 f'{result["clusters_entered"]} entered')
+    lines.append("\nTrajectory (which clusters were considered/entered, in score order):")
+    for t in result["trajectory"]:
+        marker = "→ ENTERED" if t["entered"] else "  skipped"
+        lines.append(f'  cluster #{t["cluster_idx"]} (size {t["cluster_size"]}, '
+                     f'best {t["best_score"]:.2f}) {marker}')
+    if not result["matches"]:
+        lines.append("\nNo matches found.")
+        return "\n".join(lines)
+    lines.append("\nMatches (grouped by cluster):")
+    last_ci = None
+    for m in result["matches"]:
+        if m["cluster_idx"] != last_ci:
+            lines.append(f'\n  [cluster #{m["cluster_idx"]}]')
+            last_ci = m["cluster_idx"]
+        snippet_preview = m["snippet"][:100].replace("\n", " ") if m["snippet"] else ""
+        lines.append(f'    → {m["title"]} (score: {m["score"]:.2f}) [{m["file"]}]')
+        if snippet_preview:
+            lines.append(f'      "{snippet_preview}"')
+    return "\n".join(lines)
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Traverse typed relation edges in memory_graph.json",
@@ -259,11 +415,32 @@ def main():
                         help="Output format: text (default) or json")
     parser.add_argument("--graph", type=Path, default=GRAPH_PATH,
                         help=f"Path to memory_graph.json (default: {GRAPH_PATH})")
+    parser.add_argument("--cluster-drill", action="store_true", dest="cluster_drill",
+                        help="Use cluster-drill (hierarchical) retrieval instead of edge-BFS from a "
+                             "single start node. Ported concept from OpenViking's directory-recursive "
+                             "retrieval: score clusters coarse-to-fine, return a trajectory. Additive "
+                             "-- default behavior (edge-BFS) is unchanged without this flag.")
+    parser.add_argument("--top-clusters", type=int, default=3, dest="top_clusters",
+                        help="[--cluster-drill] Max clusters to enter (default: 3)")
+    parser.add_argument("--per-cluster", type=int, default=5, dest="per_cluster",
+                        help="[--cluster-drill] Max matches per entered cluster (default: 5)")
+    parser.add_argument("--cluster-min-sim", type=float, default=0.80, dest="cluster_min_sim",
+                        help="[--cluster-drill] Min similarity edge to link two nodes into the same "
+                             "cluster (default: 0.80, matches existing similar_to edge threshold)")
 
     args = parser.parse_args()
 
     graph = load_graph(args.graph)
     nodes = graph.get("nodes", [])
+
+    if args.cluster_drill:
+        result = cluster_drill_search(args.query, graph, min_sim=args.cluster_min_sim,
+                                       top_clusters=args.top_clusters, per_cluster=args.per_cluster)
+        if args.output_format == "json":
+            print(json.dumps(result, indent=2, ensure_ascii=False))
+        else:
+            print(format_cluster_drill_text(result))
+        return
 
     start_idx, start_node = find_start_node(graph, args.query)
     if start_idx is None:
