@@ -401,6 +401,89 @@ def format_cluster_drill_text(result):
     return "\n".join(lines)
 
 
+# ═══ PEER-SCOPED SEARCH (NEURON — peers_graph.json, privacy-by-construction) ═══
+# peers_graph.json is a SEPARATE graph from memory_graph.json. Its edges use
+# string endpoints {subject, verb, object} where subject is `peer:<platform>:<id>`.
+# ISOLATION RULE (OQ6): a peer's edges may surface ONLY when --peer matches that
+# subject (active-speaker). Cross-peer aggregation (--all-peers, e.g. "who trades
+# ETH") is OWNER-ONLY and MUST be gated by --owner. Fail-open on any error.
+PEERS_GRAPH_PATH = _REPO_ROOT / "memory" / "peers" / "peers_graph.json"
+
+def load_peers_graph(path: Path) -> dict:
+    try:
+        if not path.exists():
+            return {"nodes": {}, "edges": []}
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(data, dict) and "edges" in data:
+            data.setdefault("nodes", {})
+            return data
+    except Exception as e:
+        print(f"Warning: peers_graph load failed ({e})", file=sys.stderr)
+    return {"nodes": {}, "edges": []}
+
+def normalize_peer_subject(peer: str) -> str:
+    """Accept `platform:id`, `platform_id`, or full `peer:platform:id` -> canonical
+    `peer:<platform>:<id>` subject key."""
+    p = (peer or "").strip()
+    if p.startswith("peer:"):
+        return p
+    if ":" in p:
+        plat, pid = p.split(":", 1)
+        return f"peer:{plat.lower()}:{pid}"
+    if "_" in p:
+        plat, pid = p.split("_", 1)
+        return f"peer:{plat.lower()}:{pid}"
+    return f"peer:{p}"
+
+def peer_scoped_search(graph: dict, subject: str, query: str, min_confidence: float) -> dict:
+    """Return edges for ONE peer subject, optionally filtered by a query substring
+    on verb/object. Never returns any other peer's edges."""
+    q = (query or "").strip().lower()
+    out = []
+    for e in graph.get("edges", []):
+        if e.get("subject") != subject:
+            continue
+        if e.get("confidence", 0.0) < min_confidence:
+            continue
+        if q and q not in e.get("verb", "").lower() and q not in e.get("object", "").lower():
+            continue
+        out.append(e)
+    out.sort(key=lambda x: (-x.get("confidence", 0.0), -x.get("count", 0)))
+    return {"scope": "peer", "subject": subject, "query": query, "edges": out}
+
+def all_peers_search(graph: dict, query: str, min_confidence: float) -> dict:
+    """OWNER-ONLY cross-peer aggregation. Group peers by matching object/verb.
+    Caller MUST have gated this behind --owner before calling."""
+    q = (query or "").strip().lower()
+    hits = []
+    for e in graph.get("edges", []):
+        if e.get("confidence", 0.0) < min_confidence:
+            continue
+        if q and q not in e.get("verb", "").lower() and q not in e.get("object", "").lower():
+            continue
+        hits.append(e)
+    hits.sort(key=lambda x: (x.get("object", ""), -x.get("confidence", 0.0)))
+    return {"scope": "all_peers", "query": query, "edges": hits}
+
+def format_peer_text(result: dict) -> str:
+    lines = []
+    if result["scope"] == "peer":
+        lines.append(f'Peer-scoped graph: {result["subject"]}'
+                     + (f'  (filter: "{result["query"]}")' if result.get("query") else ""))
+    else:
+        lines.append(f'Cross-peer (OWNER) aggregation'
+                     + (f'  (filter: "{result["query"]}")' if result.get("query") else ""))
+    edges = result.get("edges", [])
+    if not edges:
+        lines.append("  (no matching edges)")
+        return "\n".join(lines)
+    for e in edges:
+        subj = e.get("subject", "?")
+        lines.append(f'  {subj} → {e.get("verb")} → {e.get("object")}  '
+                     f'(conf {e.get("confidence", 0):.2f}, seen {e.get("count", 1)}x, '
+                     f'last {e.get("last_seen", "?")})')
+    return "\n".join(lines)
+
 def main():
     parser = argparse.ArgumentParser(
         description="Traverse typed relation edges in memory_graph.json",
@@ -427,8 +510,36 @@ def main():
     parser.add_argument("--cluster-min-sim", type=float, default=0.80, dest="cluster_min_sim",
                         help="[--cluster-drill] Min similarity edge to link two nodes into the same "
                              "cluster (default: 0.80, matches existing similar_to edge threshold)")
+    # NEURON peer-scope (privacy-by-construction; separate peers_graph.json)
+    parser.add_argument("--peer", dest="peer", default=None,
+                        help="Peer-scoped mode. Value = active speaker as platform:id, platform_id, "
+                             "or peer:platform:id. Returns ONLY that peer's edges from peers_graph.json.")
+    parser.add_argument("--all-peers", action="store_true", dest="all_peers",
+                        help="OWNER-ONLY cross-peer aggregation (e.g. 'who trades ETH'). Requires --owner.")
+    parser.add_argument("--owner", action="store_true", dest="owner",
+                        help="Assert the caller is the owner. REQUIRED for --all-peers.")
+    parser.add_argument("--peers-graph", type=Path, default=PEERS_GRAPH_PATH, dest="peers_graph",
+                        help=f"Path to peers_graph.json (default: {PEERS_GRAPH_PATH})")
 
     args = parser.parse_args()
+
+    # ---- NEURON peer-scoped branch (isolated from the global-graph path) ----
+    if args.peer or args.all_peers:
+        pg = load_peers_graph(args.peers_graph)
+        if args.all_peers:
+            if not args.owner:
+                print("Refused: --all-peers is OWNER-ONLY. Pass --owner to confirm caller is the owner.",
+                      file=sys.stderr)
+                sys.exit(2)
+            result = all_peers_search(pg, args.query, args.min_confidence)
+        else:
+            subject = normalize_peer_subject(args.peer)
+            result = peer_scoped_search(pg, subject, args.query, args.min_confidence)
+        if args.output_format == "json":
+            print(json.dumps(result, indent=2, ensure_ascii=False))
+        else:
+            print(format_peer_text(result))
+        return
 
     graph = load_graph(args.graph)
     nodes = graph.get("nodes", [])
