@@ -458,6 +458,17 @@ def build_parser():
     return p
 
 
+def _obs_data(query, extra):  # retrieval observability (fail-open)
+    try:
+        import sys as _s
+        from pathlib import Path as _P
+        ws = _P(__file__).resolve().parent.parent
+        _s.path.insert(0, str(ws / "procedures"))
+        from _retrieval_log import log_retrieval
+        log_retrieval(ws, "data_query", query, extra=extra)
+    except Exception:
+        pass
+
 def main(argv=None):
     args = build_parser().parse_args(argv)
     if args.list:
@@ -465,8 +476,10 @@ def main(argv=None):
     if args.suggest:
         return cmd_suggest(args.suggest, args.table, args.column, args.format)
     if args.semantic:
+        _obs_data(args.semantic, {"mode": "semantic", "table": args.table})
         return cmd_semantic(args.semantic, args.table, args.column, args.format, k=args.k)
     if args.sql:
+        _obs_data(args.sql, {"mode": "sql", "table": args.table})
         return cmd_query(args.sql, args.table, args.format)
     if args.table:
         return cmd_table(args.table, args.format)

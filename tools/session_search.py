@@ -236,6 +236,17 @@ def main():
         print(f"Error: {e}")
         sys.exit(1)
 
+    try:  # retrieval observability (fail-open)
+        sys.path.insert(0, str(WORKSPACE / "procedures"))
+        from _retrieval_log import log_retrieval
+        log_retrieval(
+            WORKSPACE, "session_search", args.query, k=args.k,
+            result_uris=[r.get("source_file") or r.get("session_name") for r in results],
+            top_scores=[r.get("score") for r in results],
+        )
+    except Exception:
+        pass
+
     if args.json:
         print(json.dumps(results, indent=2))
         return

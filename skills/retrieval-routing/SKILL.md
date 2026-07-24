@@ -47,6 +47,20 @@ Key discriminators:
   itself* here — “what changed / was merged / was deleted recently” — not to
   `memory_search` (which returns memory *content*, not its edit history). Newest
   file = latest run; `_memory_diff.py --list` / `--show <run_id>` to inspect.
+- **`kb/retrieval_log/` is the retrieval audit log** (read-side twin of
+  `memory/.diffs/`) — every call to `session_search` / `docs_search` /
+  `graph_search` / `data_query` appends one line to today's JSONL: tool, query,
+  result count, top scores, whether it fell back. A daily cron rolls dailies
+  older than 30d into `kb/retrieval_log/rollups/YYYY-MM.json` and refreshes
+  `kb/retrieval_log/health.json` (per-tool calls / fallback_rate / empty_rate /
+  avg_top_score). Route meta-questions about *retrieval itself* here — “which
+  tool got used”, “is graph_search actually being reached for”, “why did that
+  query come back empty”, “how's routing quality lately” — via
+  `python3 procedures/_retrieval_log.py --list` (recent calls, `--tool <name>`
+  to filter) or `--health` (the routing-quality snapshot). NOT wired for native
+  `memory_search`/`memory_get` (OpenClaw-native, outside dinomem's instrumentation
+  reach) — covers the 4 neuron tools only, which is exactly where routing
+  ambiguity lives.
 
 ## Documents, images, audio/video & URLs → RAG (`docs_search`)
 

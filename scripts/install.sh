@@ -671,6 +671,12 @@ if [ "$DO_CRON" = 1 ]; then
   # session_ingest is triggered automatically by auto_session_reset.py (every 15 min)
   # No separate cron needed.
 
+  # retrieval_log rollup — daily at 4:15 UTC (no LLM, pure stdlib): compresses
+  # dailies older than 30d into monthly rollups + prunes raw, refreshes health.json
+  # (routing-quality snapshot: calls/fallback-rate/empty-rate per retrieval tool).
+  RLOG_CRON="15 4 * * * cd $WS && python3 procedures/_retrieval_log.py --workspace $WS --rollup >> logs/retrieval_log_rollup.log 2>&1"
+  upsert_cron "_retrieval_log.py --rollup" "dinomem-neuron: retrieval-log rollup + health snapshot (daily)" "$RLOG_CRON" "retrieval_log rollup cron (daily 4:15 UTC)"
+
   # project_advancer — OpenClaw agentTurn cron (NOT shell crontab): auto-advance type:project in_progress notes
   # one step per run, unattended, announces progress. Premium: only neuron installs this.
   python3 - <<PYEOF

@@ -622,6 +622,18 @@ Examples:
             max_chars=args.max_chars,
         )
 
+        try:  # retrieval observability (fail-open)
+            sys.path.insert(0, str(WORKSPACE / "procedures"))
+            from _retrieval_log import log_retrieval
+            log_retrieval(
+                WORKSPACE, "docs_search", args.query, k=args.k,
+                result_uris=[(r.get("metadata") or {}).get("source_file")
+                             or (r.get("metadata") or {}).get("doc_title") for r in results],
+                top_scores=[r.get("score") for r in results],
+            )
+        except Exception:
+            pass
+
         if args.json:
             print(json.dumps(results, ensure_ascii=False, indent=2))
             return

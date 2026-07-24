@@ -433,6 +433,18 @@ def main():
     graph = load_graph(args.graph)
     nodes = graph.get("nodes", [])
 
+    def _obs(uris, scores, fallback=False, extra=None):  # retrieval observability (fail-open)
+        try:
+            import sys as _s
+            from pathlib import Path as _P
+            _s.path.insert(0, str(_P(__file__).resolve().parent.parent / "procedures"))
+            from _retrieval_log import log_retrieval
+            log_retrieval(_P(__file__).resolve().parent.parent, "graph_search", args.query,
+                          k=args.hops, result_uris=uris, top_scores=scores,
+                          fallback_used=fallback, extra=extra)
+        except Exception:
+            pass
+
     if args.cluster_drill:
         result = cluster_drill_search(args.query, graph, min_sim=args.cluster_min_sim,
                                        top_clusters=args.top_clusters, per_cluster=args.per_cluster)
@@ -440,11 +452,19 @@ def main():
             print(json.dumps(result, indent=2, ensure_ascii=False))
         else:
             print(format_cluster_drill_text(result))
+        try:
+            _cl = result.get("clusters", []) if isinstance(result, dict) else []
+            _uris = [m.get("title") or m.get("idx") for c in _cl for m in c.get("matches", [])]
+            _scores = [c.get("score") for c in _cl]
+            _obs(_uris, _scores, extra={"mode": "cluster_drill"})
+        except Exception:
+            pass
         return
 
     start_idx, start_node = find_start_node(graph, args.query)
     if start_idx is None:
         print(f"No node found matching '{args.query}'. Try a different term.")
+        _obs([], [], fallback=True, extra={"mode": "edge_bfs", "no_start_node": True})
         sys.exit(0)
 
     adj = build_adjacency(graph, args.min_confidence)
@@ -457,6 +477,11 @@ def main():
         print(format_json(args.query, start_idx, start_node, results, forward_refs, args.hops, args.min_confidence))
     else:
         print(format_text(args.query, start_idx, start_node, results, forward_refs, args.hops, args.min_confidence))
+    try:
+        _obs([r.get("title") or r.get("idx") for r in results],
+             [r.get("confidence") for r in results], extra={"mode": "edge_bfs"})
+    except Exception:
+        pass
 
 
 if __name__ == "__main__":
