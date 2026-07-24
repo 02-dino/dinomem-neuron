@@ -51,7 +51,7 @@ ARCHIVES_DIR    = Path(
 )
 DB_PATH         = str(WORKSPACE / "kb/vector_db_sessions")
 LOG_FILE        = WORKSPACE / "logs/session_ingest.log"
-MAX_AGE_DAYS    = 7
+MAX_AGE_DAYS    = 14  # widened 7->14: session_search backstop (coupled w/ session_reset.ARCHIVE_MAX_AGE_DAYS)
 MIN_TURN_CHARS  = 15
 WINDOW_SIZE     = 5   # exchanges per chunk
 STEP            = 3   # step between windows
