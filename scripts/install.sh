@@ -536,7 +536,7 @@ hr "Copying scripts"
 # The scripts/*.sh + resolve_done_notes.py + distill_done_note.py helpers are the
 # cron targets referenced in the cron prompts; without them a fresh neuron install
 # registers crons whose scripts are missing (Step-0 pre-gate fails).
-for f in procedures/extract_memory.py procedures/memory_graph.py procedures/memory_synthesis.py procedures/memory_promote.py procedures/contradiction_check.py procedures/generate_topic_index.py procedures/docs_ingest.py procedures/pdf_visual_probe.py procedures/session_ingest.py procedures/_schema_adapter.py procedures/data_register.py tools/docs_search.py tools/session_search.py tools/graph_search.py tools/cache_utils.py tools/data_query.py scripts/claim_note.sh scripts/check_projects.sh scripts/check_improvable.sh scripts/check_deletable.sh scripts/cron_gate.sh scripts/resolve_done_notes.py scripts/distill_done_note.py; do
+for f in procedures/extract_memory.py procedures/memory_graph.py procedures/memory_synthesis.py procedures/memory_promote.py procedures/contradiction_check.py procedures/generate_topic_index.py procedures/docs_ingest.py procedures/pdf_visual_probe.py procedures/session_ingest.py procedures/_schema_adapter.py procedures/data_register.py tools/docs_search.py tools/session_search.py tools/graph_search.py tools/cache_utils.py tools/data_query.py scripts/claim_note.sh scripts/check_projects.sh scripts/check_improvable.sh scripts/check_deletable.sh scripts/check_ideator.sh scripts/cron_gate.sh scripts/resolve_done_notes.py scripts/distill_done_note.py; do
   dst="$WS/$f"
   # extract_memory.py is the neuron superset over base's copy — always overwrite it,
   # even without --force, or the upgrade ships base's older engine.
@@ -1107,6 +1107,124 @@ job = {
 upsert_cron_job(job, "deleter", "verified_note_deleter", "$WS/.cron_ids")
 PYEOF
 
+# ── brainstorm_ideator — OpenClaw agentTurn cron ─────────────────────────────
+# The Ideator acts ONLY on type:brainstorm / status:design notes — the thinking
+# class the Advancer/Improver/Deleter gates (which hard-require type:project or
+# verified:true) are blind to by design. It VERIFIES/tests/debugs the note's claims
+# (read-only exec), pressure-tests the reasoning, and APPENDS to a ## CRON CRITIQUE
+# section. It NEVER builds/advances/completes/reaps a note, NEVER mutates the body,
+# NEVER changes type/status (promotion is owner-only — it only suggests). Premium:
+# only neuron installs this. Disabled; driven by the Note Cron Gate like the trio.
+  python3 - <<PYEOF
+import subprocess, json, os
+
+def _cron_add_argv(job):
+    a = ['openclaw', 'cron', 'add']
+    name = job.get('name')
+    if name:
+        a += ['--name', name]
+    sched = job.get('schedule', {}) or {}
+    if sched.get('kind') == 'cron' and sched.get('expr'):
+        a += ['--cron', sched['expr']]
+        if sched.get('tz'):
+            a += ['--tz', sched['tz']]
+    elif sched.get('kind') == 'every' and sched.get('every'):
+        a += ['--every', str(sched['every'])]
+    elif sched.get('kind') == 'at' and sched.get('at'):
+        a += ['--at', str(sched['at'])]
+    pay = job.get('payload', {}) or {}
+    if pay.get('message'):
+        a += ['--message', pay['message']]
+    if pay.get('model'):
+        a += ['--model', pay['model']]
+    if pay.get('thinking'):
+        a += ['--thinking', pay['thinking']]
+    st = job.get('sessionTarget')
+    if st in ('main', 'isolated'):
+        a += ['--session', st]
+    ts = pay.get('timeoutSeconds')
+    if ts:
+        a += ['--timeout-seconds', str(ts)]
+    dmode = (job.get('delivery', {}) or {}).get('mode')
+    if dmode == 'none':
+        a += ['--no-deliver']
+    elif dmode == 'announce':
+        a += ['--announce']
+    if job.get('enabled') is False:
+        a += ['--disabled']
+    a += ['--json']
+    return a
+
+def _cron_verify(name):
+    try:
+        lr = subprocess.run(['openclaw', 'cron', 'list', '--json'], capture_output=True, text=True, timeout=10)
+        if lr.returncode != 0:
+            return ''
+        data = json.loads(lr.stdout)
+        joblist = data if isinstance(data, list) else data.get('jobs', {}).get('jobs', data.get('jobs', []))
+        for j in (joblist or []):
+            if j.get('name','').strip().lower() == name.strip().lower():
+                return j.get('id','') or 'exists'
+    except Exception:
+        return ''
+    return ''
+
+def upsert_cron_job(job, idfile, label, idsdir):
+    name = job['name']
+    existing_id = ''
+    try:
+        lr = subprocess.run(['openclaw', 'cron', 'list', '--json'], capture_output=True, text=True, timeout=10)
+        if lr.returncode == 0:
+            data = json.loads(lr.stdout)
+            joblist = data if isinstance(data, list) else data.get('jobs', {}).get('jobs', data.get('jobs', []))
+            for j in (joblist or []):
+                if j.get('name','').strip().lower() == name.strip().lower():
+                    existing_id = j.get('id',''); break
+    except Exception:
+        existing_id = ''
+    try:
+        if existing_id:
+            msg = job.get('payload', {}).get('message', '')
+            subprocess.run(['openclaw', 'cron', 'edit', existing_id, '--disable', '--message', msg],
+                           capture_output=True, text=True, timeout=15)
+            jid = existing_id
+            print(f"  \033[32m[ok]\033[0m   {label} OpenClaw cron updated + disabled (driven by Note Cron Gate)")
+        else:
+            ar = subprocess.run(_cron_add_argv(job),
+                                capture_output=True, text=True, timeout=15)
+            if ar.returncode != 0:
+                print(f"  \033[33m[warn]\033[0m Could not register {label} cron: {ar.stderr[:120]}")
+                return
+            try:
+                jid = json.loads(ar.stdout).get('id','')
+            except Exception:
+                jid = ''
+            vid = _cron_verify(name)
+            if not vid:
+                print(f"  \033[31m[FAIL]\033[0m  {label} cron did NOT persist (read-back by name found nothing).")
+                return
+            jid = jid or vid
+            print(f"  \033[32m[ok]\033[0m   {label} OpenClaw cron registered (disabled; driven by Note Cron Gate) \u2713 verified")
+        os.makedirs(idsdir, exist_ok=True)
+        open(idsdir + '/' + idfile, 'w').write(jid)
+    except Exception as e:
+        print(f"  \033[33m[warn]\033[0m {label} upsert failed: {e}")
+
+job = {
+    "name": "Brainstorm Ideator",
+    "schedule": {"kind": "cron", "expr": "35 * * * *", "tz": "UTC", "staggerMs": 60000},
+    "enabled": False,
+    "payload": {
+        "kind": "agentTurn",
+        "message": "Brainstorm Ideator. You pressure-test and VERIFY thinking notes (type: brainstorm) — you investigate, test, and debug their claims, then sharpen the thinking. You do NOT build, advance, complete, or reap them. Verify/test/debug is your job; building is forbidden.\n\nStep 0 — ZERO-LLM PRE-GATE: Run: bash $WS/scripts/check_ideator.sh\nIf exit code != 0 → no brainstorm note needs critique. STOP IMMEDIATELY. No further tool calls, no announce. Output exactly NO_REPLY.\n\nStep 1 — SELECT: ls memory/_note_*.md in $WS/memory/. Read each. Pick notes with type: brainstorm AND status: design. Handle ONE note this run (oldest by date whose ## CRON CRITIQUE section is stalest or absent). If none, stop silently (NO_REPLY).\n\nStep 2 — CLAIM PRE-CHECK (cheap filter only; Step 3 is authoritative). ALL timestamps UTC ISO8601; compute age in UTC. Read claimed_by / claimed_at. If claimed_by STARTS WITH 'live-session' AND claimed_at < 120 minutes (2h) ago → SKIP (a human is thinking through it live; NEVER interrupt a live design session). If claimed_by is any other value AND claimed_at < 30 min ago → SKIP (another ideator instance owns it).\n\nStep 3 — CLAIM (ATOMIC — do NOT hand-write claimed_by). Run EXACTLY: bash $WS/scripts/claim_note.sh claim <full note path> ideator. exit 0 → you hold it, proceed. exit 3 → BUSY, SKIP this note entirely this run. Any other non-zero → SKIP. The script is the only writer of claimed_by/claimed_at. If you edit across steps, re-assert with: bash $WS/scripts/claim_note.sh refresh <note> ideator.\n\nStep 4 — INVESTIGATE (this is the whole job — you TEST, you do NOT assume). Read the note's thinking. For each checkable claim/assumption/decision, ACTUALLY CHECK IT — run the verification, report real findings, never speculate:\n  - CLAIMS marked verified: re-run the check. Read the cited file/line, exec the referenced test, grep the config, query the data. Report CONFIRMED (with evidence) / REFUTED (with the contradicting evidence) / INCONCLUSIVE (what's missing to decide).\n  - UNVERIFIED 'we should check X' items: DO the check now. Read it, run it, query it. Report what you found.\n  - HOLES / CONTRADICTIONS: test whether they're real by inspecting the ACTUAL artifacts (files, logs, outputs), not by reasoning alone. Search other memory notes for conflicts.\n  - DEBUG: if the note describes something that should work, try to reproduce/verify it. If it breaks, isolate WHERE (read logs, trace, re-run read-only) and report the ROOT CAUSE. You DIAGNOSE the bug — you do NOT fix it.\n  - NEXT QUESTION: the sharpest unanswered question that would most move the thinking forward — a QUESTION, not a task.\n  - ALTERNATIVE FRAME: a materially different angle the note didn't consider (only if genuinely different — never invent contrarianism to look useful).\nBe a skeptical peer who does the legwork, not a cheerleader and not a doubter-for-show. 'Verified the claims, thinking holds, no new holes' is a valid, correct outcome — say it briefly rather than manufacture doubt.\n\nStep 5 — EXEC SAFETY BOUNDARY (hard, non-negotiable — you run unattended):\n  - ALLOWED: read files, grep, run tests/linters/diagnostics, query data/APIs read-only, re-run READ-ONLY referenced commands, inspect logs/config/state, bash -n syntax checks.\n  - FORBIDDEN: writing/editing ANY tracked file (the ONLY write you may make is appending to THIS note's ## CRON CRITIQUE section), git commit/push, any send/message to third parties, spending, credentials, installing, config mutation (openclaw config set/patch, cron add/edit), deleting, deploying, or ANY command that changes system/repo/external state.\n  - VERIFY != BUILD: you may find a bug and PROPOSE the fix in the critique, but you MUST NOT apply it. Debugging finds the cause; fixing is building; building is forbidden. When unsure whether a command mutates state, DO NOT run it — write 'BLOCKED: needs owner to run <exact command>' in the critique and move on.\n\nStep 6 — APPEND ONLY: Add a section at the END of the note titled '## CRON CRITIQUE (ideator, <UTC date>)'. Put your findings there. NEVER mutate the settled-decisions body above it. If a prior CRON CRITIQUE exists, add a NEW dated subsection — do not overwrite past critique (the thinking's evolution is the value). Back up the note first: bash $SKILL_DIR/scripts/file-backup.sh <note path>.\n\nStep 7 — PROMOTION SUGGESTION (suggest, NEVER act): If the thinking has crystallized into something buildable, add ONE line: 'Suggest promoting to type: project: <what>.' You do NOT change type/status yourself — promotion is always the owner's call.\n\nStep 8 — CLAIM RELEASE (via the script, atomic): Run EXACTLY: bash $WS/scripts/claim_note.sh release <full note path>. Never leave a dead claim; never hand-strip claimed_by.\n\nStep 9 — REPORT to the owner via the message tool, using the agent's default owner channel (platform-appropriate mention; do not hardcode a chat id). One terse message: '<note name>: <n> critique/verification points — <the sharpest one>.' If you verified and found nothing new ('thinking still sound'), stay SILENT (NO_REPLY) — do not ping for a no-op. No report if Step 0 gated out or you skipped on a claim.\n\nHARD RULES: verify/test/debug only — NEVER build/advance/complete/resolve/fix; append-only to ## CRON CRITIQUE, NEVER mutate the body; NEVER change status or type (promotion is owner-only, you only suggest); read-only/diagnostic exec ONLY (see Step 5 boundary); one note per run; ALWAYS claim + release via claim_note.sh (never hand-write claimed_by); respect live-session claims absolutely; 'thinking is sound' is a valid outcome — never manufacture doubt to look useful.",
+        "timeoutSeconds": 900
+    },
+    "sessionTarget": "isolated",
+    "delivery": {"mode": "none"}
+}
+upsert_cron_job(job, "ideator", "brainstorm_ideator", "$WS/.cron_ids")
+PYEOF
+
 # ── Note Cron Gate — ZERO-LLM dispatcher (command cron) ───────────────────────
 # CANONICAL SINGLE GATE. Named "Note Cron Gate" in BOTH base and neuron. base's
 # installer may have already created it (driving the note_review + pending_reminder
@@ -1206,6 +1324,7 @@ def readid(name):
         return ""
 adv = readid("advancer"); imp = readid("improver"); dele = readid("deleter")
 dnr = readid("daily_note_review")  # optional lane; '' if not yet registered
+idea = readid("brainstorm_ideator")  # neuron ideator lane; '' if not yet registered
 
 GATE_NAME = "Note Cron Gate"
 def _find_cron(name):
@@ -1253,6 +1372,7 @@ if adv:  our_lanes["GATE_ADVANCER_ID"] = adv
 if imp:  our_lanes["GATE_IMPROVER_ID"] = imp
 if dele: our_lanes["GATE_DELETER_ID"] = dele
 if dnr:  our_lanes["GATE_DAILY_NOTE_REVIEW_ID"] = dnr
+if idea: our_lanes["GATE_IDEATOR_ID"] = idea
 
 existing_gate = _find_cron(GATE_NAME)
 if existing_gate:

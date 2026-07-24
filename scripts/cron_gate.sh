@@ -31,6 +31,7 @@
 #   GATE_ADVANCER_ID           -> Project Advancer            [neuron]
 #   GATE_IMPROVER_ID           -> Project Improver            [neuron]
 #   GATE_DELETER_ID            -> Verified Note Deleter        [neuron]
+#   GATE_IDEATOR_ID            -> Brainstorm Ideator (critic)  [neuron]
 #   GATE_DAILY_NOTE_REVIEW_ID  -> Daily Note Review            [base + neuron]
 #   GATE_PENDING_REMINDER_ID   -> Pending Note Reminder        [base + neuron]
 #
@@ -50,6 +51,7 @@ SCRIPTS="$WS/scripts"
 ADVANCER_ID="${GATE_ADVANCER_ID:-}"
 IMPROVER_ID="${GATE_IMPROVER_ID:-}"
 DELETER_ID="${GATE_DELETER_ID:-}"
+IDEATOR_ID="${GATE_IDEATOR_ID:-}"
 # Optional lanes — set these env vars to enable:
 DAILY_NOTE_REVIEW_ID="${GATE_DAILY_NOTE_REVIEW_ID:-}"
 PENDING_REMINDER_ID="${GATE_PENDING_REMINDER_ID:-}"
@@ -92,6 +94,19 @@ fi
 if [ -n "$DELETER_ID" ] && [ -f "$SCRIPTS/check_deletable.sh" ]; then
   if bash "$SCRIPTS/check_deletable.sh"; then
     trigger "deleter" "$DELETER_ID"
+  fi
+fi
+
+# Lane 3b — Brainstorm Ideator: run when a type:brainstorm/status:design note exists.
+# Distinct from the project trio: it pressure-tests THINKING (pokes holes, surfaces
+# unverified assumptions, proposes the next QUESTION, flags contradictions) and
+# APPENDS to a `## CRON CRITIQUE` section — it NEVER advances a note to done and
+# NEVER reaps it. The Advancer/Improver/Deleter gates all hard-require type:project
+# (or verified:true), so brainstorm notes are invisible to them by design; this is
+# the one lane that acts on them. check_ideator.sh gates it $0 like the others.
+if [ -n "$IDEATOR_ID" ] && [ -f "$SCRIPTS/check_ideator.sh" ]; then
+  if bash "$SCRIPTS/check_ideator.sh"; then
+    trigger "ideator" "$IDEATOR_ID"
   fi
 fi
 
