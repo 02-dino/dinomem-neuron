@@ -138,9 +138,12 @@ function renderManifest(notes: OpenNote[], max: number): string {
   if (sessionRecallEnabled()) {
     lines.push("");
     lines.push(
-      "\u2139\uFE0F If the user's opener names an entity / feature / continuation that **no note above covers**, " +
-        "run `session_search \"<natural-language topic of the opener>\"` (recent conversation recall, <7d) and read the top hit " +
-        "**before answering** — this is neuron's cold-start recall, replacing the old `session_start_recall` AGENTS.md rule.",
+      "\u26A0\uFE0F **M2_M3 RECALL GATE (mandatory, not optional).** If the user's message names ANY entity, feature, " +
+        "project, decision, person, date, or continuation — you **MUST** recall BEFORE any fs/exec/read/grep and BEFORE " +
+        "asking the user 'what is X': (1) `memory_search \"<topic>\"` for distilled facts, AND (2) `session_search " +
+        "\"<topic>\"` for recent raw-conversation detail (<14d) when memory_search is thin. Read the top hit, THEN act. " +
+        "Do NOT grep the filesystem or ask the user as a substitute for recall — that is the exact failure this gate exists " +
+        "to stop. This supersedes the soft `session_start_recall` AGENTS.md plea with an imperative mechanism.",
     );
   }
   lines.push("");
