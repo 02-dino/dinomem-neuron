@@ -120,7 +120,18 @@ into it instead of stacking a duplicate), then auto-write a `_note_` when:
 - **completion_followup:** task done but a follow-up remains → auto-write `_note_`.
 - **project_estimate:** request trips the project gate → auto-write a `project`
   note before starting (see `project-notes`).
+- **design_decision:** a multi-turn conversation SETTLES design/architecture
+  decisions that have NO build task this turn (pure thinking: "we decided X over
+  Y because Z", tradeoff analysis, a port/feature plan, resolved open questions).
+  The other triggers all key on *deferred work*, so settled-thinking-with-no-task
+  falls through and evaporates on compaction. Auto-write `type: brainstorm`,
+  `status: design` — the Ideator critiques it, and its settled sub-decisions get
+  distilled into durable `memory/*.md` items on resolution. Proven gap
+  (2026-07-24): an 8-turn Honcho/OpenViking port design vanished because no
+  trigger fired — recoverable only by luck of transcript indexing.
 
 **Guardrail:** only if a concrete `done_when` is writable; personal/ambiguous → ask
-first. **Upgrade:** enumerate steps FIRST; if `>1` digital/verifiable step →
+first. (`design_decision` notes are the ONE exception: they have no `done_when` —
+their lifecycle is `design` → human `promoted`/`resolved`/`abandoned`, never
+auto-reaped by the janitor; see the brainstorm-note class rules.) **Upgrade:** enumerate steps FIRST; if `>1` digital/verifiable step →
 `type: project`; never skip enumeration; physical/non-verifiable tasks → `task_bound`.
