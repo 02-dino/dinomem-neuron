@@ -32,7 +32,19 @@ WS="${OPENCLAW_WORKSPACE:-/root/.openclaw/workspace-analyst}"
 MEM="$WS/memory"
 [ -d "$MEM" ] || exit 1
 
+# Re-fire guard: a brainstorm note RESTS at status:design by design (it never
+# self-resolves), so a bare exists->exit 0 gate would wake the Ideator LLM every
+# */15 tick forever (96x/day) to re-append the same critique or emit NO_REPLY.
+# Guard suppresses the wake unless the note BODY changed (hash excludes claim
+# lines) or a daily floor elapsed. Same v2 pattern as check_daily_notes.sh.
+SCRIPTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=_gate_refire_guard.sh
+source "$SCRIPTS_DIR/_gate_refire_guard.sh"
+STATE_FILE="$SCRIPTS_DIR/.check_ideator.last_run"
+MIN_INTERVAL_SECS=$(( 24 * 3600 ))  # daily floor
+
 now_epoch=$(date -u +%s)
+qualifying=()
 
 for f in "$MEM"/_note_*.md; do
   [ -e "$f" ] || continue
@@ -55,7 +67,14 @@ for f in "$MEM"/_note_*.md; do
   fi
 
   # found a critiquable brainstorm note
-  exit 0
+  qualifying+=("$f")
 done
 
+# No qualifying brainstorm notes -> nothing to do.
+[ "${#qualifying[@]}" -gt 0 ] || exit 1
+
+# Qualifying notes exist, but only wake the LLM if body changed or floor elapsed.
+if refire_should_fire "$STATE_FILE" "$MIN_INTERVAL_SECS" "${qualifying[@]}"; then
+  exit 0
+fi
 exit 1

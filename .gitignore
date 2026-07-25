@@ -21,3 +21,6 @@ _INTERNAL_*
 # Local file-backup safety copies — never commit / ship
 .backups/
 *.bak
+
+# Zero-LLM gate re-fire guard state (runtime, per-host, never commit)
+scripts/.check_*.last_run

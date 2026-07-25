@@ -16,9 +16,31 @@
 # and are intentionally invisible to this gate — the Advancer cannot do them.
 WS="${OPENCLAW_WORKSPACE:-$HOME/.openclaw/workspace}"
 
+# Re-fire guard: an ACTIVELY advancing project rewrites resume_state/current_step
+# every step, so its content hash changes and this still fires immediately (zero
+# added latency). But a project PAUSED at a safety gate (awaiting approval) or
+# stalled/malformed sits with a FROZEN body -- without this guard that wakes the
+# Advancer LLM every */15 tick forever just to re-read the note and emit NO_REPLY
+# (the worker already throttles its own MESSAGE to 1/24h, but still burns an LLM
+# turn every 15 min to decide that). Guard suppresses the wake unless the
+# aggregate body changed (hash excludes claim lines) or a daily floor elapsed.
+# Same v2 pattern as check_daily_notes.sh / check_ideator.sh.
+SCRIPTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=_gate_refire_guard.sh
+source "$SCRIPTS_DIR/_gate_refire_guard.sh"
+STATE_FILE="$SCRIPTS_DIR/.check_projects.last_run"
+MIN_INTERVAL_SECS=$(( 24 * 3600 ))  # daily floor for frozen/stuck notes
+
+qualifying=()
 for f in "$WS"/memory/_note_*.md; do
   [ -f "$f" ] || continue
   head -10 "$f" | grep -q "^type: project" || continue
-  head -10 "$f" | grep -qE "^status: (in_progress|pending)" && exit 0
+  head -10 "$f" | grep -qE "^status: (in_progress|pending)" && qualifying+=("$f")
 done
+
+[ "${#qualifying[@]}" -gt 0 ] || exit 1
+
+if refire_should_fire "$STATE_FILE" "$MIN_INTERVAL_SECS" "${qualifying[@]}"; then
+  exit 0
+fi
 exit 1

@@ -20,7 +20,21 @@ WS="${OPENCLAW_WORKSPACE:-$HOME/.openclaw/workspace}"
 MEM="$WS/memory"
 [ -d "$MEM" ] || exit 1
 
+# Re-fire guard: a project stuck at status:done but never reaching verified:true
+# (Component 2 can't verify it, or it's malformed) sits with a FROZEN body --
+# without this guard that wakes Component 2's LLM every */15 tick forever just to
+# re-fail the same verification. Guard suppresses the wake unless the aggregate
+# body changed (hash excludes claim lines) or a daily floor elapsed. A note that
+# genuinely gets fixed/re-attempted (body changes) still fires immediately.
+# Same v2 pattern as check_daily_notes.sh / check_ideator.sh / check_projects.sh.
+SCRIPTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=_gate_refire_guard.sh
+source "$SCRIPTS_DIR/_gate_refire_guard.sh"
+STATE_FILE="$SCRIPTS_DIR/.check_improvable.last_run"
+MIN_INTERVAL_SECS=$(( 24 * 3600 ))  # daily floor for frozen/stuck notes
+
 now_epoch=$(date -u +%s)
+qualifying=()
 
 for f in "$MEM"/_note_*.md; do
   [ -e "$f" ] || continue
@@ -57,7 +71,12 @@ for f in "$MEM"/_note_*.md; do
   fi
 
   # found an improvable note
-  exit 0
+  qualifying+=("$f")
 done
 
+[ "${#qualifying[@]}" -gt 0 ] || exit 1
+
+if refire_should_fire "$STATE_FILE" "$MIN_INTERVAL_SECS" "${qualifying[@]}"; then
+  exit 0
+fi
 exit 1
