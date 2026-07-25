@@ -178,6 +178,16 @@ def main() -> int:
     try:
         for f in note_files():  # re-list under lock
             fm = frontmatter(f)
+            # HARD GUARD: never delete a brainstorm note, regardless of status.
+            # Brainstorm thinking is the value and is RETAINED on resolve (unlike
+            # task/project notes which distill+delete). This guard makes "never
+            # delete brainstorm" hold at the REAPER (systemic), not just in the
+            # Daily Note Review LLM prompt. Root-caused 2026-07-25 after a bare
+            # `status: resolved` brainstorm (no shipped_when) got reaped -> data
+            # loss (recovered from cache). A brainstorm can carry verified:true if
+            # a human/ideator stamped it; still must NOT be deleted here.
+            if field_value(fm, "type") and field_value(fm, "type").lower() == "brainstorm":
+                continue
             if not has_marker(fm, "verified", "true"):
                 continue  # C1 deletes ONLY verified:true notes
             if is_actively_claimed(fm):
