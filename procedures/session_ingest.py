@@ -2,7 +2,7 @@
 """
 session_ingest.py — Ingest archived session .jsonl files into a vector DB for deep recall.
 
-Scoped to sessions archived within the last 7 days. Auto-cleans entries for
+Scoped to sessions archived within the last MAX_AGE_DAYS days. Auto-cleans entries for
 sessions that have been deleted. Uses sliding window chunking over user+assistant
 turns (filters out system, tool calls, and short turns < 15 chars).
 
@@ -51,7 +51,7 @@ ARCHIVES_DIR    = Path(
 )
 DB_PATH         = str(WORKSPACE / "kb/vector_db_sessions")
 LOG_FILE        = WORKSPACE / "logs/session_ingest.log"
-MAX_AGE_DAYS    = 14  # widened 7->14: session_search backstop (coupled w/ session_reset.ARCHIVE_MAX_AGE_DAYS)
+MAX_AGE_DAYS    = 21  # widened 7->14->21: DB ingest window (coupled w/ base session_reset.ARCHIVE_MAX_AGE_DAYS, the archive pruner)
 MIN_TURN_CHARS  = 15
 WINDOW_SIZE     = 5   # exchanges per chunk
 STEP            = 3   # step between windows
@@ -171,7 +171,7 @@ def get_all_source_files(db: Chroma) -> set[str]:
 
 # ── Cleanup ───────────────────────────────────────────────────────────────────
 def cleanup_expired(db: Chroma, dry_run: bool = False) -> int:
-    """Remove DB entries whose source .jsonl no longer exists or is > 7 days old."""
+    """Remove DB entries whose source .jsonl no longer exists or is older than MAX_AGE_DAYS."""
     sources = get_all_source_files(db)
     removed = 0
     for src in sources:
@@ -265,7 +265,7 @@ def main():
         # Stamp the embedding model id so query paths can detect a model mismatch
         # (model swap vs an old-model store => silent garbage). See _embed.warn_on_mismatch.
         collection_metadata={
-            "description": "Recent session store (7-day window, sliding window chunks)",
+            "description": "Recent session store (21-day window, sliding window chunks)",
             EMBED_MODEL_META_KEY: model_id(),
         }
     )

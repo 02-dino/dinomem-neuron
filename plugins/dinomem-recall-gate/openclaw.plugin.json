@@ -1,0 +1,37 @@
+{
+  "id": "dinomem-recall-gate",
+  "name": "dinomem recall gate",
+  "description": "Mid-session recall enforcement via before_tool_call (LANGUAGE-AGNOSTIC): blocks the first COLD fs/exec reach on a turn until a recall tool has run. No user-message parsing — fires on the danger (cold fs/exec) not the message, so it works regardless of the user's language. Complements the bootstrap-only dinomem-open-notes hook, which cannot cover mid-session recall. recallTools/fsTools are config-driven; neuron ships the full retrieval set (session_search/graph_search/docs_search/data_query on top of memory_search/memory_get).",
+  "configSchema": {
+    "type": "object",
+    "properties": {
+      "enforce": {
+        "type": "boolean",
+        "default": true,
+        "description": "Master switch. false = dry-run (never actually blocks)."
+      },
+      "agentFilter": {
+        "type": "string",
+        "default": "",
+        "description": "Only gate sessions whose sessionKey includes this substring. Empty string = all agents (neuron default — installer-agnostic)."
+      },
+      "recallTools": {
+        "type": "array",
+        "items": { "type": "string" },
+        "default": ["memory_search", "memory_get", "graph_search", "session_search", "docs_search", "data_query"],
+        "description": "Tools that count as 'recall done' for the current turn. Neuron set (memory_search/memory_get native + neuron's session_search/graph_search/docs_search/data_query). Does NOT include semantic_search, which is analyst-workspace-only. The blockReason lists exactly these, so it never names a tool the install lacks."
+      },
+      "fsTools": {
+        "type": "array",
+        "items": { "type": "string" },
+        "default": ["exec", "read", "grep", "glob"],
+        "description": "fs/exec tools gated: first COLD use (no recall yet this turn) triggers one nudge."
+      },
+      "cooldownTurns": {
+        "type": "number",
+        "default": 3,
+        "description": "Minimum turns between gate fires, to avoid nagging on repeated misses."
+      }
+    }
+  }
+}

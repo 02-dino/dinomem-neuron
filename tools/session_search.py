@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-session_search.py — Semantic search over recent archived sessions (7-day window).
+session_search.py — Semantic search over recent archived sessions (21-day window).
 
 Searches kb/vector_db_sessions/ — populated by procedures/session_ingest.py.
 No HyDE: query and session content are both conversational, raw query embedding
@@ -8,7 +8,7 @@ is more accurate than hypothetical expansion.
 
 Trigger (agent-side):
   - memory_search returns thin/uncertain result ([uncertain] tag, few hits, low confidence)
-  - AND memory file date < 7 days old
+  - AND memory file date < 21 days old
   - AND user intent requires detail
 
 Usage (CLI):
