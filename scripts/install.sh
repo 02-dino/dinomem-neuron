@@ -1756,7 +1756,7 @@ TOOLS_BODY=$(cat <<'DINOMEM_NEURON_TOOLS_BODY'
       - recency_weighted_reranking
       - list_indexed_sessions
     scope: |
-      Indexes only archived session .jsonl within the last 7 days (MAX_AGE_DAYS),
+      Indexes only archived session .jsonl within the last 21 days (MAX_AGE_DAYS),
       ingested by procedures/session_ingest.py (cron via auto_session_reset.py,
       every 15 min). If the DB is missing, the tool errors with a build hint.
     inputs:

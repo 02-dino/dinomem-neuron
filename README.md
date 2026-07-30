@@ -75,7 +75,7 @@ This insight is now injected every turn. Future investing discussions automatica
 | 🏗️ | **Project executor** | Large builds become `type: project` notes: the agent estimates token cost upfront and splits the work if it won't fit the remaining budget, then executes one step per turn (with a reactive context checkpoint as a safety net) so nothing is lost across sessions. A Project Advancer cron auto-advances unfinished projects unattended and announces progress, pausing for approval on anything destructive. |
 | ♻️ | **Self-improving project closer** | When a project finishes, a Project Improver cron reviews the completed work and — if it makes sense for *that* project — makes a behavior-preserving improvement (cheaper/faster/clearer/more reliable; "nothing needed" is a valid outcome), validates it, then stamps the note `verified`. A Verified Note Deleter then retires verified notes (snapshotting first). External/destructive improvements stay gated for owner approval. |
 | 🧹 | **Daily Note Review** | A daily janitor cron retires *any* resolved note — `task_bound` notes whose `done_when` is met, projects finished out-of-band, and abandoned notes past `stale_after` — so completed work doesn't pile up. Claim-aware: never touches a note another job or a live session is actively editing. |
-| 🔍 | **Session deep recall** | When memory summary is thin, searches raw archived sessions (7-day window) for the exact exchange — sharper, more detailed recall for recent context |
+| 🔍 | **Session deep recall** | When memory summary is thin, searches raw archived sessions (21-day window) for the exact exchange — sharper, more detailed recall for recent context |
 
 ---
 
@@ -389,7 +389,7 @@ The gate degrades **open** (if the live query is unavailable it relies on the hu
 
 ### Session deep recall
 
-When `memory_search` returns thin or uncertain results for recent context, `session_search.py` searches the raw archived session transcripts (7-day window) for the exact exchange — sharper, more detailed recall than the memory summary alone. Used only when the memory summary is insufficient, not every turn.
+When `memory_search` returns thin or uncertain results for recent context, `session_search.py` searches the raw archived session transcripts (21-day window) for the exact exchange — sharper, more detailed recall than the memory summary alone. Used only when the memory summary is insufficient, not every turn.
 
 ---
 
