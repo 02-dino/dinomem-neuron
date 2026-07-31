@@ -44,6 +44,17 @@ from datetime import datetime, timedelta
 from difflib import SequenceMatcher
 from pathlib import Path
 
+# Optional git-backing (support-only). Convergence/routing/promotion logic below
+# is fully unchanged (hooks/crons still ALWAYS staged for human confirm, never
+# auto-installed). Git only ATTACHES a commit-anchor to candidate meta.json, so
+# a reviewer can trace which memory-dir commit a converged candidate's source
+# notes were at. Absent git -> field omitted, meta unchanged.
+try:
+    sys.path.insert(0, str(Path(__file__).parent))
+    import git_history as _gh
+except Exception:
+    _gh = None
+
 _WS_DEFAULT = "DINOMEM_WORKSPACE_PLACEHOLDER"
 if _WS_DEFAULT.startswith("DINOMEM_"):  # sed did not run (ran from ZIP/skill dir)
     _WS_DEFAULT = str(Path(__file__).resolve().parent.parent)
@@ -352,6 +363,19 @@ def load_meta(slug: str) -> dict:
 def save_meta(slug: str, meta: dict):
     path = CANDIDATES_DIR / slug / "meta.json"
     path.parent.mkdir(parents=True, exist_ok=True)
+    # ADDITIVE git commit-anchor (support-only, fail-open). Meta fields above are
+    # untouched; this only records which workspace commit was HEAD at save time,
+    # for audit provenance. Silent if git absent.
+    try:
+        if _gh is not None:
+            ws = str(MEMORY_DIR.parent)
+            if _gh.available(ws):
+                _head = _gh._run(ws, ["rev-parse", "HEAD"])
+                if _head:
+                    meta = dict(meta)
+                    meta["git_anchor"] = _head.strip()[:12]
+    except Exception:
+        pass
     path.write_text(json.dumps(meta, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
