@@ -25,6 +25,16 @@ import sys
 import shutil
 import fcntl
 import datetime
+from pathlib import Path
+
+# Optional git-backing (support-only). git_history.py ships in base's
+# procedures/. Absent it / absent git -> the existing shutil snapshot below stays
+# the sole recoverability path, exactly as before.
+try:
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "procedures"))
+    import git_history as _gh
+except Exception:
+    _gh = None
 
 WS = os.environ.get("OPENCLAW_WORKSPACE", "/root/.openclaw/workspace-analyst")
 MEM_DIR = os.path.join(WS, "memory")
@@ -118,6 +128,26 @@ def snapshot(path: str) -> str:
     shutil.copy2(path, dest)
     return dest
 
+def _git_recovery_anchor(path: str):
+    """ADDITIVE git recovery anchor (support-only, fail-open).
+    The shutil snapshot above remains the AUTHORITATIVE recovery path. This only
+    ATTACHES, when git is backing the memory dir, the commit the note last lived
+    in — so a reviewer can `git checkout <head>:memory/<note>` to recover the
+    exact pre-delete content beyond the side-copy. Returns a short string for the
+    log, or '' if git isn't available / any error. NEVER blocks or alters delete.
+    """
+    if _gh is None:
+        return ""
+    try:
+        if not _gh.available(MEM_DIR):
+            return ""
+        head = _gh._run(MEM_DIR, ["rev-parse", "HEAD"])
+        if not head:
+            return ""
+        return f" git-anchor: {head.strip()[:12]}:memory/{os.path.basename(path)}"
+    except Exception:
+        return ""
+
 
 def _run_distiller(note_path: str, base: str) -> None:
     """Invoke the done-note distiller as a separate process. Best-effort:
@@ -201,6 +231,7 @@ def main() -> int:
                 deleted += 1
                 continue
             snap = snapshot(f)
+            git_anchor = _git_recovery_anchor(f)  # additive; '' if no git
             # DISTILL before delete: turn the retiring note's knowledge into
             # proper schema memory entries (via extract_from_text, cheap
             # no-reasoning) so the build stays retrievable, then delete the note.
@@ -231,7 +262,7 @@ def main() -> int:
             except OSError:
                 pass
             deleted += 1
-            log(f"deleted verified note: {base} (snapshot: {snap})")
+            log(f"deleted verified note: {base} (snapshot: {snap}){git_anchor}")
     finally:
         fcntl.flock(lock_fh, fcntl.LOCK_UN)
         lock_fh.close()
