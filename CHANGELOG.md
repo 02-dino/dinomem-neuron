@@ -4,6 +4,19 @@ All notable changes to dinomem-neuron are documented here.
 
 ---
 
+## 1.8.4 — 2026-07-31
+**Fixes a note-system rot-gap: a fully-shipped project note could stay `in_progress` forever if it was parked at an early, non-verifiable step (e.g. a human sign-off) — because the janitors only checked the *current step* / trusted `resume_state`, never the *whole-project* `done_when` against the real artifact.** Real incident: a project shipped out-of-band in a live session, the note never got written back, and both the Project Advancer and Daily Note Review kept deferring on its 9 unchecked steps + a stale `resume_state: "awaiting owner sign-off, do NOT write code yet"`. It would have silently rotted until `stale_after` deleted it as *garbage* — the worst outcome (a done project reaped as abandoned).
+
+### Changed
+- **Project Advancer prompt — new Step 4a (WHOLE-PROJECT DONE_WHEN PRECHECK).** Before touching the current step, the Advancer now verifies the note's **top-level `done_when` against the real artifact** (file/dir exists, grep of a named code anchor, `git rev-parse HEAD` vs `@{u}`, feature live) **regardless of what `resume_state` says**. A stale `resume_state` is no longer trusted over the artifact. If the whole-project `done_when` verifies, it marks all steps `[x]`, flips `status: done`, releases the claim, and stops — closing the parked-forever gap.
+- **Daily Note Review prompt — artifact-first for `type: project`.** The GC pass now runs the top-level `done_when` artifact check **before** deferring on unchecked steps, and closes a project even with unchecked steps / a parked `resume_state` when the artifact verifies. "Never delete a project whose `done_when` does not verify" is now explicitly **"...does not verify against a real artifact."**
+- `references/architecture.md`: documents the new **artifact-over-`resume_state` (anti-rot)** rule.
+
+### Upgrade notes
+- Extract the new ZIP and run `bash scripts/install.sh` to update the two cron prompts. No config changes, no gateway restart. Existing parked-but-shipped project notes will self-close on the next janitor run.
+
+---
+
 ## 1.8.3 — 2026-07-23
 **Image/OCR ingest no longer cold-boots a ~600–790MB process per image — it now reuses YOUR already-configured model over direct HTTP, with automatic fallback so nothing breaks.** Every scanned page, screenshot, or shared image previously ran through `openclaw capability model run --file`, which spins up a **fresh ~600–790MB Node/OpenClaw runtime per image** just to relay one call to the remote vision model. Batched across a multi-page PDF that stacks fast and can swap-thrash a small VPS. Now the OCR path does a **direct provider-HTTP POST with an `image_url` part**, using the **same model + API key you already configured** for the memory pipeline — zero new setup, no endpoint to enable, no gateway token, no port assumptions. If that path can't resolve (a non-vision model, an anthropic-format provider, or any HTTP failure) it **automatically falls back to the original CLI subprocess**, so every install keeps working exactly as before. Pure upside for the common case, zero regression for the edge cases.
 
