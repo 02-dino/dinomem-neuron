@@ -37,6 +37,16 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 from extract_memory import call_llm  # noqa: E402
 
+# Optional git-backing (support-only). Synthesis is DRAFT-ONLY (proposals/, never
+# auto-ingested) and its clustering/verification/gating logic is fully unchanged.
+# Git only ATTACHES a commit-anchor to the JSON handoff for the promoter, so a
+# reviewer can trace which memory-dir commit a proposed insight was synthesized
+# from. Absent git -> field omitted, handoff unchanged.
+try:
+    import git_history as _gh
+except Exception:
+    _gh = None
+
 # Schema adapter: tolerate OpenClaw memory-index schema drift (see memory_graph.py).
 from _schema_adapter import resolve as _resolve_schema_raw, SchemaUnsupported  # noqa: E402
 
@@ -910,9 +920,15 @@ def main():
 
     # Structured handoff for the Stage-4 promoter (memory_promote.py). Markdown is
     # for humans; this JSON is the machine contract. Only fields the promoter needs.
-    CURRENT_INSIGHTS_FILE.write_text(
-        json.dumps(
-            {
+    _git_anchor = None
+    try:
+        if _gh is not None and _gh.available(str(BASE)):
+            _head = _gh._run(str(BASE), ["rev-parse", "HEAD"])
+            if _head:
+                _git_anchor = _head.strip()[:12]
+    except Exception:
+        _git_anchor = None
+    _handoff = {
                 "generated": stamp,
                 "sig": sig,
                 "insights": [
@@ -931,10 +947,11 @@ def main():
                     }
                     for k in kept
                 ],
-            },
-            ensure_ascii=False,
-            indent=2,
-        ),
+            }
+    if _git_anchor:
+        _handoff["git_anchor"] = _git_anchor
+    CURRENT_INSIGHTS_FILE.write_text(
+        json.dumps(_handoff, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
     STATE_FILE.write_text(
