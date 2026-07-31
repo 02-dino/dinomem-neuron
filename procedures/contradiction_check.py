@@ -28,6 +28,15 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 from extract_memory import call_llm  # noqa: E402
 
+# Optional git-backing (support-only). The contradiction verdict logic below is
+# fully unchanged; git only ATTACHES a commit-anchor to the logged entry — which
+# commit the workspace was at when this verdict was recorded, for audit
+# provenance. Absent git -> field omitted, log entry unchanged.
+try:
+    import git_history as _gh
+except Exception:
+    _gh = None
+
 # Workspace resolution (priority): DINOMEM_WORKSPACE env var > install-time sed
 # substitution of DINOMEM_WORKSPACE_PLACEHOLDER > self-locate from this file's
 # location. Self-locate is a safety net if the install-time sed was
@@ -425,6 +434,16 @@ def log_contradiction(candidate, result):
         "result_reason": result["reason"],
         "contradictions_count": len(result["contradictions"]),
     }
+    # ADDITIVE git commit-anchor (support-only, fail-open). Verdict fields above
+    # are untouched; this only records which workspace commit was HEAD at verdict
+    # time, for audit provenance. Silent if git absent.
+    try:
+        if _gh is not None and _gh.available(str(_WS)):
+            _head = _gh._run(str(_WS), ["rev-parse", "HEAD"])
+            if _head:
+                entry["git_anchor"] = _head.strip()[:12]
+    except Exception:
+        pass
     with CONTRADICTION_LOG.open("a", encoding="utf-8") as f:
         f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
