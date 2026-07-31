@@ -55,6 +55,16 @@ try:
 except ImportError:
     HAS_LLM = False
 
+# Optional git-backing (support-only). Promotion decision logic (PROBATION/
+# REINFORCE/DECAY/RATE-LIMIT) below is fully unchanged; git only ATTACHES a
+# commit-anchor to the audit log entry -- which workspace commit was HEAD when
+# this promote/reinforce/graduate/expire/demote action was recorded. Absent git
+# -> field omitted, log entry unchanged.
+try:
+    import git_history as _gh
+except Exception:
+    _gh = None
+
 _WS_DEFAULT = "DINOMEM_WORKSPACE_PLACEHOLDER"
 if _WS_DEFAULT.startswith("DINOMEM_"):  # sed did not run (ran from ZIP/skill dir)
     _WS_DEFAULT = str(Path(__file__).resolve().parent.parent)
@@ -149,6 +159,16 @@ def log_action(action, entry, extra=None):
     }
     if extra:
         rec.update(extra)
+    # ADDITIVE git commit-anchor (support-only, fail-open). Decision fields above
+    # are untouched; this only records which workspace commit was HEAD at action
+    # time, for audit provenance. Silent if git absent.
+    try:
+        if _gh is not None and _gh.available(str(BASE)):
+            _head = _gh._run(str(BASE), ["rev-parse", "HEAD"])
+            if _head:
+                rec["git_anchor"] = _head.strip()[:12]
+    except Exception:
+        pass
     with LOG_FILE.open("a", encoding="utf-8") as f:
         f.write(json.dumps(rec, ensure_ascii=False) + "\n")
 
