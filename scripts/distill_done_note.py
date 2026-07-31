@@ -35,6 +35,7 @@ Usage:
   distill_done_note.py <path> --dry-run               # show what would be written
 Exit codes: 0 = distilled (or nothing memorable), 2 = LLM failed, 1 = bad args.
 """
+import os
 import sys
 from pathlib import Path
 
@@ -48,6 +49,15 @@ try:
 except Exception as e:  # pragma: no cover
     sys.stderr.write(f"[distill] cannot import extract_memory: {e}\n")
     sys.exit(1)
+
+# Optional git-backing (support-only). git_history.py ships in base's
+# procedures/. Used ONLY as a LAST-RESORT fallback source when the live note read
+# is missing/empty (e.g. the file was already removed/truncated by a race). The
+# live-file read below stays the PRIMARY source; git never overrides it.
+try:
+    import git_history as _gh
+except Exception:
+    _gh = None
 
 
 def strip_frontmatter(text: str) -> str:
@@ -77,8 +87,28 @@ def distill(note_path: str, dry_run: bool = False) -> int:
 
     body = strip_frontmatter(raw)
     if not body.strip():
-        em.log(f"[distill] {p.name}: empty body, nothing to distill")
-        return 0
+        # --- ADDITIVE git fallback (support-only, fail-open) ----------------
+        # The live read yielded an empty body. Before giving up, try git's last
+        # committed version of this note as a LAST-RESORT source, so knowledge
+        # isn't lost if the note was truncated/emptied by a race. Live read is
+        # still primary; this only fires when it produced nothing. Absent git ->
+        # unchanged (returns 0 as before).
+        recovered = ""
+        try:
+            if _gh is not None:
+                mem_dir = str(p.parent)
+                if _gh.available(mem_dir):
+                    git_raw = _gh.content_at(mem_dir, p.name, ref="HEAD")
+                    if git_raw:
+                        recovered = strip_frontmatter(git_raw)
+        except Exception:
+            recovered = ""
+        if recovered.strip():
+            em.log(f"[distill] {p.name}: live body empty -> recovered body from git HEAD")
+            body = recovered
+        else:
+            em.log(f"[distill] {p.name}: empty body, nothing to distill")
+            return 0
 
     label = p.stem.replace("_note_", "").replace("-", " ")[:40] or "done note"
     summary = em.extract_from_text(body, source_label=f"distill:{label}")
