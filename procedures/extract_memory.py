@@ -569,6 +569,37 @@ def call_llm(prompt, max_tokens=None, reasoning=False, model=None):
         _route = f"cheap={_no_reason_model}"
     else:
         _route = "default"
+
+    # ── PROVIDER-DIRECT FIRST for cheap (reasoning=False) calls (2026-08-01) ──
+    # WHY: the gateway CLI path (`capability model run`) COLD-BOOTS a ~600MB Node/
+    # OpenClaw runtime PER CALL just to relay one request, and (on multi-agent
+    # setups) LOGS under the default account rather than the caller. Posting
+    # DIRECTLY to the provider with the buyer's OWN configured key (the same
+    # resolvers the gateway-unreachable fallback below already uses) skips the
+    # cold-boot entirely and attributes correctly — zero new setup for the noob
+    # installer, since it reuses the model/key dinomem already resolved. This is
+    # the same win the OCR path (docs_ingest._ocr_via_http) already ships.
+    # reasoning=True (quality) stays on the gateway so it keeps the OpenClaw
+    # default model + thinking level. Best-effort: any miss (no key/base, non-
+    # openai/google format, HTTP error) falls straight through to the gateway CLI
+    # below — behavior-safe, nothing breaks on gateway-only setups.
+    if (not reasoning) and _no_reason_model:
+        try:
+            _dk = get_api_key_from_openclaw(_no_reason_model)
+            _db = get_api_base_from_model(_no_reason_model)
+            if _dk and _db:
+                _dfmt = get_api_format_from_model(_no_reason_model)
+                log(f"   \U0001f680 Provider-direct ({_no_reason_model}, no gateway)...")
+                _ok, _txt = _make_llm_request(
+                    _no_reason_model, _dk, _db, full_prompt, max_tokens,
+                    reasoning=False, api_format=_dfmt)
+                if _ok and _txt:
+                    log(f"   \u2705 Provider-direct successful ({_no_reason_model})")
+                    return True, _txt
+                log(f"   \u26a0\ufe0f  Provider-direct miss ({str(_txt)[:120]}); trying gateway...")
+        except Exception as _e:
+            log(f"   \u26a0\ufe0f  Provider-direct error ({_e}); trying gateway...")
+
     # Try OpenClaw gateway first
     try:
         log(f"   🔄 Calling OpenClaw gateway ({_route})...")
