@@ -1,39 +1,20 @@
 #!/usr/bin/env bash
-# cron_gate.sh — zero-LLM dispatcher (extensible gate pattern).
+# cron_gate.sh — zero-LLM dispatcher for the project-note cron trio.
 #
-# PATTERN: Gate layer (this script) + Worker layer (disabled agentTurn crons).
+# WHY: Project Advancer / Improver / Verified-Note-Deleter are agentTurn crons.
+# An agentTurn fire spins up a full LLM session BEFORE its own "Step 0" gate
+# script runs — so the old design paid for an LLM turn every schedule tick
+# (~96 + 48 + 48 per day) just to run a bash check that exits 1 ~95% of the time.
 #
-# WHY: An agentTurn cron spins up a full LLM session BEFORE any internal check
-# can run — so a naive design pays for a model call every tick just to decide
-# "nothing to do." This script runs as a COMMAND cron (payload.kind = command)
-# inside the Gateway process: pure bash, zero LLM cost. It runs cheap check
-# scripts (file scans, exit 0/1). Only when a check reports work does it call
-# `openclaw cron run <jobid>` to dispatch the real LLM worker.
+# This script is registered as a COMMAND cron (payload.kind = shell), which runs
+# in the Gateway process with ZERO LLM cost. It runs each cheap check script and
+# ONLY when a check reports work (exit 0) does it `openclaw cron run <jobid>` to
+# force-enqueue that job's real LLM turn. The three LLM jobs have their own
+# schedules DISABLED so they never self-fire; they only ever run when triggered
+# here. `openclaw cron run` executes disabled jobs (verified 2026-07-10).
 #
-# Worker crons have their own schedules DISABLED — they only ever fire when
-# triggered here. `openclaw cron run` executes disabled jobs.
-#
-# Net effect: idle ticks cost $0. LLM wakes only when there is real work.
-#
-# EXTENDING: Add a new lane by:
-#   1. Write a check script (exits 0 = work, 1 = nothing)
-#   2. Add a new env var for the worker job ID (install.sh fills it)
-#   3. Add a Lane block below (3 lines: if/check/trigger)
-#   4. Disable the worker cron's own schedule
-#
-# SUPERSET FILE: this same cron_gate.sh ships in BOTH dinomem (base) and
-# dinomem-neuron. Every lane is env-guarded — if a lane's GATE_*_ID env var is
-# empty, that lane is skipped silently. So a base-only install (which only sets
-# the note_review + pending_reminder ids) runs 2 lanes; a neuron install (which
-# also sets the project-trio ids) runs all 5 — from ONE gate cron, no duplicates.
-#
-# Lanes (all optional, enabled by their env var):
-#   GATE_ADVANCER_ID           -> Project Advancer            [neuron]
-#   GATE_IMPROVER_ID           -> Project Improver            [neuron]
-#   GATE_DELETER_ID            -> Verified Note Deleter        [neuron]
-#   GATE_IDEATOR_ID            -> Brainstorm Ideator (critic)  [neuron]
-#   GATE_DAILY_NOTE_REVIEW_ID  -> Daily Note Review            [base + neuron]
-#   GATE_PENDING_REMINDER_ID   -> Pending Note Reminder        [base + neuron]
+# Net effect: idle ticks cost $0 LLM; the LLM only spins up when there is
+# genuinely a project note to advance / improve / retire.
 #
 # Portable: workspace from $OPENCLAW_WORKSPACE; job IDs from env (install.sh fills
 # them). If a job-id env var is empty, that lane is skipped silently.
@@ -44,17 +25,27 @@
 # alerts; per-lane failures are logged, not fatal).
 set -uo pipefail
 
-WS="${OPENCLAW_WORKSPACE:-$HOME/.openclaw/workspace}"
+WS="${OPENCLAW_WORKSPACE:-/root/.openclaw/workspace-analyst}"
 SCRIPTS="$WS/scripts"
+
+# git drift-context helper. Best-effort; sourcing is guarded so a missing/broken
+# helper can never break the $0 dispatcher (fail-open: workers just find no ctx).
+GIT_CTX_ENABLED=0
+if [ -f "$SCRIPTS/_gate_git_ctx.sh" ]; then
+  # shellcheck source=_gate_git_ctx.sh
+  if source "$SCRIPTS/_gate_git_ctx.sh" 2>/dev/null && declare -F write_git_ctx >/dev/null 2>&1; then
+    GIT_CTX_ENABLED=1
+  fi
+fi
+# Repo whose recent changes the workers care about (memory notes + artifacts live here).
+GIT_CTX_REPO="${GIT_CTX_REPO:-/root/.openclaw}"
 
 # Job IDs (env-injected; install.sh substitutes real values). Empty => skip lane.
 ADVANCER_ID="${GATE_ADVANCER_ID:-}"
 IMPROVER_ID="${GATE_IMPROVER_ID:-}"
 DELETER_ID="${GATE_DELETER_ID:-}"
 IDEATOR_ID="${GATE_IDEATOR_ID:-}"
-# Optional lanes — set these env vars to enable:
 DAILY_NOTE_REVIEW_ID="${GATE_DAILY_NOTE_REVIEW_ID:-}"
-PENDING_REMINDER_ID="${GATE_PENDING_REMINDER_ID:-}"
 
 # Locate the openclaw CLI (cron command jobs run with the Gateway's PATH, but be safe).
 OPENCLAW_BIN="${OPENCLAW_BIN:-$(command -v openclaw || true)}"
@@ -66,6 +57,13 @@ trigger() {
   local name="$1" jobid="$2"
   if [ -z "$jobid" ] || [ -z "$OPENCLAW_BIN" ]; then
     return 0
+  fi
+  # Fire path ONLY: capture git drift context for this lane before enqueueing the
+  # LLM turn. Runs git (hardware only, zero LLM) and is reached solely because a
+  # gate already returned exit 0 (genuine work). Idle ticks never get here, so no
+  # git and no cost on empty runs. Fully fail-open inside write_git_ctx.
+  if [ "$GIT_CTX_ENABLED" -eq 1 ]; then
+    write_git_ctx "$name" "$GIT_CTX_REPO" || true
   fi
   if "$OPENCLAW_BIN" cron run "$jobid" >/dev/null 2>&1; then
     triggered+=("$name")
@@ -100,30 +98,18 @@ fi
 # Lane 3b — Brainstorm Ideator: run when a type:brainstorm/status:design note exists.
 # Distinct from the project trio: it pressure-tests THINKING (pokes holes, surfaces
 # unverified assumptions, proposes the next QUESTION, flags contradictions) and
-# APPENDS to a `## CRON CRITIQUE` section — it NEVER advances a note to done and
-# NEVER reaps it. The Advancer/Improver/Deleter gates all hard-require type:project
-# (or verified:true), so brainstorm notes are invisible to them by design; this is
-# the one lane that acts on them. check_ideator.sh gates it $0 like the others.
+# APPENDS to a `## CRON CRITIQUE` section — it never advances a note to done and
+# never reaps it. check_ideator.sh gates it $0 like the others.
 if [ -n "$IDEATOR_ID" ] && [ -f "$SCRIPTS/check_ideator.sh" ]; then
   if bash "$SCRIPTS/check_ideator.sh"; then
     trigger "ideator" "$IDEATOR_ID"
   fi
 fi
 
-# Lane 4 — Daily Note Review (optional): run when memory/ has notes to janitor.
-# Enable by setting GATE_DAILY_NOTE_REVIEW_ID in the cron job's env.
+# Lane 4 — Daily Note Review: run when memory/ has new or active notes.
 if [ -n "$DAILY_NOTE_REVIEW_ID" ] && [ -f "$SCRIPTS/check_daily_notes.sh" ]; then
   if bash "$SCRIPTS/check_daily_notes.sh"; then
     trigger "daily-note-review" "$DAILY_NOTE_REVIEW_ID"
-  fi
-fi
-
-# Lane 5 — Pending Note Reminder (optional): run when a task_bound note is past
-# its remind date. check_pending_notes.py exits 0 (JSON on stdout) when there is
-# work, 1 when nothing qualifies. Enable via GATE_PENDING_REMINDER_ID.
-if [ -n "$PENDING_REMINDER_ID" ] && [ -f "$SCRIPTS/check_pending_notes.py" ]; then
-  if python3 "$SCRIPTS/check_pending_notes.py" >/dev/null 2>&1; then
-    trigger "pending-reminder" "$PENDING_REMINDER_ID"
   fi
 fi
 

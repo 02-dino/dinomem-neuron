@@ -36,6 +36,36 @@ For durable facts, preferences, decisions — things true across sessions.
 - **Long documents** (legal text, manuals, contracts): don't inline — ingest via
   `docs/<slug>.md` → `docs_ingest.py` (see the `retrieval-routing` skill).
 
+#### ⚠️ NEVER pin STATE. Pin DECISIONS/intent only. (systemic rule)
+
+A `_pin_` is a **claim frozen at write-time** — the instant reality moves, the pin
+starts drifting, and a stale pin that still *reads* authoritative is worse than no
+pin because it makes you **stop checking**. So a pin must only hold what reality
+cannot later contradict.
+
+**The split — memorize it:**
+
+| Kind of thing | Where truth lives | Pin it? |
+| ------------- | ----------------- | ------- |
+| **STATE** — is X done, which files changed, when, are two copies in sync, last-touched, wired-or-not, current value | **git, computed live** (`git log`/`git diff`/`git_history.py`: `file_first_seen`, `file_last_touched`, `commit_count`, `content_at`, `diff_since`) | **NO — never.** git *is* the state; it can't go stale because it's recomputed from reality on every read. Remembering state = the staleness trap. |
+| **DECISION / intent / the "why"** — which copy is canonical, why X was chosen over Y, a design rationale, a naming/ownership convention | **a `_pin_`** — git can show two dirs differ but CANNOT tell you which one is *supposed* to win; that's a human decision, not a fact on disk | **YES.** This is the only durable thing a pin should hold. |
+
+**Consequences (this is the anti-thrash contract):**
+
+- Before trusting ANY state claim about infra/work ("is this wired?", "which copy is
+  canonical?", "did this ship?"), **compute it from git FIRST** — `git log`/`diff`
+  or `git_history.py` — NOT grep-on-one-copy, NOT a pin, NOT memory. git wins,
+  always. (Proven 2026-08-01: grepping ONE stale copy → "not done" → a whole session
+  of thrash rebuilding work git would have shown already existed.)
+- A pin can't rot into the dangerous stale-but-authoritative state, because it holds
+  no fact reality can contradict — only a decision **you** can deliberately change.
+- **New info contradicts a pin?** If it contradicts *state* → irrelevant, state was
+  never pinned; recompute from git. If it contradicts the *decision* → that's a real
+  decision change: **update the pin as a deliberate act** (it's an event you *do*,
+  not drift you suffer).
+- Corollary: don't build state-ledgers or "synced today / done ✅ / N refs"
+  breadcrumbs. That's re-remembering state under another name. git already answers it.
+
 ### 2. Transient work → `_note_`
 
 For todos, reminders, planned tasks, time-bound items.
