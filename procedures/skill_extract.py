@@ -63,6 +63,22 @@ MEMORY_DIR = BASE / "memory"
 SKILLS_DIR = BASE / "skills"
 CANDIDATES_DIR = BASE / "kb/memory_neuron/skill_candidates"
 
+
+def _git_anchor():
+    """Support-only, fail-open: 12-char short HEAD of the memory-dir snapshot store,
+    or None if git is absent / not a repo / any error. Used to stamp promotion
+    candidates with the workspace commit they were created at, for audit provenance."""
+    try:
+        if _gh is not None:
+            ws = str(MEMORY_DIR.parent)
+            if _gh.available(ws):
+                _head = _gh._run(ws, ["rev-parse", "HEAD"])
+                if _head:
+                    return _head.strip()[:12]
+    except Exception:
+        pass
+    return None
+
 CONVERGENCE_THRESHOLD = 3
 FUZZY_MATCH_THRESHOLD = 0.75
 PRUNE_DAYS = 60  # delete zero-convergence candidates older than this
@@ -456,6 +472,12 @@ def stage_hook_proposal(slug: str, cls: dict, parse: dict):
         "safety_warnings": safety.get("warnings", []),
         "note": "Hooks are runtime-mutating. Neuron does NOT auto-install. Review safety_warnings, then run the base hook_tool with --confirmed.",
     }
+    # ADDITIVE git commit-anchor (support-only, fail-open): stamp which workspace
+    # commit was HEAD when this runtime-mutating proposal was staged, so a human
+    # reviewing it later has provenance. Omitted silently if git is absent.
+    _ga = _git_anchor()
+    if _ga:
+        proposal["git_anchor"] = _ga
     (d / "PROPOSAL.json").write_text(json.dumps(proposal, indent=2, ensure_ascii=False), encoding="utf-8")
     warn = f" [{len(safety['warnings'])} warning(s)]" if safety.get("warnings") else ""
     print(f"  [staged:hook] {slug} (event={event}){warn} → kb/memory_neuron/hook_candidates/{slug}/ [awaiting confirmation]")
@@ -492,6 +514,11 @@ def stage_cron_proposal(slug: str, cls: dict, parse: dict):
         "safety_warnings": safety.get("warnings", []),
         "note": "Crons are runtime-mutating + recurring cost. Neuron does NOT auto-install. Review safety_warnings + classify cost tier, then run base cron_tool with --confirmed.",
     }
+    # ADDITIVE git commit-anchor (support-only, fail-open): same provenance stamp
+    # as the hook path, for the same audit reason.
+    _ga = _git_anchor()
+    if _ga:
+        proposal["git_anchor"] = _ga
     (d / "PROPOSAL.json").write_text(json.dumps(proposal, indent=2, ensure_ascii=False), encoding="utf-8")
     warn = f" [{len(safety['warnings'])} warning(s)]" if safety.get("warnings") else ""
     print(f"  [staged:cron] {slug} (kind={kind}){warn} → kb/memory_neuron/cron_candidates/{slug}/ [awaiting confirmation]")
