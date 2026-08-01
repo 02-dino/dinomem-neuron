@@ -4,6 +4,21 @@ All notable changes to dinomem-neuron are documented here.
 
 ---
 
+## 1.9.0 — 2026-08-01
+**Your memory pipeline can now read its own git history — so components stop guessing (or forgetting) state, and every recorded verdict/insight/promotion carries a tamper-evident commit anchor for audit.** dinomem-neuron already snapshots your memory dir on a timer; this release makes that history *useful*. A small, read-only, fail-open helper (`procedures/git_history.py`) exposes the snapshot log through a tiny stdlib API, and eight pipeline components now consult it as a **support-only** signal — never a hard dependency. If git is absent or the repo has no history, every component behaves exactly as before (the git field is simply omitted). Pure upside, zero regression.
+### Added
+- **`procedures/git_history.py` — read-only, fail-open, git-optional history API.** Exposes `available`, `file_first_seen`, `file_last_touched`, `commit_count`, `content_at`, `diff_since`, `restore` over the snapshot store. Every call degrades to a benign no-op (`None`/omitted) when git is missing, the path isn't a repo, or a command times out. Nothing in the pipeline blocks on it.
+### Changed
+- **Provenance anchors across the pipeline (support-only).** Eight components now stamp or consult a git commit anchor where it adds audit value, all behind a `try/except -> None` guard:
+  - `contradiction_check.py`, `memory_promote.py`, `memory_synthesis.py`, `skill_extract.py` — record the memory-dir commit each verdict / promotion / synthesized insight / extracted skill was recorded at (`git_anchor`, 12-char short sha). Absent git -> field omitted, output unchanged.
+  - **Project Advancer** — support-only git corroboration in its drift check (did this ship out-of-band in a live session?), so it stops probing blind.
+  - **Improver (C2)** — support-only git validation aid.
+  - `distill_done_note.py` — git fallback source when a done-note's inline state is thin.
+  - `resolve_done_notes.py` — git recovery anchor so a resolved note can be traced/recovered.
+- **`extract_memory.py` perf: provider-direct first for cheap calls.** Non-reasoning (`reasoning=False`) extraction calls now go provider-direct first, trimming latency/overhead on the hot path; falls back transparently.
+### Upgrade notes
+- Extract the new ZIP and run `bash scripts/install.sh`. No config changes, no gateway restart. The git-anchor fields appear automatically once your memory dir has snapshot history (git-autosnapshot from the base package); without git, everything works exactly as in 1.8.4.
+
 ## 1.8.4 — 2026-07-31
 **Fixes a note-system rot-gap: a fully-shipped project note could stay `in_progress` forever if it was parked at an early, non-verifiable step (e.g. a human sign-off) — because the janitors only checked the *current step* / trusted `resume_state`, never the *whole-project* `done_when` against the real artifact.** Real incident: a project shipped out-of-band in a live session, the note never got written back, and both the Project Advancer and Daily Note Review kept deferring on its 9 unchecked steps + a stale `resume_state: "awaiting owner sign-off, do NOT write code yet"`. It would have silently rotted until `stale_after` deleted it as *garbage* — the worst outcome (a done project reaped as abandoned).
 
