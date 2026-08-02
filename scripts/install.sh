@@ -2291,26 +2291,28 @@ PYEOF
   fi
 fi
 
-# ── Install dinomem-recall-gate plugin (before_tool_call mid-session recall) ──
-# The bootstrap dinomem-open-notes hook injects the recall gate ONCE at agent
-# bootstrap; it CANNOT cover mid-session (turn 5, turn 20...). This plugin closes
-# that gap: a before_tool_call hook that fires on the DANGER, not the message —
-# if the model reaches for a COLD fs/exec tool (exec/read/grep/glob) without
-# having run any recall tool yet this turn, it gets ONE block telling it to recall
-# first. LANGUAGE-AGNOSTIC by construction (no message parsing), so it works for
-# an installer typing in any language. recallTools/fsTools are config-driven;
-# neuron ships the full retrieval set. Fail-open: never bricks the tool loop.
-# Same persistent-extensions install + openclaw.json wiring pattern as the
-# note-claim plugins above.
-hr "Recall-gate hook plugin"
+# ── Override dinomem-recall-gate config (neuron-tier recallTools) ─────────────
+# OWNERSHIP: the recall-gate plugin CODE (index.ts/package.json) + its openclaw.json
+# wiring are OWNED BY BASE — base's installer (run FIRST above) copies them to the
+# global extensions dir and wires them. neuron is a strict extension: it OVERWRITES
+# ONLY openclaw.plugin.json with its neuron-tier recallTools (adds session_search/
+# graph_search/docs_search/data_query on top of base's memory_search/memory_get),
+# exactly the base-owns / neuron-extends pattern used for extract_memory.py. We do
+# NOT re-ship index.ts/package.json here — that was the duplication bug. If base did
+# not install the plugin (e.g. --no-auto-base against a base too old to ship it),
+# we fall back to installing the full plugin from neuron's own copy is NOT possible
+# (neuron no longer carries the code), so we WARN instead of silently half-installing.
+hr "Recall-gate config override (neuron-tier)"
 PLUGIN_SRC="$SKILL_DIR/plugins/dinomem-recall-gate"
 PLUGIN_DST="$OPENCLAW_DIR/extensions/dinomem-recall-gate"
-if [ ! -d "$PLUGIN_SRC" ]; then
-  warn "plugin source $PLUGIN_SRC missing — skipping (mid-session recall stays bootstrap-only)"
+if [ ! -f "$PLUGIN_SRC/openclaw.plugin.json" ]; then
+  warn "neuron recall-gate config source missing — leaving base's config in place"
+elif [ ! -f "$PLUGIN_DST/index.ts" ]; then
+  warn "recall-gate plugin CODE not found at $PLUGIN_DST (base did not install it?) — cannot apply neuron config over a missing plugin. Ensure base is installed (drop --no-auto-base), then re-run."
 else
-  mkdir -p "$PLUGIN_DST"
-  cp "$PLUGIN_SRC/openclaw.plugin.json" "$PLUGIN_SRC/package.json" "$PLUGIN_SRC/index.ts" "$PLUGIN_DST/"
-  ok "plugin files -> $PLUGIN_DST"
+  # Overwrite ONLY the config; base owns index.ts/package.json.
+  cp "$PLUGIN_SRC/openclaw.plugin.json" "$PLUGIN_DST/"
+  ok "neuron-tier recallTools config -> $PLUGIN_DST/openclaw.plugin.json"
   if [ ! -f "$OPENCLAW_JSON" ]; then
     warn "openclaw.json not found — plugin copied but NOT wired. Add id 'dinomem-recall-gate' to plugins.allow + its path to plugins.load.paths, then restart."
   else
