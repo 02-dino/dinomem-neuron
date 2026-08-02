@@ -35,7 +35,12 @@
  * is purely a recall nudge.
  */
 
-import { definePluginEntry } from "@openclaw/plugin-sdk";
+// Import path MUST match the runtime's resolvable SDK entry. The working hooks
+// (dinotrust-enforce, note-claim-oncreate) use "openclaw/plugin-sdk/plugin-entry".
+// The scoped "@openclaw/plugin-sdk" form silently failed to load here (2026-08-02
+// live test: before_tool_call handler never fired -> gate was dead), matching the
+// 'definePluginEntry is not a function' report. Aligned to the working path.
+import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 
 // ── Config (overridable via plugins.entries["dinomem-recall-gate"].config) ──
 type Cfg = {
@@ -44,6 +49,15 @@ type Cfg = {
   recallTools: string[];   // tools that COUNT as "recall done this turn" (TIER-SPECIFIC)
   fsTools: string[];       // fs/exec tools whose COLD use triggers the nudge
   cooldownTurns: number;   // min turns between fires (avoid nagging on repeated ignores)
+  // ── TIER B: hot-zone WRITE re-arm (2026-08-02) ──
+  // A recall latched EARLIER in the turn silences the cold-fs nudge; but a
+  // write/edit/apply_patch to a MECHANISM path is a distinct danger (building on
+  // a system with failure history -- e.g. the Generator-retry / 12.4M-blowup near-
+  // miss) that a stale general recall must NOT cover. So a hot-zone write requires
+  // a FRESH recall this turn even if recallDone is already latched.
+  writeTools: string[];      // write/edit/apply_patch (+aliases)
+  hotZoneGlobs: string[];    // substrings that mark a mechanism path (scripts/, tools/, config)
+  hotZoneExclude: string[];  // substrings that DISQUALIFY (memory/, gate's own dir) -> loop-safe
 };
 
 function cfg(raw: any): Cfg {
@@ -58,7 +72,56 @@ function cfg(raw: any): Cfg {
       : ["memory_search", "memory_get", "graph_search", "session_search", "semantic_search", "docs_search", "data_query"],
     fsTools: Array.isArray(c.fsTools) ? c.fsTools : ["exec", "read", "grep", "glob"],
     cooldownTurns: Number.isFinite(c.cooldownTurns) ? c.cooldownTurns : 3,
+    // Write-tier: tool-agnostic across tiers (write/edit/apply_patch exist
+    // everywhere), so base and neuron share these defaults -- unlike recallTools.
+    writeTools: Array.isArray(c.writeTools) ? c.writeTools
+      : ["write", "edit", "apply_patch", "Write", "Edit", "NotebookEdit"],
+    // GENERIC defaults for easy buyer install -- mechanism dirs + config files,
+    // no analyst-specific paths. Buyers override for their own layout.
+    hotZoneGlobs: Array.isArray(c.hotZoneGlobs) ? c.hotZoneGlobs
+      : ["scripts/", "procedures/", "tools/", "openclaw.json", ".gen_control", "crontab"],
+    // Loop-safety: NEVER gate writes to memory/ (the gate would fire on its own
+    // memory notes -> self-perpetuating, the 2026-07-24 cron-gate-loop lesson),
+    // nor the extension's own dir, nor backup/log churn.
+    hotZoneExclude: Array.isArray(c.hotZoneExclude) ? c.hotZoneExclude
+      : ["memory/", "extensions/dinomem-", ".backups/", "logs/"],
   };
+}
+
+// Pull plausible target file paths out of a write tool's params. Mirrors
+// note-claim-oncreate/extractTargetPaths: tools name the field differently
+// (path / file_path / filePath / filename); apply_patch encodes paths in the
+// patch body ("*** Update File: <p>"). Also honors host-derived path hints.
+function extractTargetPaths(event: any): string[] {
+  const out: string[] = [];
+  const push = (v: unknown) => { if (typeof v === "string" && v.length > 0) out.push(v); };
+  const params: any = event?.toolArgs ?? event?.args ?? event?.input ?? event?.params ?? event?.arguments;
+  if (params) {
+    push(params.path);
+    push(params.file_path);
+    push(params.filePath);
+    push(params.filename);
+    const patch = params.input ?? params.patch ?? params.content;
+    if (typeof patch === "string" && /\*\*\* (Add|Update|Delete) File:/.test(patch)) {
+      const re = /\*\*\* (?:Add|Update|Delete) File:\s*(.+)/g;
+      let m: RegExpExecArray | null;
+      while ((m = re.exec(patch)) !== null) push(m[1].trim());
+    }
+  }
+  const derived = event?.derivedPaths ?? event?.targetPaths;
+  if (Array.isArray(derived)) for (const p of derived) push(p);
+  return out;
+}
+
+// Hot-zone = at least one target path matches a glob AND matches NO exclude.
+// No path info -> NOT hot (fail-open: we never block a write we can't scope).
+function pathIsHotZone(paths: string[], c: Cfg): boolean {
+  for (const p of paths) {
+    const s = String(p || "");
+    if (c.hotZoneExclude.some((x) => s.includes(x))) continue;
+    if (c.hotZoneGlobs.some((g) => s.includes(g))) return true;
+  }
+  return false;
 }
 
 // ── Per-turn state (in-memory). A "turn" = one user message + its tool calls. ──
@@ -68,7 +131,8 @@ type TurnState = {
   turnId: string;       // fingerprint of the current user message (boundary detection only)
   turnIndex: number;    // monotonic counter of turns in this session
   recallDone: boolean;  // a recallTool ran during this turn
-  firedTurn: number;    // turnIndex of last fire (-Infinity if never) -> cooldown
+  firedTurn: number;    // turnIndex of last cold-fs fire (-Infinity if never) -> cooldown
+  writeFiredTurn: number; // turnIndex of last hot-zone-write fire -> independent cooldown
 };
 const _state = new Map<string, TurnState>();
 
@@ -115,6 +179,7 @@ export default definePluginEntry({
             turnIndex,
             recallDone: false,
             firedTurn: st?.firedTurn ?? -Infinity,
+            writeFiredTurn: st?.writeFiredTurn ?? -Infinity,
           };
           _state.set(sessionKey, st);
         }
@@ -123,6 +188,31 @@ export default definePluginEntry({
         if (c.recallTools.includes(toolName)) {
           st.recallDone = true;
           return undefined;
+        }
+
+        // ── TIER B: hot-zone WRITE re-arm ──
+        // Building on a mechanism script/config is a distinct danger from reading.
+        // A general recall latched EARLIER in the turn does NOT satisfy it (that
+        // was the exact hole: recalled about an investigation, then built a retry
+        // blind). Requires a FRESH recall THIS turn. Loop-safe via hotZoneExclude.
+        if (c.writeTools.includes(toolName)) {
+          const paths = extractTargetPaths(event);
+          if (!pathIsHotZone(paths, c)) return undefined;   // non-mechanism write: never gated
+          if (st.recallDone) return undefined;              // fresh recall this turn satisfies it
+          if (st.turnIndex - st.writeFiredTurn < c.cooldownTurns) return undefined;
+          const alreadyWroteFire = st.writeFiredTurn === st.turnIndex;
+          st.writeFiredTurn = st.turnIndex;
+          if (alreadyWroteFire) return undefined;
+          if (!c.enforce) return undefined;                 // dry-run
+          return {
+            block: true,
+            blockReason:
+              `dinomem-recall-gate: you're about to '${toolName}' a MECHANISM file ` +
+              `(${paths[0] ?? "hot-zone path"}) without a fresh recall this turn. Building on a ` +
+              `system with history? recall its prior decisions/failures FIRST (${recallList}) ` +
+              `-- an earlier recall about something else does NOT cover this build. Then retry; ` +
+              `the gate won't fire again this turn.`,
+          };
         }
 
         // Only fs/exec-shaped tools are gated.
