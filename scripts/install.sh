@@ -1571,7 +1571,7 @@ def _cron_verify(name):
 
 def upsert_gated(job, idfile, label, idsdir, gate_env_key):
     """Register a GATE-DRIVEN agentTurn cron: created DISABLED (never self-fires),
-    its id written to .cron_ids/<idfile>, then the already-created Project Cron Gate
+    its id written to .cron_ids/<idfile>, then the already-created Note Cron Gate
     cron gets this id injected into its command-env under <gate_env_key> so the gate
     dispatches it. This makes the lane work fully automatically at install — no
     manual env-var editing, no script edits. Upgrade-safe: if the job exists, refresh
@@ -1627,7 +1627,7 @@ def upsert_gated(job, idfile, label, idsdir, gate_env_key):
         open(idsdir + '/' + idfile, 'w').write(jid)
     except Exception:
         pass
-    # Locate the Project Cron Gate. If present (zero-LLM path succeeded), wire this
+    # Locate the Note Cron Gate. If present (zero-LLM path succeeded), wire this
     # lane's id into its env AND force this worker disabled. If ABSENT (fallback),
     # re-enable this worker on its own schedule so it still runs (behavior-preserving).
     gate_id = ''
@@ -1637,7 +1637,7 @@ def upsert_gated(job, idfile, label, idsdir, gate_env_key):
             data = json.loads(lr.stdout)
             joblist = data if isinstance(data, list) else data.get('jobs', {}).get('jobs', data.get('jobs', []))
             for j in (joblist or []):
-                if j.get('name','').strip().lower() == 'project cron gate':
+                if j.get('name','').strip().lower() == 'note cron gate':
                     gate_id = j.get('id',''); break
     except Exception:
         gate_id = ''
@@ -1658,11 +1658,11 @@ def upsert_gated(job, idfile, label, idsdir, gate_env_key):
         for k, v in existing_env.items():
             envargs += ['--command-env', f'{k}={v}']
         subprocess.run(envargs, capture_output=True, text=True, timeout=15)
-        print(f"  \033[32m[ok]\033[0m   {label} wired into Project Cron Gate ({gate_env_key}) — gate-driven, zero idle LLM")
+        print(f"  \033[32m[ok]\033[0m   {label} wired into Note Cron Gate ({gate_env_key}) — gate-driven, zero idle LLM")
     else:
         # No gate (command-crons refused). Re-enable on own schedule (fallback).
         subprocess.run(['openclaw', 'cron', 'enable', jid], capture_output=True, text=True, timeout=15)
-        print(f"  \033[33m[warn]\033[0m {label}: no Project Cron Gate found — running on its own 06:00 schedule (costs 1 LLM/day). Enable command-crons + re-run for zero-cost gating.")
+        print(f"  \033[33m[warn]\033[0m {label}: no Note Cron Gate found — running on its own 06:00 schedule (costs 1 LLM/day). Enable command-crons + re-run for zero-cost gating.")
 
 # Daily Note Review is verification + rubric-driven GC (run locally-checkable
 # done_when conditions, flip/delete on the result) — not deep reasoning. Pin it
@@ -2437,7 +2437,7 @@ fi
 # 1) OpenClaw crons present (by name)
 if command -v openclaw >/dev/null 2>&1; then
   _CRON_LIST="$(openclaw cron list --json 2>/dev/null || echo '[]')"
-  for _cname in "Project Advancer" "Project Improver (Component 2)" "Verified Note Deleter (Component 1)" "Project Cron Gate" "Daily Note Review"; do
+  for _cname in "Project Advancer" "Project Improver (Component 2)" "Verified Note Deleter (Component 1)" "Note Cron Gate" "Daily Note Review"; do
     if printf '%s' "$_CRON_LIST" | grep -qiF "$_cname"; then
       sc_pass "cron present: $_cname"
     else
