@@ -18,6 +18,8 @@ dinomem gives any OpenClaw agent **persistent memory** — without you writing a
 | 🗄️ | **Session archiving** | Conversations are archived and distilled into `memory/*.md` — durable notes, not raw transcripts |
 | 🗺️ | **Navigation index** | `MEMORY.md` is a searchable map of what exists in memory, injected every turn — the agent knows what it can recall |
 | 🔍 | **On-demand recall** | The agent searches its own memory when relevant (`memory_search` / `memory_get`) instead of forgetting between sessions |
+| 🧠 | **Self-curating memory** | An LLM reviews and dedupes memory daily — distills what matters, merges duplicates, retires stale notes. Memory gets sharper over time instead of bloating with noise. |
+| 🧭 | **Self-configuring** | Teach it a rule and it routes the behavior to where its trigger lives — a schedule → cron, an event → hook, an on-demand procedure → skill — instead of you hand-writing config. |
 | 🧬 | **Git-versioned memory** | An **isolated** `.dinomem-snap.git` store (on by default) snapshots memory changes — never touches your own repo. Full history, safe rollback. |
 | ⚙️ | **Zero-config install** | Installer sets sane defaults, patches only what's needed, and raises (never lowers) safety-critical timeouts |
 
