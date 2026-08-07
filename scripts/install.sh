@@ -1791,10 +1791,10 @@ PYEOF
 hr "AGENTS.md"
 AGENTS="$WS/AGENTS.md"
 if [ -f "$AGENTS" ]; then
-  bash "$SKILL_DIR/scripts/file-backup.sh" "$AGENTS" >/dev/null 2>&1 && ok "AGENTS.md backed up" || warn "AGENTS.md backup failed — continuing"
+  bash "$SKILL_DIR/scripts/file-backup.sh" "$AGENTS" >/dev/null 2>&1 && ok "AGENTS.md backed up" || true  # backup is a safety nicety; original file is untouched, so a failed .bak is not user-actionable — stay silent
 fi
 if [ -f "$WS/MEMORY.md" ]; then
-  bash "$SKILL_DIR/scripts/file-backup.sh" "$WS/MEMORY.md" >/dev/null 2>&1 && ok "MEMORY.md backed up" || warn "MEMORY.md backup failed — continuing"
+  bash "$SKILL_DIR/scripts/file-backup.sh" "$WS/MEMORY.md" >/dev/null 2>&1 && ok "MEMORY.md backed up" || true
 fi
 BEGIN="<!-- BEGIN:dinomem-neuron (managed) -->"
 END="<!-- END:dinomem-neuron -->"
@@ -1862,7 +1862,7 @@ fi
 hr "TOOLS.md"
 TOOLS="$WS/TOOLS.md"
 if [ -f "$TOOLS" ]; then
-  bash "$SKILL_DIR/scripts/file-backup.sh" "$TOOLS" >/dev/null 2>&1 && ok "TOOLS.md backed up" || warn "TOOLS.md backup failed — continuing"
+  bash "$SKILL_DIR/scripts/file-backup.sh" "$TOOLS" >/dev/null 2>&1 && ok "TOOLS.md backed up" || true
 fi
 TOOLS_BODY=$(cat <<'DINOMEM_NEURON_TOOLS_BODY'
   session_search:
@@ -2427,8 +2427,25 @@ PLUGIN_DST="$OPENCLAW_DIR/extensions/dinomem-recall-gate"
 if [ ! -f "$PLUGIN_SRC/openclaw.plugin.json" ]; then
   warn "neuron recall-gate config source missing — leaving base's config in place"
 elif [ ! -f "$PLUGIN_DST/index.ts" ]; then
-  warn "recall-gate plugin CODE not found at $PLUGIN_DST (base did not install it?) — cannot apply neuron config over a missing plugin. Ensure base is installed (drop --no-auto-base), then re-run."
-else
+  # SELF-HEAL (noob-smooth): the plugin CODE is owned by BASE. If it's missing,
+  # don't dump a 'reinstall base yourself' wall on the user — just re-run base's
+  # installer (idempotent) to drop the plugin, then recheck. Only attempt when
+  # auto-base is allowed and we can locate the base installer.
+  _healed=0
+  # Base is cloned to $OPENCLAW_DIR/dinomem by auto_install_base(); reuse that path.
+  _base_install="$OPENCLAW_DIR/dinomem/scripts/install.sh"
+  if [ "${NO_AUTO_BASE:-0}" != 1 ] && [ -f "$_base_install" ]; then
+    warn "recall-gate plugin code missing — re-running base installer to restore it..."
+    bash "$_base_install" --workspace "$WS" --agent-id "$AGENT_ID" >/dev/null 2>&1 || true
+    [ -f "$PLUGIN_DST/index.ts" ] && { ok "base restored recall-gate plugin code"; _healed=1; }
+  fi
+  if [ "$_healed" = 0 ]; then
+    warn "recall-gate plugin code not found (OPTIONAL) — mid-session recall discipline"
+    warn "  stays bootstrap-only. Core memory + retrieval still work. To enable it later:"
+    warn "  re-run the base installer. Not blocking."
+  fi
+fi
+if [ -f "$PLUGIN_DST/index.ts" ] && [ -f "$PLUGIN_SRC/openclaw.plugin.json" ]; then
   # Overwrite ONLY the config; base owns index.ts/package.json.
   cp "$PLUGIN_SRC/openclaw.plugin.json" "$PLUGIN_DST/"
   ok "neuron-tier recallTools config -> $PLUGIN_DST/openclaw.plugin.json"
@@ -2677,6 +2694,24 @@ if [ "$REPAIR_CRON" = 1 ]; then
 fi
 
 hr "done"
+# ── Tiered "what works now" verdict (noob-smooth) ────────────────────────────
+# Same rationale as base: lead with plain-language status so a first-timer knows
+# they're good, not broken, even when OPTIONAL layers (TEI/Docker, KB search tools)
+# are off. Core memory + learning lanes work regardless.
+echo "  \033[1;32m✔ dinomem-neuron is installed. Your agent remembers AND learns now.\033[0m"
+echo "    Core memory + the note-lifecycle crons (advance/improve/retire) are active."
+if command -v docker >/dev/null 2>&1 && curl -fsS http://localhost:8080/health >/dev/null 2>&1; then
+  echo "    \033[32m✔ Fast semantic recall (TEI) is running.\033[0m"
+else
+  echo "    \033[2m○ Optional: faster semantic recall (TEI/Docker) is off — memory still works without it.\033[0m"
+fi
+if python3 -c 'import langchain_chroma' >/dev/null 2>&1; then
+  echo "    \033[32m✔ KB vector-search tools (docs/session/semantic_search) are ready.\033[0m"
+else
+  echo "    \033[2m○ Optional: KB vector-search tools need Python packages that didn't install—\033[0m"
+  echo "    \033[2m      core memory_search is unaffected. Enable later: pip install langchain-chroma langchain-huggingface\033[0m"
+fi
+echo ""
 echo "  dinomem-neuron installed for agent: $AGENT_ID"
 echo "  workspace: $WS"
 echo ""
