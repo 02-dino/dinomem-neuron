@@ -4,6 +4,13 @@ All notable changes to dinomem-neuron are documented here.
 
 ---
 
+## 1.9.2 — 2026-08-07
+**Bugfix: TEI embedding calls in `extract_memory.py` now retry on transient unavailability.** The memory-extraction contradiction/dedup path issued a single TEI embed request with `timeout=8` and **no retry** — so a brief TEI stall (cold start, cron-storm queueing, reload window) silently skipped semantic dedup for that item. Wrapped in bounded retry-with-backoff. Fail-soft preserved (returns `None` only after retries exhaust). Byte-identical to the dinomem base 1.3.1 fix, so neuron-over-base install keeps the fix intact.
+### Fixed
+- **`extract_memory.py` `_get_tei_embedding`** — `timeout=8`, no retry → `timeout=20` + 2 retries (0.5s/1.0s backoff). Tunable via `DINOMEM_EMBED_TIMEOUT` (default 20s), `DINOMEM_EMBED_RETRIES` (default 2). No behavior change when TEI is healthy. Neuron's install-path dedup (`tools/_embed.py`, local in-process HF) is unaffected — it never used TEI HTTP.
+### Note
+- Requires dinomem base **1.3.1** (bundled) for the matching base-side fixes to `memory_cleanup.py` / `memory_review.py`.
+
 ## 1.9.0 — 2026-08-01
 **Your memory pipeline can now read its own git history — so components stop guessing (or forgetting) state, and every recorded verdict/insight/promotion carries a tamper-evident commit anchor for audit.** dinomem-neuron already snapshots your memory dir on a timer; this release makes that history *useful*. A small, read-only, fail-open helper (`procedures/git_history.py`) exposes the snapshot log through a tiny stdlib API, and eight pipeline components now consult it as a **support-only** signal — never a hard dependency. If git is absent or the repo has no history, every component behaves exactly as before (the git field is simply omitted). Pure upside, zero regression.
 ### Added
