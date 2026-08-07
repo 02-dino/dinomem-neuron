@@ -12,7 +12,12 @@
 # skip touching the base entirely (then the base must already exist, or fail).
 #
 # Usage:
-#   bash scripts/install.sh [--workspace DIR] [--agent-id ID] [--no-cron] [--force] [--agree] [--no-auto-base]
+#   bash scripts/install.sh [--workspace DIR] [--agent-id ID] [--no-cron] [--repair-cron] [--force] [--agree] [--no-auto-base]
+#
+#   --repair-cron : re-register ONLY the OpenClaw crons (Advancer/Improver/Deleter
+#                   + Note Cron Gate + Daily Note Review) and re-run the self-check.
+#                   Idempotent; skips base refresh, pip, TEI, file copy, config wiring.
+#                   Use when a fresh install left some crons unregistered.
 #
 # Env:
 #   DINOMEM_BASE_REPO   override base repo URL (default https://github.com/02-dino/dinomem)
@@ -24,6 +29,11 @@ AGENT_ID=""
 DO_CRON=1
 FORCE=0
 NO_AUTO_BASE=0
+# --repair-cron: idempotent "just fix the crons" mode. Skips the heavy/one-time
+# phases (base refresh, pip, TEI, file copy, AGENTS/TOOLS/config/hook wiring) and
+# flows straight to the cron registration + gate + self-check. Safe to re-run any
+# time a fresh install left the Advancer/Improver/Deleter/Gate lanes unregistered.
+REPAIR_CRON=0
 # Neuron has no --dry-run flag of its own, but the bootstrap-cap patch below
 # references $DRY_RUN; under `set -u` an undefined var aborts the whole install.
 # Default it to 0 (no dry-run) so real installs don't crash at that phase.
@@ -35,6 +45,7 @@ while [ $# -gt 0 ]; do
     --workspace)      WS="$2"; shift 2 ;;
     --agent-id)       AGENT_ID="$2"; shift 2 ;;
     --no-cron)        DO_CRON=0; shift ;;
+    --repair-cron)    REPAIR_CRON=1; DO_CRON=1; NO_AUTO_BASE=1; LICENSE_AGREED=1; shift ;;
     --force)          FORCE=1; shift ;;
     --agree)          LICENSE_AGREED=1; shift ;;
     --no-auto-base)   NO_AUTO_BASE=1; shift ;;
@@ -463,6 +474,13 @@ else
   ok "Root files: ${TOTAL_CHARS} chars total — within limits"
 fi
 
+# ── REPAIR-CRON FAST PATH ─────────────────────────────────────────────────────
+# In --repair-cron mode we skip every heavy/one-time phase (pip, TEI, dir create,
+# file copy, hook + skill copy) and jump straight to cron registration + gate +
+# self-check. These phases are idempotent on a normal install, but re-running them
+# is pointless (and slow) when the ONLY thing we're fixing is unregistered crons.
+if [ "$REPAIR_CRON" = 0 ]; then
+
 # ── 0) Python dependencies ───────────────────────────────────────────────────
 hr "Python dependencies"
 py_can_import langchain_chroma && skip "langchain-chroma (installed)" || (
@@ -616,6 +634,12 @@ if [ -d "$SKILL_DIR/skills" ]; then
   done
 fi
 
+fi  # end REPAIR-CRON FAST PATH (heavy phases)
+if [ "$REPAIR_CRON" = 1 ]; then
+  hr "repair-cron mode"
+  ok "skipping base/pip/TEI/copy/config phases — re-registering crons only"
+fi
+
 # ── 3) Register cron jobs ─────────────────────────────────────────────────────
 # upsert_cron: add or update a cron entry by script keyword
 upsert_cron() {
@@ -691,14 +715,21 @@ def _cron_add_argv(job):
     if name:
         a += ['--name', name]
     sched = job.get('schedule', {}) or {}
+    _sched_flags = 0
     if sched.get('kind') == 'cron' and sched.get('expr'):
-        a += ['--cron', sched['expr']]
+        a += ['--cron', sched['expr']]; _sched_flags += 1
         if sched.get('tz'):
             a += ['--tz', sched['tz']]
     elif sched.get('kind') == 'every' and sched.get('every'):
-        a += ['--every', str(sched['every'])]
+        a += ['--every', str(sched['every'])]; _sched_flags += 1
     elif sched.get('kind') == 'at' and sched.get('at'):
-        a += ['--at', str(sched['at'])]
+        a += ['--at', str(sched['at'])]; _sched_flags += 1
+    # DEFENSIVE: `openclaw cron add` rejects zero-or-multiple schedule flags with
+    # a cryptic 'Choose exactly one schedule' error that aborts the whole install
+    # heredoc, killing every lane after it. Fail LOUD with the job name instead so
+    # the self-check's repair path can surface exactly which lane is malformed.
+    if _sched_flags != 1:
+        raise ValueError("cron job %r has a malformed schedule (%r) -> would emit %d schedule flags; expected exactly 1" % (job.get('name'), sched, _sched_flags))
     pay = job.get('payload', {}) or {}
     pkind = pay.get('kind')
     if pkind == 'command':
@@ -841,14 +872,21 @@ def _cron_add_argv(job):
     if name:
         a += ['--name', name]
     sched = job.get('schedule', {}) or {}
+    _sched_flags = 0
     if sched.get('kind') == 'cron' and sched.get('expr'):
-        a += ['--cron', sched['expr']]
+        a += ['--cron', sched['expr']]; _sched_flags += 1
         if sched.get('tz'):
             a += ['--tz', sched['tz']]
     elif sched.get('kind') == 'every' and sched.get('every'):
-        a += ['--every', str(sched['every'])]
+        a += ['--every', str(sched['every'])]; _sched_flags += 1
     elif sched.get('kind') == 'at' and sched.get('at'):
-        a += ['--at', str(sched['at'])]
+        a += ['--at', str(sched['at'])]; _sched_flags += 1
+    # DEFENSIVE: `openclaw cron add` rejects zero-or-multiple schedule flags with
+    # a cryptic 'Choose exactly one schedule' error that aborts the whole install
+    # heredoc, killing every lane after it. Fail LOUD with the job name instead so
+    # the self-check's repair path can surface exactly which lane is malformed.
+    if _sched_flags != 1:
+        raise ValueError("cron job %r has a malformed schedule (%r) -> would emit %d schedule flags; expected exactly 1" % (job.get('name'), sched, _sched_flags))
     pay = job.get('payload', {}) or {}
     pkind = pay.get('kind')
     if pkind == 'command':
@@ -983,14 +1021,21 @@ def _cron_add_argv(job):
     if name:
         a += ['--name', name]
     sched = job.get('schedule', {}) or {}
+    _sched_flags = 0
     if sched.get('kind') == 'cron' and sched.get('expr'):
-        a += ['--cron', sched['expr']]
+        a += ['--cron', sched['expr']]; _sched_flags += 1
         if sched.get('tz'):
             a += ['--tz', sched['tz']]
     elif sched.get('kind') == 'every' and sched.get('every'):
-        a += ['--every', str(sched['every'])]
+        a += ['--every', str(sched['every'])]; _sched_flags += 1
     elif sched.get('kind') == 'at' and sched.get('at'):
-        a += ['--at', str(sched['at'])]
+        a += ['--at', str(sched['at'])]; _sched_flags += 1
+    # DEFENSIVE: `openclaw cron add` rejects zero-or-multiple schedule flags with
+    # a cryptic 'Choose exactly one schedule' error that aborts the whole install
+    # heredoc, killing every lane after it. Fail LOUD with the job name instead so
+    # the self-check's repair path can surface exactly which lane is malformed.
+    if _sched_flags != 1:
+        raise ValueError("cron job %r has a malformed schedule (%r) -> would emit %d schedule flags; expected exactly 1" % (job.get('name'), sched, _sched_flags))
     pay = job.get('payload', {}) or {}
     pkind = pay.get('kind')
     if pkind == 'command':
@@ -1133,14 +1178,21 @@ def _cron_add_argv(job):
     if name:
         a += ['--name', name]
     sched = job.get('schedule', {}) or {}
+    _sched_flags = 0
     if sched.get('kind') == 'cron' and sched.get('expr'):
-        a += ['--cron', sched['expr']]
+        a += ['--cron', sched['expr']]; _sched_flags += 1
         if sched.get('tz'):
             a += ['--tz', sched['tz']]
     elif sched.get('kind') == 'every' and sched.get('every'):
-        a += ['--every', str(sched['every'])]
+        a += ['--every', str(sched['every'])]; _sched_flags += 1
     elif sched.get('kind') == 'at' and sched.get('at'):
-        a += ['--at', str(sched['at'])]
+        a += ['--at', str(sched['at'])]; _sched_flags += 1
+    # DEFENSIVE: `openclaw cron add` rejects zero-or-multiple schedule flags with
+    # a cryptic 'Choose exactly one schedule' error that aborts the whole install
+    # heredoc, killing every lane after it. Fail LOUD with the job name instead so
+    # the self-check's repair path can surface exactly which lane is malformed.
+    if _sched_flags != 1:
+        raise ValueError("cron job %r has a malformed schedule (%r) -> would emit %d schedule flags; expected exactly 1" % (job.get('name'), sched, _sched_flags))
     pay = job.get('payload', {}) or {}
     if pay.get('message'):
         a += ['--message', pay['message']]
@@ -1267,6 +1319,42 @@ except: print('')
 if [ -n "$LEGACY_GATE_ID" ]; then
   openclaw cron remove "$LEGACY_GATE_ID" >/dev/null 2>&1 && ok "removed legacy 'Project Cron Gate' (replaced by canonical 'Note Cron Gate')"
 fi
+# SAME-NAME DEDUP SWEEP (idempotency guarantee across ANY prior state): the
+# upsert helpers already update-by-name so a clean re-run never duplicates, BUT a
+# PRIOR half-finished/crashed run (or a manual add) could have left two jobs with
+# the SAME canonical name. If so, the by-name lookup picks one arbitrarily and the
+# other keeps firing as a zombie. Here we sweep every canonical lane name: if >1
+# job shares it, keep the NEWEST (highest createdAtMs) and remove the rest. This
+# makes 'update dinomem' converge to exactly one of each lane no matter what state
+# it started from. Pure cleanup: never creates anything, only removes true dupes.
+python3 - <<'PYEOF'
+import subprocess, json
+CANON = [
+    "Project Advancer",
+    "Project Improver (Component 2)",
+    "Verified Note Deleter (Component 1)",
+    "Brainstorm Ideator",
+    "Daily Note Review",
+    "Note Cron Gate",
+]
+try:
+    r = subprocess.run(['openclaw','cron','list','--json'], capture_output=True, text=True, timeout=10)
+    data = json.loads(r.stdout) if r.returncode == 0 else []
+    jl = data if isinstance(data, list) else data.get('jobs', {}).get('jobs', data.get('jobs', []))
+except Exception:
+    jl = []
+for cname in CANON:
+    matches = [j for j in (jl or []) if j.get('name','').strip().lower() == cname.lower()]
+    if len(matches) <= 1:
+        continue
+    # keep the newest by createdAtMs (fallback updatedAtMs); remove the rest
+    matches.sort(key=lambda j: (j.get('createdAtMs', 0), j.get('updatedAtMs', 0)), reverse=True)
+    for dup in matches[1:]:
+        did = dup.get('id','')
+        if did:
+            subprocess.run(['openclaw','cron','remove',did], capture_output=True, text=True, timeout=15)
+            print("  \033[32m[ok]\033[0m   deduped '%s' — removed duplicate %s (kept newest)" % (cname, did[:8]))
+PYEOF
 if true; then
   python3 - <<PYEOF
 import subprocess, json, os
@@ -1280,14 +1368,21 @@ def _cron_add_argv(job):
     if name:
         a += ['--name', name]
     sched = job.get('schedule', {}) or {}
+    _sched_flags = 0
     if sched.get('kind') == 'cron' and sched.get('expr'):
-        a += ['--cron', sched['expr']]
+        a += ['--cron', sched['expr']]; _sched_flags += 1
         if sched.get('tz'):
             a += ['--tz', sched['tz']]
     elif sched.get('kind') == 'every' and sched.get('every'):
-        a += ['--every', str(sched['every'])]
+        a += ['--every', str(sched['every'])]; _sched_flags += 1
     elif sched.get('kind') == 'at' and sched.get('at'):
-        a += ['--at', str(sched['at'])]
+        a += ['--at', str(sched['at'])]; _sched_flags += 1
+    # DEFENSIVE: `openclaw cron add` rejects zero-or-multiple schedule flags with
+    # a cryptic 'Choose exactly one schedule' error that aborts the whole install
+    # heredoc, killing every lane after it. Fail LOUD with the job name instead so
+    # the self-check's repair path can surface exactly which lane is malformed.
+    if _sched_flags != 1:
+        raise ValueError("cron job %r has a malformed schedule (%r) -> would emit %d schedule flags; expected exactly 1" % (job.get('name'), sched, _sched_flags))
     pay = job.get('payload', {}) or {}
     pkind = pay.get('kind')
     if pkind == 'command':
@@ -1504,14 +1599,21 @@ def _cron_add_argv(job):
     if name:
         a += ['--name', name]
     sched = job.get('schedule', {}) or {}
+    _sched_flags = 0
     if sched.get('kind') == 'cron' and sched.get('expr'):
-        a += ['--cron', sched['expr']]
+        a += ['--cron', sched['expr']]; _sched_flags += 1
         if sched.get('tz'):
             a += ['--tz', sched['tz']]
     elif sched.get('kind') == 'every' and sched.get('every'):
-        a += ['--every', str(sched['every'])]
+        a += ['--every', str(sched['every'])]; _sched_flags += 1
     elif sched.get('kind') == 'at' and sched.get('at'):
-        a += ['--at', str(sched['at'])]
+        a += ['--at', str(sched['at'])]; _sched_flags += 1
+    # DEFENSIVE: `openclaw cron add` rejects zero-or-multiple schedule flags with
+    # a cryptic 'Choose exactly one schedule' error that aborts the whole install
+    # heredoc, killing every lane after it. Fail LOUD with the job name instead so
+    # the self-check's repair path can surface exactly which lane is malformed.
+    if _sched_flags != 1:
+        raise ValueError("cron job %r has a malformed schedule (%r) -> would emit %d schedule flags; expected exactly 1" % (job.get('name'), sched, _sched_flags))
     pay = job.get('payload', {}) or {}
     pkind = pay.get('kind')
     if pkind == 'command':
@@ -2414,6 +2516,7 @@ echo
 # piecemeal. Non-fatal: this only REPORTS, never exits nonzero.
 hr "Self-check"
 SC_FAIL=0
+REQUIRED_CRON_GAP=0   # set to 1 by the cron gate below if a REQUIRED lane is still missing after auto-repair
 sc_pass() { printf '  \033[32m[PASS]\033[0m %s\n' "$*"; }
 sc_warn() { printf '  \033[33m[WARN]\033[0m %s\n' "$*"; SC_FAIL=1; }
 # 0) CONFIG VALIDITY + GATEWAY LIVENESS — the 'bot goes silent' guard. A config that
@@ -2434,18 +2537,76 @@ if command -v openclaw >/dev/null 2>&1; then
 else
   sc_warn "openclaw CLI not found on PATH — cannot validate config or check gateway"
 fi
-# 1) OpenClaw crons present (by name)
+# 1) OpenClaw crons present (by name) — REQUIRED-CRON GATE with auto-repair.
+# The 4 REQUIRED lanes below are what make the note lifecycle self-drive. If any
+# is missing after install, the old behavior only WARNed (buried in green output),
+# so buyers silently ran without them. Now: collect the gap, and if the gateway is
+# reachable, AUTO-REPAIR by re-running this installer with --repair-cron (idempotent,
+# cron-only). If we can't auto-repair, surface ONE copy-paste fix command and, on a
+# normal install (not already inside a repair run), exit NONZERO so the gap is loud.
+# Daily Note Review is treated as recommended-not-required (it's a redundant janitor).
+_REQUIRED_CRONS="Project Advancer|Project Improver (Component 2)|Verified Note Deleter (Component 1)|Note Cron Gate"
+_MISSING_REQUIRED=""
 if command -v openclaw >/dev/null 2>&1; then
   _CRON_LIST="$(openclaw cron list --json 2>/dev/null || echo '[]')"
-  for _cname in "Project Advancer" "Project Improver (Component 2)" "Verified Note Deleter (Component 1)" "Note Cron Gate" "Daily Note Review"; do
+  # required lanes
+  _IFS_SAVE="$IFS"; IFS='|'
+  for _cname in $_REQUIRED_CRONS; do
     if printf '%s' "$_CRON_LIST" | grep -qiF "$_cname"; then
       sc_pass "cron present: $_cname"
     else
-      sc_warn "cron MISSING: $_cname  (add via the OpenClaw cron tool)"
+      sc_warn "cron MISSING (required): $_cname"
+      _MISSING_REQUIRED="${_MISSING_REQUIRED}${_MISSING_REQUIRED:+, }$_cname"
     fi
   done
+  IFS="$_IFS_SAVE"
+  # recommended (non-blocking)
+  if printf '%s' "$_CRON_LIST" | grep -qiF "Daily Note Review"; then
+    sc_pass "cron present: Daily Note Review"
+  else
+    sc_warn "cron MISSING (recommended): Daily Note Review — general note janitor; not blocking"
+  fi
+
+  # ── AUTO-REPAIR ────────────────────────────────────────────────────────────
+  # Only meaningful on a normal install. If we are ALREADY in --repair-cron and
+  # lanes are still missing, a re-run won't help (real gateway/permission problem)
+  # — so don't loop; just surface the manual command + fail.
+  if [ -n "$_MISSING_REQUIRED" ]; then
+    _REPAIR_CMD="bash $SKILL_DIR/scripts/install.sh --workspace $WS --agent-id $AGENT_ID --repair-cron"
+    if [ "$REPAIR_CRON" = 0 ] && openclaw status >/dev/null 2>&1; then
+      printf '  \033[33m[repair]\033[0m required cron(s) missing (%s) — auto-repairing (cron-only re-run)...\n' "$_MISSING_REQUIRED"
+      if bash "$SKILL_DIR/scripts/install.sh" --workspace "$WS" --agent-id "$AGENT_ID" --repair-cron; then
+        # re-verify after repair
+        _CRON_LIST2="$(openclaw cron list --json 2>/dev/null || echo '[]')"
+        _STILL_MISSING=""
+        _IFS_SAVE="$IFS"; IFS='|'
+        for _cname in $_REQUIRED_CRONS; do
+          printf '%s' "$_CRON_LIST2" | grep -qiF "$_cname" || _STILL_MISSING="${_STILL_MISSING}${_STILL_MISSING:+, }$_cname"
+        done
+        IFS="$_IFS_SAVE"
+        if [ -z "$_STILL_MISSING" ]; then
+          sc_pass "auto-repair fixed all required crons"
+          _MISSING_REQUIRED=""
+        else
+          sc_warn "auto-repair ran but these are STILL missing: $_STILL_MISSING"
+          _MISSING_REQUIRED="$_STILL_MISSING"
+        fi
+      else
+        sc_warn "auto-repair (--repair-cron) exited nonzero — see output above"
+      fi
+    fi
+    # If still missing after (or without) auto-repair, surface ONE fix command.
+    if [ -n "$_MISSING_REQUIRED" ]; then
+      sc_warn "required cron(s) still missing: $_MISSING_REQUIRED"
+      printf '  \033[33m[fix]\033[0m Run this to register them (idempotent, cron-only):\n'
+      printf '        %s\n' "$_REPAIR_CMD"
+      printf '  \033[33m[fix]\033[0m If it keeps failing: your gateway may reject command-kind crons.\n'
+      printf '        Allow command cron jobs (operator.admin) on the gateway, then re-run the above.\n'
+      REQUIRED_CRON_GAP=1
+    fi
+  fi
 else
-  sc_warn "openclaw CLI not found on PATH — cannot verify crons"
+  sc_warn "openclaw CLI not found on PATH — cannot verify/register crons"
 fi
 # 2) TEI embed server /health
 if curl -s -o /dev/null -w '%{http_code}' --max-time 3 "http://localhost:${TEI_PORT:-8080}/health" 2>/dev/null | grep -q '^200$'; then
@@ -2497,6 +2658,23 @@ else
   printf '  \033[33m== self-check: some items need attention (see WARN above) ==\033[0m\n'
 fi
 echo ""
+
+# HARD-FAIL on a REQUIRED-cron gap so it can never hide under green output again.
+# In --repair-cron mode we still exit nonzero (the caller/auto-repair reads it),
+# but we do NOT print the long "done / next steps" banner for a cron-only run.
+if [ "$REQUIRED_CRON_GAP" = 1 ]; then
+  printf '\033[31m  ✖ REQUIRED cron lane(s) missing — the note lifecycle will NOT self-drive.\033[0m\n'
+  printf '    Fix with:  bash %s/scripts/install.sh --workspace %s --agent-id %s --repair-cron\n' "$SKILL_DIR" "$WS" "$AGENT_ID"
+  exit 1
+fi
+
+# repair-cron mode: crons are green, nothing else to do — skip the full install banner.
+if [ "$REPAIR_CRON" = 1 ]; then
+  hr "repair-cron done"
+  echo "  Required crons registered/verified for agent: $AGENT_ID"
+  echo "  Restart OpenClaw to activate:  openclaw gateway restart"
+  exit 0
+fi
 
 hr "done"
 echo "  dinomem-neuron installed for agent: $AGENT_ID"
