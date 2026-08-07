@@ -508,6 +508,29 @@ py_can_import googleapiclient && skip "google-api-python-client (installed)" || 
   pip_install google-api-python-client google-auth google-auth-oauthlib google-auth-httplib2 && ok "google-api-python-client" || warn "google-api-python-client install failed"
 )
 
+# ── HARD post-install assertion: the langchain trio GATES the KB-search tools ──
+# These are NOT a nicety — docs_search / session_search / semantic_search (and
+# their ingest procedures) hard-fail at import without them. A buried per-package
+# warn is easy to skim past, so re-check the actual imports here and, if any are
+# missing, surface ONE prominent, actionable block naming exactly which tools are
+# offline + the copy-paste fix. Core memory_search is TEI/HTTP-only and unaffected,
+# so we do NOT block the install — but we make the gap impossible to miss.
+KB_DEPS_MISSING=""
+for _d in langchain_chroma langchain_huggingface langchain_core; do
+  py_can_import "$_d" || KB_DEPS_MISSING="${KB_DEPS_MISSING}${KB_DEPS_MISSING:+ }$_d"
+done
+if [ -n "$KB_DEPS_MISSING" ]; then
+  echo ""
+  printf '  \033[1;33m⚠ KB search tools are OFFLINE — Python deps did not install:\033[0m %s\n' "$KB_DEPS_MISSING"
+  echo "     Affected (these will error until fixed): docs_search, session_search"
+  echo "     (+ their ingest: docs_ingest, session_ingest). Your core memory_search is UNAFFECTED."
+  # NB: graph_search is stdlib-only (unaffected); data_query needs duckdb, not langchain.
+  printf '     \033[1mFix (copy-paste):\033[0m %s -m pip install langchain-chroma langchain-huggingface langchain-core\n' "$PY"
+  echo "     If that errors with 'externally-managed-environment', append: --break-system-packages"
+  echo "     Then re-run this installer (idempotent) to finish wiring the KB tools."
+  echo ""
+fi
+
 # ── 1) Create directories ─────────────────────────────────────────────────────
 hr "Directories"
 for d in topics kb/memory_neuron/l2_graph kb/memory_neuron/l3_synthesis kb/memory_neuron/l4_promoted kb/data_store; do
