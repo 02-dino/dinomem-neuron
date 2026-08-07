@@ -4,6 +4,16 @@ All notable changes to dinomem-neuron are documented here.
 
 ---
 
+## 1.9.3 — 2026-08-07
+
+**Install-hardening + honest dependency framing.** Rolls up the install/UX work that landed after the 1.9.2 bump and corrects README wording that undersold TEI/langchain.
+### Changed
+- **README: TEI no longer framed as "optional" (skippable).** Reworded to "auto-installed by base (recommended for full capacity)": base auto-provisions Docker/TEI on Linux by default; it degrades gracefully only if a box genuinely can't run them. "Optional" previously read as "you don't need these," leaving users on a partial-capacity install (slower/weaker semantic recall, and without langchain the `docs_search`/`session_search` KB tools go offline entirely).
+### Added
+- **Install hardening:** `--repair-cron` idempotent cron-only mode, required-cron gate + auto-repair, same-name dedup sweep, langchain hard-verify post-pip with a prominent "KB tools offline" fix block, TEI/langchain graceful-degrade (install no longer hard-fails), install UX (recall-gate self-heal, silent backup, tiered "what works now" verdict).
+
+---
+
 ## 1.9.2 — 2026-08-07
 **Bugfix: TEI embedding calls in `extract_memory.py` now retry on transient unavailability.** The memory-extraction contradiction/dedup path issued a single TEI embed request with `timeout=8` and **no retry** — so a brief TEI stall (cold start, cron-storm queueing, reload window) silently skipped semantic dedup for that item. Wrapped in bounded retry-with-backoff. Fail-soft preserved (returns `None` only after retries exhaust). Byte-identical to the dinomem base 1.3.1 fix, so neuron-over-base install keeps the fix intact.
 ### Fixed

@@ -147,7 +147,7 @@ That's it. Crons handle everything from here.
 - [ ] [dinomem](https://github.com/02-dino/dinomem) installed and working (neuron's installer auto-installs/updates base if missing)
 - [ ] At least a few sessions already extracted (`memory/*.md` files exist)
 - [ ] Python 3.8+
-- [ ] TEI embedding server — **optional** (`curl http://localhost:8080/health` → `{"status":"ok"}`). Enables faster semantic recall; **core memory + all note-lifecycle crons work without it.** Base auto-installs Docker/TEI on Linux; if unavailable, neuron degrades gracefully.
+- [ ] TEI embedding server — **auto-installed by base (recommended for full capacity)** (`curl http://localhost:8080/health` → `{"status":"ok"}`). Drives semantic recall/dedup. Base auto-installs Docker/TEI on Linux by default, so you normally do nothing. Not a hard blocker: core memory + all note-lifecycle crons keep working without it, but semantic recall runs slower/weaker until TEI is up. Recommended: let it install.
 - [ ] **Python packages for the KB search tools** — `langchain-chroma`, `langchain-huggingface`, `langchain-core`. The neuron installer **auto-installs these** (3× retry + `--break-system-packages` fallback) and hard-verifies the imports afterward. They are **required for `docs_search` + `session_search`** (RAG over docs + archived-session recall) and their ingest procedures — those tools error at startup without them. They are **not** required for core `memory_search`/`memory_get` (TEI/HTTP-only) or `graph_search` (stdlib). If auto-install fails on a locked-down box, the installer prints a prominent fix line: `pip install langchain-chroma langchain-huggingface langchain-core` (add `--break-system-packages` if pip complains), then re-run.
 
 ### Minimum spec
