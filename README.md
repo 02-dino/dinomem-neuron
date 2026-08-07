@@ -144,10 +144,11 @@ That's it. Crons handle everything from here.
 
 ## Prerequisites
 
-- [ ] [dinomem](https://github.com/02-dino/dinomem) installed and working
-- [ ] TEI embedding server running (`curl http://localhost:8080/health` → `{"status":"ok"}`)
+- [ ] [dinomem](https://github.com/02-dino/dinomem) installed and working (neuron's installer auto-installs/updates base if missing)
 - [ ] At least a few sessions already extracted (`memory/*.md` files exist)
 - [ ] Python 3.8+
+- [ ] TEI embedding server — **optional** (`curl http://localhost:8080/health` → `{"status":"ok"}`). Enables faster semantic recall; **core memory + all note-lifecycle crons work without it.** Base auto-installs Docker/TEI on Linux; if unavailable, neuron degrades gracefully.
+- [ ] KB vector-search tools (`docs_search`/`session_search`/`semantic_search`) need `langchain-chroma` + `langchain-huggingface` — **optional**, auto-installed by the neuron installer (retry + `--break-system-packages` fallback). If they can't install, core `memory_search` is unaffected.
 
 ### Minimum spec
 
@@ -462,6 +463,7 @@ All signals must align. One-off or low-confidence insights stay in synthesis —
 | `--workspace DIR` | `$OPENCLAW_WORKSPACE` or `~/.openclaw/workspace` | Path to agent workspace |
 | `--agent-id ID` | Detected from workspace name | OpenClaw agent ID |
 | `--no-cron` | — | Skip crontab registration |
+| `--repair-cron` | — | **Idempotent "just fix the crons" mode.** Skips every heavy/one-time phase and jumps straight to registering the note-lifecycle crons (Advancer / Improver / Verified Note Deleter / Note Cron Gate) + self-check. Safe to re-run any time a prior install left a lane unregistered. |
 | `--force` | — | Overwrite existing scripts |
 
 ---
@@ -540,11 +542,14 @@ python3 <workspace>/procedures/docs_ingest.py
 tail -50 <workspace>/logs/docs_ingest.log
 ```
 
-**Cron not running**
+**Cron not running / note-lifecycle crons missing (Advancer / Improver / Deleter / Note Cron Gate)**
 ```bash
 crontab -l | grep memory_graph
-bash dinomem-neuron/scripts/install.sh --workspace <workspace> --agent-id <id>
+openclaw cron list --json | grep -iE "Project Advancer|Project Improver|Verified Note Deleter|Note Cron Gate"
+# If any lane is missing, run the fast idempotent cron-only repair (no re-copy, no Docker):
+bash dinomem-neuron/scripts/install.sh --workspace <workspace> --agent-id <id> --repair-cron
 ```
+> The installer now **auto-verifies its required crons and self-repairs** on a normal run. `--repair-cron` is the manual escape hatch. If lanes keep failing, your gateway may reject **command-kind** crons — grant `operator.admin` and re-run. Re-running base+neuron is also safe: a **same-name dedup sweep** guarantees exactly one of each lane (no duplicates on update).
 
 ---
 
