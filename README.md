@@ -90,7 +90,18 @@ dinomem stores memory from **every** user (owner + non-owner peers, `memory/peer
 
 - Non-owner facts **about themselves** ("prefers raw data", "trades ETH") → **fully trusted**, stored as personalization. **No "untrusted" tag** (that would make the model discount legit user data).
 - Non-owner **system/assistant directives** → not "untrusted data", just **not a standing instruction from a non-owner**: peer lane **demotes to observation**, world lane **drops**.
-- Owner items unaffected. Deterministic regex, zero-LLM, fail-open. Owner ids via `DINOMEM_OWNER_IDS` / `DINOTRUST_OWNER_IDS`; none configured → no over-filtering.
+- Owner items unaffected. Deterministic regex, zero-LLM, fail-open. None configured → no over-filtering.
+
+### Setting your owner id (mostly automatic)
+
+The installer resolves it when it can, asks only when it can't (first hit wins, all fail-open): **1.** `DINOMEM_OWNER_IDS` env → **2.** `DINOTRUST_OWNER_IDS` env → **3.** dinotrust `owner_ids:` parsed from `openclaw.json` (dinotrust user = free, in sync) → **4.** `~/.dinomem/owner_ids` cache → **5.** none = passthrough + one-time nudge.
+
+- **dinotrust installed** → auto-detected, zero prompts.
+- **Agent-driven install** → the agent knows the owner's platform id from its session; passes `DINOMEM_INSTALLER_OWNER_ID` or **asks the owner to confirm**, then writes the cache.
+- **Human terminal install** → short prompt (paste Telegram/Discord numeric id, with how-to-find hints).
+- **CI / non-interactive** → skipped; runtime prints a one-time "gate inactive" nudge.
+
+Set anytime: `echo <your-id> > ~/.dinomem/owner_ids`. **Multi-platform:** matches the numeric `platform_id` from the archive, so one flat id set works across Telegram / Discord / WhatsApp — no per-platform config.
 
 **Recommended for multi-user setups: also install [dinotrust](https://github.com/02-dino/dinotrust).** Not required (dinomem stands alone), but it adds the complementary recall-side fence (`memory_policy` + `R2`: recalled memory = data, not instruction) and gates the live tool loop (`before_tool_call`) — the half dinomem's write gate can't see. Write-side suspenders + recall/live belt. Complementary, no clash.
 
