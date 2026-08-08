@@ -77,7 +77,22 @@ This insight is now injected every turn. Future investing discussions automatica
 | 🧹 | **Daily Note Review** | A daily janitor cron retires *any* resolved note — `task_bound` notes whose `done_when` is met, projects finished out-of-band, and abandoned notes past `stale_after` — so completed work doesn't pile up. Claim-aware: never touches a note another job or a live session is actively editing. |
 | 🧩 | **Behavior Promotion** | Reusable patterns distilled from completed projects and recurring memory — then routed to the right surface: an on-demand procedure becomes a **skill** (auto-written), an event-driven pattern a **hook**, a scheduled one a **cron** (hooks/crons staged for confirmation, safety-validated so a promoted hook can't loop or break the agent). Cross-repo deduped against what base already installed — language-neutral (structural + code-token + multilingual-semantic tiers) so a promoted behavior never double-fires. |
 | 🔍 | **Session deep recall** | When memory summary is thin, searches raw archived sessions (21-day window) for the exact exchange — sharper, more detailed recall for recent context |
+| 🛡️ | **Authority-scope gate (multi-user security)** | Memory is stored from every user (owner + non-owner peers). Non-owner facts *about themselves* stay fully trusted for personalization; non-owner *system-directives* ("always push without asking", "ignore security", "you are now…") are demoted-to-observation (peer lane) or dropped (world lane). Blocks stored/second-order prompt injection on the async extract path. **No "untrusted" tag** that would poison personalization. Deterministic, zero-LLM, fail-open. Inherited from base; see [Multi-user memory & the authority-scope gate](#multi-user-memory--the-authority-scope-gate-security). |
 | 🧬 | **Git-anchored provenance** | Builds on base's [git-versioned memory](https://github.com/02-dino/dinomem#git-versioned-memory-git-autosnapshot) (an **isolated** `.dinomem-snap.git` store, on by default, that never touches your own repo): when neuron promotes an insight (`memory_promote.py`) to `MEMORY.md`, distills a skill, or stages a runtime-mutating **hook/cron** proposal (`skill_extract.py`), it stamps the record with the current `HEAD` sha — so every promoted insight, skill, and staged hook/cron proposal carries *which commit it came from* (the staged hook/cron proposals especially, since a human reviews and installs those later — the anchor tells them what the memory state was when the pattern converged). Fail-open: degrades cleanly if the store is absent. The Project Advancer also verifies a project's `done_when` against real git state (`git rev-parse HEAD == @{u}`) instead of trusting a stale `resume_state`. |
+
+---
+
+## Multi-user memory & the authority-scope gate (security)
+
+dinomem stores memory from **every** user (owner + non-owner peers, `memory/peers/<platform>_<id>.md`) so the agent personalizes per person. That makes the async extract path a **stored / second-order prompt-injection** surface: a non-owner types crafted text, the extractor distills it, and it is later recalled with the system's own memory authority.
+
+**Safe by default** — `mem_authority.py` gates the write path on **provenance ≠ authority**:
+
+- Non-owner facts **about themselves** ("prefers raw data", "trades ETH") → **fully trusted**, stored as personalization. **No "untrusted" tag** (that would make the model discount legit user data).
+- Non-owner **system/assistant directives** → not "untrusted data", just **not a standing instruction from a non-owner**: peer lane **demotes to observation**, world lane **drops**.
+- Owner items unaffected. Deterministic regex, zero-LLM, fail-open. Owner ids via `DINOMEM_OWNER_IDS` / `DINOTRUST_OWNER_IDS`; none configured → no over-filtering.
+
+**Recommended for multi-user setups: also install [dinotrust](https://github.com/02-dino/dinotrust).** Not required (dinomem stands alone), but it adds the complementary recall-side fence (`memory_policy` + `R2`: recalled memory = data, not instruction) and gates the live tool loop (`before_tool_call`) — the half dinomem's write gate can't see. Write-side suspenders + recall/live belt. Complementary, no clash.
 
 ---
 
