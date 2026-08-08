@@ -4,6 +4,20 @@ All notable changes to dinomem-neuron are documented here.
 
 ---
 
+## 1.10.0 — 2026-08-08
+
+**Memory security release — stored/second-order prompt-injection defense on the write path.** dinomem learns from every user it talks to, which makes the async extraction path a place where a non-owner could plant standing instructions that get recalled later with the system's own authority. This release closes that, without discounting legitimate multi-user personalization.
+
+### Added
+- **Authority-scope gate on the memory write path** (`mem_authority.py`, deterministic regex, zero-LLM, fail-open). Principle: **provenance ≠ authority**. A non-owner's facts *about themselves* stay **fully trusted** and personalize normally (no "untrusted" tag). A non-owner item that asserts a **system/assistant directive** is demoted to a neutral observation (peer lane) or dropped (world lane). Owner items are unaffected. Covers the async cron extract path that a live-tool-loop guard (e.g. dinotrust-enforce) never sees.
+- **Smooth owner-id resolution** so the gate activates with zero manual steps whenever the info already exists on the box: `DINOMEM_OWNER_IDS` env → `DINOTRUST_OWNER_IDS` env → dinotrust `owner_ids:` parsed from `openclaw.json` → `~/.dinomem/owner_ids` cache → none = passthrough + a one-time "gate inactive" nudge. Memoized, fail-open at every step. Multi-platform via flat numeric `platform_id` match (installer capture lives in base, which neuron delegates to).
+- **Better-wins confidence gate on world-facts.** Extraction emits a `[conf:X.X]` tag, persisted to frontmatter; the contradiction resolver refuses to let a lower-confidence claim evict a higher-confidence established fact. Missing confidence = newest-wins fallback (backward-compatible), zero-LLM, fail-open.
+
+### Fixed
+- **Cross-head dedup:** a world-fact is dropped when it duplicates a peer fact (peer lane wins, peer file untouched). Fail-open, zero-LLM.
+
+---
+
 ## 1.9.3 — 2026-08-07
 
 **Install-hardening + honest dependency framing.** Rolls up the install/UX work that landed after the 1.9.2 bump and corrects README wording that undersold TEI/langchain.
