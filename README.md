@@ -6,6 +6,8 @@ Once a day, it builds a graph of how your memories relate, clusters them, and ru
 
 The result: an agent that connects a decision you made in January to a pattern from November. That notices you've been contradicting yourself. That builds a structured knowledge base from your sessions. It changes behavior based on all of that—without you writing a single line of code.
 
+> 📖 **New here?** See the [**Before / After**](BEFORE_AFTER.md) — what actually changes when your agent goes from *remembering* (base) to *learning* (neuron), in plain lived-experience terms.
+
 ---
 
 ## What we mean by learning
