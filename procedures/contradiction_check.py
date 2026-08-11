@@ -259,6 +259,44 @@ def topic_similarity(a, b):
     return SequenceMatcher(None, a_text, b_text).ratio()
 
 
+def _valid_time_reconciles(a, b):
+    """Valid-time synergy check (STEP 5). Returns 'supersession' iff BOTH insights
+    carry explicit valid-time fields (subject + at least one interval bound),
+    share the SAME subject, and have DISJOINT valid intervals — meaning one was
+    true THEN and the other is true NOW (a supersession chain, not a conflict).
+    Returns None otherwise (-> fall through to the normal LLM contradiction path).
+
+    Fires ONLY when both sides carry the fields, so fieldless insights (the common
+    case) are unaffected = zero behavior change. DETERMINISTIC / T1 / $0: pure
+    date compare via valid_time, no LLM, no embed. Fail-open (None) on any error.
+    """
+    try:
+        import sys as _s
+        _s.path.insert(0, str(Path(__file__).resolve().parent))
+        import valid_time as _vt
+    except Exception:
+        return None
+    fa = {k: a.get(k) for k in ("subject", "valid_from", "valid_until")}
+    fb = {k: b.get(k) for k in ("subject", "valid_from", "valid_until")}
+    # both must carry an explicit subject AND at least one interval bound
+    if not (fa.get("subject") and fb.get("subject")):
+        return None
+    if fa["subject"] != fb["subject"]:
+        return None
+    a_from, a_until = _vt._parse_date(fa.get("valid_from")), _vt._parse_date(fa.get("valid_until"))
+    b_from, b_until = _vt._parse_date(fb.get("valid_from")), _vt._parse_date(fb.get("valid_until"))
+    if not any((a_from, a_until)) or not any((b_from, b_until)):
+        return None  # neither carries a usable interval -> can't reconcile
+    # Disjoint iff one interval ends at/before the other begins (either order).
+    # Treat missing bound as open (-inf / +inf).
+    a_lo = a_from or _vt.date.min
+    a_hi = a_until or _vt.date.max
+    b_lo = b_from or _vt.date.min
+    b_hi = b_until or _vt.date.max
+    disjoint = (a_hi <= b_lo) or (b_hi <= a_lo)
+    return "supersession" if disjoint else None
+
+
 CONTRA_PROMPT = """You are a contradiction checker for an AI agent's memory system.
 
 EXISTING INSIGHT (already trusted):
@@ -372,6 +410,23 @@ def check_contradiction(candidate_insight, verbose=False):
 
         if verbose:
             print(f"  deep-check against '{existing.get('pattern', '')[:50]}...' (sim={sim:.2f}, keywords={k_overlap})")
+
+        # ── Valid-time synergy pre-check (base T1, short-circuits the T3 LLM) ──
+        # If BOTH items carry explicit valid-time fields (subject + interval) and
+        # they share a subject but have DISJOINT valid intervals, they are a
+        # SUPERSESSION chain, not a contradiction (one was true THEN, the other is
+        # true NOW). Skip the expensive reasoning call entirely. Fires ONLY when
+        # both sides carry the fields; fieldless insights (the common case) fall
+        # straight through to the normal LLM path = zero behavior change.
+        # Fail-open: any error -> normal LLM path.
+        try:
+            _vt_verdict = _valid_time_reconciles(candidate_insight, existing)
+        except Exception:
+            _vt_verdict = None
+        if _vt_verdict == "supersession":
+            if verbose:
+                print("    -> valid-time: disjoint intervals, same subject = supersession, NOT contradiction (skipped LLM)")
+            continue
 
         result = llm_contradiction_check(candidate_insight, existing)
         if result.get("contradiction"):
