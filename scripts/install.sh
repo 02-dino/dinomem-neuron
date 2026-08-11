@@ -128,14 +128,35 @@ auto_install_base() {
   local clone_dir base_install
   command -v git >/dev/null 2>&1 || { warn "git not found — cannot auto-install dinomem base"; return 1; }
   clone_dir="$OPENCLAW_DIR/dinomem"
+  local base_branch="${DINOMEM_BASE_BRANCH:-main}"
+  # ALWAYS force the base clone to the remote's latest tip. The old code used a
+  # shallow clone + `pull --ff-only` whose failure was a soft warn, so a stale
+  # base (e.g. one cloned months ago, predating the flag-based cron migration)
+  # would silently persist while neuron advanced — the base then ran its OLD
+  # install.sh (legacy cron API) and broke registration. We now HARD-SYNC:
+  # fetch the remote tip and reset --hard to it, so "base already exists" can
+  # never mean "base is stale". Failure to sync a REQUIRED dependency is loud.
   if [ -d "$clone_dir/.git" ]; then
-    ok "dinomem base repo already cloned at $clone_dir — pulling latest"
-    git -C "$clone_dir" pull --ff-only >/dev/null 2>&1 || warn "git pull failed — using existing clone"
+    ok "dinomem base repo present at $clone_dir — hard-syncing to origin/$base_branch (latest)"
+    # unshallow if it was a --depth 1 clone (so reset --hard has real history);
+    # ignore error if already complete. Then fetch tip + reset hard.
+    git -C "$clone_dir" fetch --depth 1 origin "$base_branch" >/dev/null 2>&1 \
+      || git -C "$clone_dir" fetch origin "$base_branch" >/dev/null 2>&1 \
+      || { warn "git fetch failed for base ($DINOMEM_BASE_REPO) — cannot verify latest"; return 1; }
+    git -C "$clone_dir" reset --hard FETCH_HEAD >/dev/null 2>&1 \
+      || { warn "git reset --hard FETCH_HEAD failed — base may be stale"; return 1; }
+    ok "base synced -> $(git -C "$clone_dir" rev-parse --short HEAD 2>/dev/null)"
   elif [ -e "$clone_dir" ]; then
-    warn "$clone_dir exists but is not a git repo — using it as-is"
+    warn "$clone_dir exists but is not a git repo — cannot verify it is latest; re-cloning fresh"
+    rm -rf "$clone_dir"
+    git clone --depth 1 --branch "$base_branch" "$DINOMEM_BASE_REPO" "$clone_dir" >/dev/null 2>&1 \
+      || { warn "git clone failed: $DINOMEM_BASE_REPO"; return 1; }
+    ok "base cloned -> $(git -C "$clone_dir" rev-parse --short HEAD 2>/dev/null)"
   else
     ok "cloning dinomem base: $DINOMEM_BASE_REPO -> $clone_dir"
-    git clone --depth 1 "$DINOMEM_BASE_REPO" "$clone_dir" >/dev/null 2>&1 || { warn "git clone failed: $DINOMEM_BASE_REPO"; return 1; }
+    git clone --depth 1 --branch "$base_branch" "$DINOMEM_BASE_REPO" "$clone_dir" >/dev/null 2>&1 \
+      || { warn "git clone failed: $DINOMEM_BASE_REPO"; return 1; }
+    ok "base cloned -> $(git -C "$clone_dir" rev-parse --short HEAD 2>/dev/null)"
   fi
   base_install="$clone_dir/scripts/install.sh"
   [ -f "$base_install" ] || { warn "base install.sh not found at $base_install"; return 1; }

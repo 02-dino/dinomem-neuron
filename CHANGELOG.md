@@ -4,6 +4,15 @@ All notable changes to dinomem-neuron are documented here.
 
 ---
 
+## 1.10.2 — 2026-08-11
+
+**Base auto-update reliability — the real fix for stale-base install failures.**
+### Fixed
+- **Neuron now HARD-SYNCS the dinomem base to the latest remote tip on every install**, instead of a soft `git pull --ff-only` whose failure was silently ignored. Previously a base cloned long ago (e.g. one predating the flag-based cron migration) could silently persist while neuron advanced — the stale base then ran its OLD `install.sh` and broke cron registration. Now: `git fetch origin <branch>` + `git reset --hard FETCH_HEAD`, so "base already present" can never mean "base is stale." A non-git or corrupt base dir is re-cloned fresh. Failure to sync a REQUIRED dependency now returns nonzero (loud) rather than continuing on a stale copy.
+- **Base branch is now configurable** via `DINOMEM_BASE_BRANCH` (default `main`) — no longer implicitly tied to whatever the local clone happened to be on.
+
+---
+
 ## 1.10.1 — 2026-08-11
 
 **Install-reliability patch.**
