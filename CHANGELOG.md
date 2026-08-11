@@ -4,6 +4,15 @@ All notable changes to dinomem-neuron are documented here.
 
 ---
 
+## 1.10.1 — 2026-08-11
+
+**Install-reliability patch.**
+### Fixed
+- **Base installer no longer fails on a workspace without `templates/`.** Directory-creation loop now creates `templates/`; copy loop `mkdir -p`s each target parent defensively. Previously a workspace that never had `templates/` aborted install with `cp: No such file or directory` on `templates/peer_rep.md.tmpl`.
+- **extract_memory:** unpack 5-tuple in the contradiction-check merge branch — was crashing extraction on any merge-verdict run.
+
+---
+
 ## 1.10.0 — 2026-08-08
 
 **Memory security release — stored/second-order prompt-injection defense on the write path.** dinomem learns from every user it talks to, which makes the async extraction path a place where a non-owner could plant standing instructions that get recalled later with the system's own authority. This release closes that, without discounting legitimate multi-user personalization.
