@@ -76,13 +76,20 @@ def classify(query: str, hint: str | None) -> list[str]:
 # Leg runners — subprocess the EXISTING tools, normalize to a common candidate:
 #   {leg, content, score, uri}
 # ---------------------------------------------------------------------------
-def _run_json(argv: list[str]) -> object | None:
+def _run_json(argv: list[str], env: dict | None = None) -> object | None:
     """Run a leg tool and parse its JSON. Legs sometimes print a plain-text
     notice (e.g. graph_search's 'No node found ...') to stdout even in --json
     mode, so we tolerate leading/trailing non-JSON by extracting the first
-    balanced { } or [ ] block. Returns None on no-match / error (never raises)."""
+    balanced { } or [ ] block. Returns None on no-match / error (never raises).
+    Optional `env` overlays os.environ for this call (used to force cost knobs
+    like DOCS_HYDE_TIMEOUT=0 on the docs leg in the fusion path)."""
     try:
-        out = subprocess.run(argv, capture_output=True, text=True, timeout=60)
+        _env = None
+        if env:
+            import os as _os2
+            _env = dict(_os2.environ)
+            _env.update(env)
+        out = subprocess.run(argv, capture_output=True, text=True, timeout=60, env=_env)
         s = (out.stdout or "").strip()
         if out.returncode != 0 or not s:
             return None
@@ -104,7 +111,12 @@ def _run_json(argv: list[str]) -> object | None:
 
 
 def leg_docs_search(query: str, k: int) -> list[dict]:
-    d = _run_json([PY, str(TOOLS / "docs_search.py"), query, "--k", str(k), "--json"]) or []
+    # COST (base T1): in a 4-leg FUSION the docs HyDE LLM-expansion is low marginal
+    # value (other legs already broaden recall) but adds an LLM call + up to 25s per
+    # fire. Force HyDE OFF for the fusion docs leg -> T1/$0/fast. Standalone
+    # docs_search keeps HyDE (env only set on THIS subprocess).
+    _DOCS_LEG_ENV = {"DOCS_HYDE_TIMEOUT": "0"}
+    d = _run_json([PY, str(TOOLS / "docs_search.py"), query, "--k", str(k), "--json"], env=_DOCS_LEG_ENV) or []
     out = []
     for h in (d if isinstance(d, list) else []):
         meta = h.get("metadata", {}) or {}

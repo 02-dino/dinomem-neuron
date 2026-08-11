@@ -288,8 +288,23 @@ def _hyde_expand(query: str) -> str:
             f'Write a short factual passage (2-3 sentences) that would directly answer '
             f'this question, as if from a formal document or legal text: {query}'
         )
+        # COST TIER (base T2): HyDE is a throwaway no-reasoning generation -> pin the
+        # CHEAP model, never the gateway default (which is the main/reasoning T3 model).
+        # Resolve via the suite's single cheap-model anchor (procedures/_cheap_model.py):
+        # DINOMEM_CHEAP_MODEL env -> compaction anchor -> haiku fallback.
+        _hyde_model = ''
+        try:
+            import sys as _s, os as _o
+            _s.path.insert(0, _o.path.join(_o.path.dirname(_o.path.abspath(__file__)), '..', 'procedures'))
+            from _cheap_model import cheap_model as _cm
+            _hyde_model = (_cm() or '').strip()
+        except Exception:
+            _hyde_model = os.environ.get('DINOMEM_CHEAP_MODEL', '').strip()
+        _cmd = [openclaw_bin, 'capability', 'model', 'run', '--prompt', prompt, '--gateway', '--json']
+        if _hyde_model:
+            _cmd += ['--model', _hyde_model]
         result = subprocess.run(
-            [openclaw_bin, 'capability', 'model', 'run', '--prompt', prompt, '--gateway', '--json'],
+            _cmd,
             capture_output=True, text=True, timeout=hyde_timeout
         )
         if result.returncode == 0:
