@@ -598,7 +598,7 @@ hr "Copying scripts"
 # The scripts/*.sh + resolve_done_notes.py + distill_done_note.py helpers are the
 # cron targets referenced in the cron prompts; without them a fresh neuron install
 # registers crons whose scripts are missing (Step-0 pre-gate fails).
-for f in procedures/extract_memory.py procedures/memory_graph.py procedures/memory_synthesis.py procedures/memory_promote.py procedures/contradiction_check.py procedures/generate_topic_index.py procedures/docs_ingest.py procedures/pdf_visual_probe.py procedures/session_ingest.py procedures/_schema_adapter.py procedures/data_register.py tools/docs_search.py tools/session_search.py tools/graph_search.py tools/cache_utils.py tools/data_query.py scripts/claim_note.sh scripts/check_projects.sh scripts/check_improvable.sh scripts/check_deletable.sh scripts/check_ideator.sh scripts/cron_gate.sh scripts/resolve_done_notes.py scripts/distill_done_note.py; do
+for f in procedures/extract_memory.py procedures/memory_graph.py procedures/memory_synthesis.py procedures/memory_promote.py procedures/contradiction_check.py procedures/generate_topic_index.py procedures/docs_ingest.py procedures/pdf_visual_probe.py procedures/session_ingest.py procedures/_schema_adapter.py procedures/data_register.py tools/docs_search.py tools/session_search.py tools/graph_search.py tools/hybrid_recall.py tools/cache_utils.py tools/data_query.py scripts/claim_note.sh scripts/check_projects.sh scripts/check_improvable.sh scripts/check_deletable.sh scripts/check_ideator.sh scripts/cron_gate.sh scripts/resolve_done_notes.py scripts/distill_done_note.py; do
   dst="$WS/$f"
   # extract_memory.py is the neuron superset over base's copy — always overwrite it,
   # even without --force, or the upgrade ships base's older engine.
@@ -1856,13 +1856,17 @@ DINOMEM_BODY=$(cat <<'DINOMEM_NEURON_AGENTS_BODY'
   # The dinomem-open-notes hook auto-injects a manifest of OPEN _note_*.md at bootstrap (and a session_search recall nudge). Behavior: read the relevant open note and resume from its resume_state BEFORE answering; do NOT restart finished work. When the opener names something no injected note covers, run session_search "<natural-language topic>" (recent convo <7d) before answering.
 
 ## retrieval_tools_quickref
-  # One-line routing; full rules in the retrieval-routing skill.
-  meaning | "explain" | "like this" | passage → docs_search
-  recent conversation detail (<7d) → session_search   # M3 natural-language query rule applies (avoid code identifiers/exact strings)
-  fact | decision | preference | todo → memory_search
+  # EXACT-vs-FUZZY fork. Check the EXACT/ingest/meta forks first; everything else
+  # (semantic recall) goes through the ONE fuzzy door. Full rules in retrieval-routing skill.
+  # --- EXACT / ingest / meta (explicit, NEVER fused) ---
   row | count | range | filter | sort | aggregate | field lookup (csv|json|parquet) → data_query (exact SQL, NOT memory_search)
-  complex relational (depends_on|affects|trace|chain) → graph_search (fallback memory_search)
   exact pattern | regex | grep | exact-string over raw text/logs → exec (ripgrep/grep)
+  long doc / file shared / "remember this doc" → docs_ingest ; csv|json|parquet dataset → data_register
+  what CHANGED in memory (adds/merges/deletes) → read memory/.diffs/ ; which retrieval tool ran / routing quality → kb/retrieval_log/
+  # --- FUZZY recall (the one door) ---
+  fact | decision | preference | todo | meaning | passage | recent convo (<7d) | relational (why/led-to/affects/trace) → hybrid_recall
+    # hybrid_recall fuses docs_search + session_search + graph_search legs; run memory_search natively and pass its hits via --external-hits to fold them in.
+    # M3 natural-language query rule applies (avoid code identifiers/exact strings).
 DINOMEM_NEURON_AGENTS_BODY
 )
 BLOCK="$BEGIN
