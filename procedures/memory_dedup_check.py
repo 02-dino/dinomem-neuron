@@ -279,16 +279,11 @@ def main():
     try:
         emb = get_embeddings()
         cand_vec = emb.embed_query(_embed_text(cand_title, cand_body))
-        # Batch all target embeddings into a single embed_documents() call instead
-        # of one call per file — same scores, far fewer round-trips (matters most
-        # for the TEI/HTTP backend where each call is a network hop).
-        target_meta = [_read_title_body(t) for t in targets]
-        target_texts = [_embed_text(tt, tb) for tt, tb in target_meta]
-        target_vecs = emb.embed_documents(target_texts)
-        scored = [
-            (_cosine(cand_vec, t_vec), t, t_title)
-            for t_vec, t, (t_title, _t_body) in zip(target_vecs, targets, target_meta)
-        ]
+        scored = []
+        for t in targets:
+            t_title, t_body = _read_title_body(t)
+            t_vec = emb.embed_documents([_embed_text(t_title, t_body)])[0]
+            scored.append((_cosine(cand_vec, t_vec), t, t_title))
     except SemanticUnavailable:
         print(json.dumps({"match": False, "skipped": "no-embed-backend"}, ensure_ascii=False))
         return 0
@@ -349,7 +344,66 @@ def main():
             "abs_floor": args.abs_floor,
         }
 
-    if is_match:
+    # ── Valid-time supersession branch (advisory) ────────────────────────────
+    # base rule: same SUBJECT + different VALUE + later time = SUPERSEDE, not merge.
+    # This resolves dedup's blind spot (a true replacement fact reads ~0.90 similar
+    # to the fact it replaces -> merge would garble, block would reject the truth).
+    # DETERMINISTIC / T1 / $0: explicit `subject:` key ONLY (no embedding inference,
+    # no LLM), reuses the similarity ALREADY computed. Fail-open: any error -> fall
+    # through to normal dedup, never blocks. The gate is ADVISORY (writes nothing);
+    # it emits suggestion:"supersede" + the target so the caller runs
+    # valid_time.supersede(old, new). Fires on HIGH ABSOLUTE SIMILARITY (>= abs_floor)
+    # AND same explicit subject AND candidate is newer. NOTE: decoupled from is_match
+    # on purpose — is_match uses adaptive-z (statistical outlier) which CANNOT trip on
+    # a tiny corpus (one pin -> std=0 -> z=0) even at 0.89 similarity. Same explicit
+    # subject is itself a strong deterministic signal; we don't need the z-test to
+    # also agree. Gate = best_score >= abs_floor (the same soft similarity floor).
+    supersede_info = None
+    if best_score >= args.abs_floor:
+        try:
+            import sys as _s2
+            _s2.path.insert(0, str(_SCRIPT_DIR))
+            import valid_time as _vt
+            cand_fields = _vt.fields_from_text(cand_body) if cand_body else {}
+            cand_subject = cand_fields.get("subject")
+            if cand_subject:
+                tgt_fields = _vt.read_fields(best_file)
+                tgt_subject = tgt_fields.get("subject")
+                # same explicit subject on BOTH sides = same question answered
+                if tgt_subject and tgt_subject == cand_subject:
+                    cvf = _vt._parse_date(cand_fields.get("valid_from"))
+                    tvf = _vt._parse_date(tgt_fields.get("valid_from"))
+                    # candidate is newer iff its valid_from is >= target's (or the
+                    # target has a from and candidate doesn't = candidate is "now").
+                    cand_is_newer = (
+                        (cvf is not None and tvf is not None and cvf >= tvf)
+                        or (cvf is None and tvf is not None)
+                        or (cvf is not None and tvf is None)
+                    )
+                    # only supersede a target that is still CURRENT (open interval)
+                    if cand_is_newer and _vt.is_current(tgt_fields):
+                        supersede_info = {
+                            "subject": cand_subject,
+                            "target": _rel(best_file),
+                            "target_valid_from": tgt_fields.get("valid_from"),
+                            "candidate_valid_from": cand_fields.get("valid_from"),
+                            "action": "call valid_time.supersede(old=target, new=<this candidate once written>)",
+                        }
+        except Exception:
+            supersede_info = None  # fail-open: normal dedup applies
+
+    if supersede_info is not None:
+        out = {
+            "match": True,
+            "file": _rel(best_file),
+            "score": round(best_score, 4),
+            "title": best_title,
+            "suggestion": "supersede",
+            "supersede": supersede_info,
+            "scoring": stats,
+            "candidates": cand_list,
+        }
+    elif is_match:
         out = {
             "match": True,
             "file": _rel(best_file),

@@ -101,13 +101,12 @@ def _parse_date(s):
 _FIELD_RE = {f: re.compile(r"^\s*%s\s*:\s*(.*?)\s*$" % f, re.IGNORECASE) for f in VT_FIELDS}
 
 
-def read_fields(path: Path) -> dict:
-    """Parse the OPTIONAL valid-time fields from a memory file's head.
-    Returns {field: value_or_None}. Absent field -> None (= today's behavior)."""
+def fields_from_text(text: str) -> dict:
+    """Parse the OPTIONAL valid-time fields from a raw markdown STRING head.
+    Same semantics as read_fields but for an in-memory candidate body (the dedup
+    gate has a body string, not a file on disk yet). Absent field -> None."""
     out = {f: None for f in VT_FIELDS}
-    try:
-        text = path.read_text(encoding="utf-8", errors="replace")
-    except Exception:
+    if not text:
         return out
     for line in text.splitlines()[:_HEAD_LINES]:
         for f, rx in _FIELD_RE.items():
@@ -117,6 +116,15 @@ def read_fields(path: Path) -> dict:
                     v = m.group(1).strip()
                     out[f] = None if v.lower() in ("null", "none", "") else v
     return out
+
+
+def read_fields(path: Path) -> dict:
+    """Parse the OPTIONAL valid-time fields from a memory file's head.
+    Returns {field: value_or_None}. Absent field -> None (= today's behavior)."""
+    try:
+        return fields_from_text(path.read_text(encoding="utf-8", errors="replace"))
+    except Exception:
+        return {f: None for f in VT_FIELDS}
 
 
 def write_fields(path: Path, updates: dict) -> None:
