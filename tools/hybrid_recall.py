@@ -318,6 +318,52 @@ def rerank(cands: list[dict]) -> list[dict]:
     return sorted(ranked, key=lambda c: c["final_score"], reverse=True)
 
 
+def apply_as_of(cands: list[dict], as_of: str | None) -> list[dict]:
+    """Valid-time filter (STEP 4). When --as-of DATE is given, drop candidates
+    whose backing memory file is NOT valid at that date (valid_from <= DATE <
+    valid_until). Candidates whose uri does NOT resolve to a real _pin_/_note_
+    memory file (docs/session/graph legs, or a missing file) PASS THROUGH — we
+    can't judge their validity, so fail-open (keep). No --as-of = today's exact
+    behavior (no filtering; only current facts naturally surface anyway).
+    DETERMINISTIC / T1 / $0: pure frontmatter date compare, no LLM, no embed."""
+    if not as_of:
+        return cands
+    # Import valid_time robustly: try WS/procedures AND the tool's own sibling
+    # ../procedures (tools/ and procedures/ are siblings under the workspace root).
+    _vt = None
+    for _cand_dir in (WS / "procedures", Path(__file__).resolve().parent.parent / "procedures"):
+        try:
+            sys.path.insert(0, str(_cand_dir))
+            import valid_time as _vt  # type: ignore
+            break
+        except Exception:
+            _vt = None
+    if _vt is None:
+        return cands  # fail-open: no valid_time -> no filtering
+    kept = []
+    for c in cands:
+        uri = c.get("uri", "")
+        # only memory-file-backed candidates are judgeable
+        p = None
+        if isinstance(uri, str) and (uri.endswith(".md") or "_pin_" in uri or "_note_" in uri):
+            cand_path = (WS / uri) if not uri.startswith("/") else Path(uri)
+            if cand_path.exists():
+                p = cand_path
+            else:
+                # try memory/ + _history/ by basename
+                base = Path(uri).name
+                for cand in (WS / "memory" / base, WS / "memory" / "_history" / base):
+                    if cand.exists():
+                        p = cand
+                        break
+        if p is None:
+            kept.append(c)  # unjudgeable -> fail-open keep
+            continue
+        if _vt.is_valid_at(_vt.read_fields(p), as_of):
+            kept.append(c)
+    return kept
+
+
 def compile_block(cands: list[dict], k: int) -> dict:
     """Minimal answer block + full provenance trail. L0 = the fused top-k lines;
     provenance carries every corroborating leg/uri/score so the answer is
@@ -359,6 +405,10 @@ def main(argv=None):
     ap.add_argument("--external-hits", default=None,
                     help="JSON file (or '-' for stdin) of native memory_search hits")
     ap.add_argument("--k", type=int, default=5)
+    ap.add_argument("--as-of", default=None,
+                    help="Bitemporal point-in-time query (ISO date). Keep only "
+                         "candidates whose backing memory file was VALID at this "
+                         "date. Omit = current facts only (today's behavior).")
     ap.add_argument("--json", action="store_true")
     args = ap.parse_args(argv)
 
@@ -376,6 +426,7 @@ def main(argv=None):
     cands = fire(legs, args.query, args.k, external)
     cands = fuse(cands)
     cands = rerank(cands)
+    cands = apply_as_of(cands, args.as_of)
     block = compile_block(cands, args.k)
     block["_meta"] = {"legs_fired": legs, "candidate_count": len(cands),
                       "query": args.query, "k": args.k}
