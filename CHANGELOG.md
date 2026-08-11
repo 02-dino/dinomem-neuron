@@ -4,6 +4,14 @@ All notable changes to dinomem-neuron are documented here.
 
 ---
 
+## 1.10.3 — 2026-08-11
+
+**Base cron-registration fix rides through — buyers auto-get dinomem base v1.4.2.**
+### Fixed
+- **Base installer's `--json: command not found` cron error-loop is fixed** (dinomem base v1.4.2). Two `python3` heredocs in the *base* installer used an unquoted `<<PYEOF` delimiter, so bash command-substituted a backtick inside a code comment (`` `cron add --json <blob>` ``), ran `--json`, and crashed across the note-cron registration lanes (Daily Note Review / Pending Note Reminder — and downstream the Advancer/Improver/Deleter/Ideator lanes that share the gate), looking like a 4× error-loop that could time out the install. Because neuron v1.10.2 already HARD-SYNCS the base to its latest tip on every install, running this neuron installer now pulls base v1.4.2 automatically — no separate base update step needed. Fix detail: heredoc delimiters quoted (`<<'PYEOF'`), intentional `$WS` passed via `DINOMEM_WS` env.
+
+---
+
 ## 1.10.2 — 2026-08-11
 
 **Base auto-update reliability — the real fix for stale-base install failures.**
