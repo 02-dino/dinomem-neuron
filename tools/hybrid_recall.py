@@ -146,13 +146,51 @@ LEG_FN = {
 }
 
 
+# --- efficiency: per-leg result cache + parallel dispatch --------------------
+# Each leg subprocess cold-loads the multilingual-e5-small embedding model
+# (~27s, ~1.6GB) — that dominates cost, not the search. Two wins, no daemon:
+#   1) CACHE each leg's result (cache_utils TTL) so repeat/near-repeat queries
+#      skip the subprocess entirely (sub-second warm path).
+#   2) run the independent legs in PARALLEL so wall time = slowest leg, not sum.
+try:
+    sys.path.insert(0, str(TOOLS))
+    from cache_utils import get as _cache_get, set as _cache_set  # type: ignore
+    _CACHE_OK = True
+except Exception:
+    _CACHE_OK = False
+
+LEG_CACHE_TTL = int(_os.environ.get("HYBRID_RECALL_CACHE_TTL", "900"))  # 15 min default
+
+
+def _cached_leg(leg: str, query: str, k: int) -> list[dict]:
+    """Run one search leg with a TTL result cache keyed on (leg, query, k)."""
+    if _CACHE_OK:
+        hit = _cache_get("hybrid_recall", leg, query, k, ttl_seconds=LEG_CACHE_TTL)
+        if hit is not None:
+            return hit
+    res = LEG_FN[leg](query, k)
+    if _CACHE_OK:
+        try:
+            _cache_set("hybrid_recall", leg, query, k, result=res)
+        except Exception:
+            pass
+    return res
+
+
 def fire(legs: list[str], query: str, k: int, external_hits: list[dict]) -> list[dict]:
+    """Fire selected legs in PARALLEL (they are independent, each its own
+    subprocess). memory_external is in-process (no subprocess) so it's cheap and
+    handled inline. Search legs are cached + threaded."""
+    from concurrent.futures import ThreadPoolExecutor
     cands: list[dict] = []
-    for leg in legs:
-        if leg == "memory_external":
-            cands += leg_memory_external(external_hits, k)
-        else:
-            cands += LEG_FN[leg](query, k)
+    search_legs = [lg for lg in legs if lg != "memory_external"]
+    if "memory_external" in legs:
+        cands += leg_memory_external(external_hits, k)
+    if search_legs:
+        # threads are fine: the work is a blocking subprocess wait (releases GIL).
+        with ThreadPoolExecutor(max_workers=len(search_legs)) as ex:
+            for res in ex.map(lambda lg: _cached_leg(lg, query, k), search_legs):
+                cands += res
     return cands
 
 
