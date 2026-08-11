@@ -88,9 +88,9 @@ The discriminators below describe **what `hybrid_recall` routes to under the hoo
 epub/md/txt) · "save/remember this doc" · content `>2000 chars`.
 
 **Action:**
-- **Uploaded file:** `python3 /root/.openclaw/workspace-analyst/procedures/docs_ingest.py --file <media path>` → confirm.
+- **Uploaded file:** `python3 DINOMEM_WORKSPACE_PLACEHOLDER/procedures/docs_ingest.py --file <media path>` → confirm.
   The script self-extracts pdf/docx/etc → `docs/<slug>.md`.
-- **Pasted text:** save `docs/<slug>.md` → `python3 /root/.openclaw/workspace-analyst/procedures/docs_ingest.py --file docs/<slug>.md` → confirm.
+- **Pasted text:** save `docs/<slug>.md` → `python3 DINOMEM_WORKSPACE_PLACEHOLDER/procedures/docs_ingest.py --file docs/<slug>.md` → confirm.
 
 **Media path:** inbound uploads land at `~/.openclaw/media/inbound/<uuid>` (from the
 `<media:...>` placeholder); pass that path straight to `--file`.
@@ -108,8 +108,8 @@ registered exact data (csv/json/parquet; any structured/semi-structured dataset)
 
 **Action:**
 - **Query:** read `kb/data_store/catalog.json` → pick table(s) by keywords+columns →
-  `python3 /root/.openclaw/workspace-analyst/tools/data_query.py --sql "SELECT ... FROM <table> WHERE ..."` (SELECT-only).
-- **Register:** `python3 /root/.openclaw/workspace-analyst/procedures/data_register.py --file <path.csv|json|parquet> --name <table> --desc "..." [--keywords a,b,c]`.
+  `python3 DINOMEM_WORKSPACE_PLACEHOLDER/tools/data_query.py --sql "SELECT ... FROM <table> WHERE ..."` (SELECT-only).
+- **Register:** `python3 DINOMEM_WORKSPACE_PLACEHOLDER/procedures/data_register.py --file <path.csv|json|parquet> --name <table> --desc "..." [--keywords a,b,c]`.
 
 **Notes:** store = `kb/data_store/` (one duckdb, one table per dataset — NOT a
 category column, NOT a db-per-category); handles structured + semi-structured
