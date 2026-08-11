@@ -62,8 +62,34 @@ def find_start_node(graph: dict, query: str, threshold: float = 0.60) -> tuple[i
     return best_idx, best_node
 
 
-def build_adjacency(graph: dict, min_confidence: float) -> dict[int, list[dict]]:
-    """Build adjacency list from relation_edges and similarity edges."""
+def _edge_valid_at(edge: dict, as_of: str) -> bool:
+    """P0-b temporal filter: is this fact edge valid at `as_of` (ISO date)?
+    valid_at <= as_of < invalid_at, treating missing bounds as open. Edges with NO
+    valid_at are ALWAYS kept (untimed facts, fail-open). Reuses the same interval
+    semantics as valid_time / hybrid_recall as_of. Pure string date compare, $0."""
+    va = edge.get("valid_at")
+    iv = edge.get("invalid_at")
+    if not va and not iv:
+        return True  # untimed edge -> always valid (fail-open)
+    if va and as_of < va:
+        return False
+    if iv and as_of >= iv:
+        return False
+    return True
+
+
+def build_adjacency(graph: dict, min_confidence: float,
+                    scope_allow: set | None = None, as_of: str | None = None) -> dict[int, list[dict]]:
+    """Build adjacency from relation_edges + similarity edges.
+
+    P0-b additions (both DEFAULT-OFF = today's exact behavior when unset):
+      scope_allow: if given, keep only relation edges whose `scope` is in the set
+                   (PRIVACY: filter applied HERE, BEFORE traversal, per proposal).
+                   This is EDGE-level scope WITHIN the main graph — complementary to,
+                   not a replacement for, the peers-graph/--owner gate in main().
+      as_of:       if given, keep only relation edges valid at that date (temporal).
+    Similarity edges are untyped/untimed/unscoped by construction, so the filters
+    apply to relation edges only (similarity edges pass through unchanged)."""
     adj = defaultdict(list)
     has_relation_edges = "relation_edges" in graph
 
@@ -77,6 +103,13 @@ def build_adjacency(graph: dict, min_confidence: float) -> dict[int, list[dict]]
             label = edge.get("label", "related_to")
             # -1 marks an unmatched endpoint; skip those.
             if src is None or tgt is None or src < 0 or tgt < 0:
+                continue
+            # P0-b PRIVACY: scope filter BEFORE traversal. Edges missing `scope`
+            # (legacy pre-P0-b edges) default to 'owner' so they're not silently dropped.
+            if scope_allow is not None and edge.get("scope", "owner") not in scope_allow:
+                continue
+            # P0-b TEMPORAL: drop edges not valid at as_of (untimed edges kept).
+            if as_of is not None and not _edge_valid_at(edge, as_of):
                 continue
             if conf >= min_confidence:
                 # relation edges are directed a -> b
@@ -492,6 +525,12 @@ def main():
     )
     parser.add_argument("query", help="Concept to start from (fuzzy matched against node titles/snippets)")
     parser.add_argument("--hops", type=int, default=2, help="Max traversal depth (default: 2)")
+    parser.add_argument("--as-of", dest="as_of", default=None,
+                        help="P0-b temporal: traverse only fact edges valid at this ISO date "
+                             "(untimed edges always kept). Omit = current graph.")
+    parser.add_argument("--scope", dest="scope", default=None,
+                        help="P0-b privacy: comma-sep edge scopes to allow (owner,project,peer,world,private). "
+                             "Filter applied BEFORE traversal. Omit = all scopes.")
     parser.add_argument("--min-confidence", type=float, default=0.6, dest="min_confidence",
                         help="Minimum edge confidence to follow (default: 0.6)")
     parser.add_argument("--output-format", choices=["text", "json"], default="text", dest="output_format",
@@ -578,7 +617,8 @@ def main():
         _obs([], [], fallback=True, extra={"mode": "edge_bfs", "no_start_node": True})
         sys.exit(0)
 
-    adj = build_adjacency(graph, args.min_confidence)
+    _scope_allow = set(s.strip() for s in args.scope.split(",") if s.strip()) if args.scope else None
+    adj = build_adjacency(graph, args.min_confidence, scope_allow=_scope_allow, as_of=args.as_of)
     results = bfs_traverse(start_idx, adj, nodes, args.hops)
 
     visited_idxs = {start_idx} | {r["idx"] for r in results}

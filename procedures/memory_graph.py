@@ -28,7 +28,7 @@ import re
 import sqlite3
 import sys
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 # numpy powers the vectorized similarity graph (build_graph). It is guaranteed
@@ -47,6 +47,13 @@ except ImportError:  # pragma: no cover
 # neuron survives OpenClaw schema drift (files/chunks vs memory_index_chunks).
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _schema_adapter import resolve as _resolve_schema_raw, SchemaUnsupported  # noqa: E402
+
+# Optional valid-time layer (#2) — supplies valid_at/invalid_at for P0-b fact edges by
+# reading source-memory frontmatter. Fail-open: absent -> edges are simply not time-bounded.
+try:
+    import valid_time as _VT  # noqa: E402
+except Exception:
+    _VT = None
 
 _SCHEMA_CACHE = {}
 
@@ -369,6 +376,52 @@ def extract_relation_edges(memory_dir, nodes):
                 best_idx = idx
         return best_idx, best_score
 
+    # ── P0-b fact-graph enrichment (HARMONIZED with neuron's existing mechanisms) ──
+    # DEEP-UNDERSTANDING NOTE (2026-08-11): neuron ALREADY has a record-time + confidence
+    # + Hebbian-recurrence system on edges (first_seen/last_seen/count/l3_confidence, set
+    # downstream in build_graph). We do NOT duplicate that. We add ONLY the genuinely-missing
+    # P0-b half and MAP the rest onto what exists:
+    #   - record/system time  -> DEFER to first_seen/last_seen (added downstream). NOT re-added here.
+    #   - relation confidence  -> existing raw `confidence` + downstream `l3_confidence`. NOT re-added.
+    #   - VALID/EVENT time     -> the ONE clock neuron lacks (first_seen = when RECORDED, not when TRUE).
+    #   - status / scope / source_memory_ids[] -> genuinely absent, add.
+    # DETERMINISTIC / T1 / $0: filename + frontmatter reads only, no LLM/embed. Default-safe so the
+    # legacy edges + graph_search's a/b/confidence/label reader keep working untouched.
+    def _infer_scope(fname: str) -> str:
+        """Privacy scope from source filename (proposal: scope enforced BEFORE retrieval;
+        stamped at write time). Conservative default = owner (owner's own workspace)."""
+        f = (fname or "").lower()
+        if "peers/" in f or f.startswith("_peer_") or "peer" in f:
+            return "peer"
+        if "_note_" in f or "project" in f:
+            return "project"
+        return "owner"
+
+    def _valid_time_for(fname: str):
+        """valid_from/valid_until off the source memory frontmatter (reuses shipped valid-time #2).
+        Fail-open: any error/no valid_time -> (None, None) (edge simply not time-bounded)."""
+        try:
+            p = Path(memory_dir) / fname
+            if not p.exists() or _VT is None:
+                return (None, None)
+            fields = _VT.read_fields(p)
+            return (fields.get("valid_from"), fields.get("valid_until"))
+        except Exception:
+            return (None, None)
+
+    def _enrich(edge: dict) -> dict:
+        """Add ONLY the P0-b fields neuron lacks. Record-time/confidence come from the
+        existing downstream mechanisms (first_seen/last_seen/l3_confidence) — not duplicated here."""
+        src = edge.get("source_file", "")
+        valid_at, invalid_at = _valid_time_for(src)
+        edge.setdefault("valid_at", valid_at)          # EVENT/valid time — the clock neuron lacked
+        edge.setdefault("invalid_at", invalid_at)      # retroactively closed by next contradicting fact
+        edge.setdefault("status", "trusted" if edge.get("source") == "explicit" else "provisional")
+        edge.setdefault("source_memory_ids", [src] if src else [])  # provenance array (proposal)
+        edge.setdefault("scope", _infer_scope(src))    # privacy scope (enforced before traversal)
+        edge.setdefault("created_by", edge.get("source", "unknown"))
+        return edge
+
     relation_edges = []
 
     # --- Pass 1: explicit [relation] lines from memory/*.md ---
@@ -394,7 +447,7 @@ def extract_relation_edges(memory_dir, nodes):
             matched_a = score_a >= 0.70
             matched_b = score_b >= 0.70
 
-            relation_edges.append({
+            relation_edges.append(_enrich({
                 "type": "relation",
                 "label": verb,
                 "subject": subject,
@@ -404,7 +457,7 @@ def extract_relation_edges(memory_dir, nodes):
                 "confidence": 0.9,
                 "source": "explicit",
                 "source_file": md_file.name,
-            })
+            }))
 
     # --- Pass 2: spaCy SVO triples (optional, confidence 0.6) ---
     if SPACY_AVAILABLE and nodes:
@@ -426,7 +479,7 @@ def extract_relation_edges(memory_dir, nodes):
                                 idx_a, score_a = fuzzy_match_node(subj_text)
                                 idx_b, score_b = fuzzy_match_node(obj_text)
                                 if score_a >= 0.70 and score_b >= 0.70:
-                                    relation_edges.append({
+                                    relation_edges.append(_enrich({
                                         "type": "relation",
                                         "label": verb_text,
                                         "subject": subj_text,
@@ -436,7 +489,7 @@ def extract_relation_edges(memory_dir, nodes):
                                         "confidence": 0.6,
                                         "source": "spacy_svo",
                                         "source_file": node["file"],
-                                    })
+                                    }))
             except Exception:
                 continue
 
