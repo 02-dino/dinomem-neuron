@@ -36,7 +36,13 @@ try:
 except Exception:
     _gh = None
 
-WS = os.environ.get("OPENCLAW_WORKSPACE", "/root/.openclaw/workspace-analyst")
+# Workspace resolution (priority): DINOMEM_WORKSPACE env > install-time sed of
+# DINOMEM_WORKSPACE_PLACEHOLDER > self-locate from this file (scripts/ -> parent).
+# Self-locate is the safety net if sed was skipped (manual copy / partial install).
+_WS_DEFAULT = "DINOMEM_WORKSPACE_PLACEHOLDER"
+if _WS_DEFAULT.startswith("DINOMEM_"):  # sed did not run
+    _WS_DEFAULT = str(Path(__file__).resolve().parent.parent)
+WS = os.environ.get("DINOMEM_WORKSPACE", os.environ.get("OPENCLAW_WORKSPACE", _WS_DEFAULT))
 MEM_DIR = os.path.join(WS, "memory")
 SNAP_DIR = os.path.join(WS, "backups", "resolved_notes")
 LOG_FILE = os.path.join(WS, "logs", "resolve_done_notes.log")
