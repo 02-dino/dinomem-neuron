@@ -365,16 +365,44 @@ def extract_relation_edges(memory_dir, nodes):
     for n in nodes:
         node_texts.append((n["title"] + " " + n["snippet"]).lower())
 
+    # ── Bottleneck #2 fix (2026-08-12): fuzzy_match_node was O(terms × nodes) pure-Python
+    #    SequenceMatcher.ratio() called ~4× per [relation] line across every md file -> multi-
+    #    minute silent CPU stall once the corpus grows past a few thousand chunks. Two
+    #    BYTE-IDENTICAL-OUTPUT accelerations:
+    #      1. MEMOIZE: the same subject/object terms recur constantly across files; cache the
+    #         (idx, score) result per lowercased-term so each unique term is scored ONCE.
+    #      2. CHEAP-BOUND PREFILTER: SequenceMatcher exposes real_quick_ratio() (length-only) and
+    #         quick_ratio() (multiset) as monotone UPPER BOUNDS on ratio(). If the upper bound
+    #         can't beat the current best, skip the expensive ratio() entirely. Result is exactly
+    #         what the naive full scan returns (same argmax, same score), just far fewer ratio()s.
+    #    Deterministic / T1 / $0 / no LLM/embed/network. set_seq2 reuse avoids re-hashing the term.
+    _fuzzy_cache: dict = {}
+
     def fuzzy_match_node(term):
-        """Return (best_idx, best_score) for term against all nodes."""
+        """Return (best_idx, best_score) for term against all nodes. Memoized + upper-bound-pruned;
+        output byte-identical to the former full SequenceMatcher scan."""
         term_lower = term.lower().strip()
+        cached = _fuzzy_cache.get(term_lower)
+        if cached is not None:
+            return cached
+        cut = len(term_lower) + 30
+        sm = SequenceMatcher(None, term_lower, "")
         best_idx, best_score = -1, 0.0
         for idx, nt in enumerate(node_texts):
-            score = SequenceMatcher(None, term_lower, nt[:len(term_lower) + 30]).ratio()
+            sm.set_seq2(nt[:cut])
+            # real_quick_ratio() (length bound) and quick_ratio() (multiset bound) are cheap
+            # monotone upper bounds on ratio(); prune when they can't exceed the running best.
+            if sm.real_quick_ratio() <= best_score:
+                continue
+            if sm.quick_ratio() <= best_score:
+                continue
+            score = sm.ratio()
             if score > best_score:
                 best_score = score
                 best_idx = idx
-        return best_idx, best_score
+        result = (best_idx, best_score)
+        _fuzzy_cache[term_lower] = result
+        return result
 
     # ── P0-b fact-graph enrichment (HARMONIZED with neuron's existing mechanisms) ──
     # DEEP-UNDERSTANDING NOTE (2026-08-11): neuron ALREADY has a record-time + confidence
