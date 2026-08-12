@@ -121,9 +121,15 @@ def state_of_file(path: Path, vt=None, promo=None) -> dict:
 
 
 def _layer_promo(base: dict, rel: str, promo: dict):
-    """If this file/pattern is tracked in the promotion store, overlay the INSIGHT
-    lifecycle state (provisional/trusted/stale) — the more behavior-relevant view.
-    Matches by source filename appearing in an entry's sources[] or rule_line."""
+    """If this file/pattern is tracked in the promotion store, layer the INSIGHT
+    lifecycle status (provisional/trusted). Matches by source filename in an
+    entry's sources[]/rule_line.
+
+    Precedence rule: a RESOLVED temporal state (current/superseded/archived) is
+    PRIMARY and must not be clobbered — a memory can be BOTH a current fact and a
+    trusted insight, so the insight status is exposed as an OVERLAY field
+    (promo_status/insight_key). Only an unresolved 'unknown' state is upgraded to
+    the insight status directly (a plain note tracked purely as an insight)."""
     for key, entry in promo.items():
         if not isinstance(entry, dict):
             continue
@@ -132,10 +138,17 @@ def _layer_promo(base: dict, rel: str, promo: dict):
         if name in srcs or name in (entry.get("rule_line") or "") or key == name:
             st = entry.get("status")
             if st in ("provisional", "trusted"):
-                base["state"] = st
-                base["why"] = ("insight %s (reinforce_count=%s)"
-                               % (st, entry.get("reinforce_count", 0)))
                 base["insight_key"] = key
+                base["promo_status"] = st
+                base["reinforce_count"] = entry.get("reinforce_count", 0)
+                if base.get("state") == "unknown":
+                    # plain note tracked only as an insight -> insight status IS its state
+                    base["state"] = st
+                    base["why"] = ("insight %s (reinforce_count=%s)"
+                                   % (st, entry.get("reinforce_count", 0)))
+                else:
+                    # live fact that also backs an insight -> keep temporal state, note overlay
+                    base["why"] = base.get("why", "") + " | also insight %s" % st
             return
 
 
