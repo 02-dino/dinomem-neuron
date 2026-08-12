@@ -133,8 +133,20 @@ def leg_session_search(query: str, k: int) -> list[dict]:
              "uri": h.get("session_name", "?")} for h in (d if isinstance(d, list) else [])]
 
 
-def leg_graph_search(query: str, k: int) -> list[dict]:
-    d = _run_json([PY, str(TOOLS / "graph_search.py"), query, "--hops", "2", "--output-format", "json"])
+def leg_graph_search(query: str, k: int, as_of: str | None = None,
+                     scope: str | None = None) -> list[dict]:
+    # P0-c (2026-08-12): thread as_of/scope INTO the graph traversal so temporal
+    # (valid-time) + privacy (scope) filtering happens AT traversal via graph_search's
+    # own --as-of/--scope (added in the P0-b reader work), not only in hybrid_recall's
+    # post-hoc apply_as_of. Filtering edges before BFS = correct multi-hop results
+    # (a hop through an edge invalid/out-of-scope at the as-of date is never taken).
+    # Fail-safe: only append flags when set, so legacy/untimed graphs are untouched.
+    cmd = [PY, str(TOOLS / "graph_search.py"), query, "--hops", "2", "--output-format", "json"]
+    if as_of:
+        cmd += ["--as-of", as_of]
+    if scope:
+        cmd += ["--scope", scope]
+    d = _run_json(cmd)
     res = (d or {}).get("results", []) if isinstance(d, dict) else []
     return [{"leg": "graph_search", "content": r.get("snippet", r.get("title", "")),
              "score": r.get("conf", r.get("confidence", 0.0)),
@@ -174,25 +186,36 @@ except Exception:
 LEG_CACHE_TTL = int(_os.environ.get("HYBRID_RECALL_CACHE_TTL", "900"))  # 15 min default
 
 
-def _cached_leg(leg: str, query: str, k: int) -> list[dict]:
-    """Run one search leg with a TTL result cache keyed on (leg, query, k)."""
+def _cached_leg(leg: str, query: str, k: int, as_of: str | None = None,
+                scope: str | None = None) -> list[dict]:
+    """Run one search leg with a TTL result cache keyed on (leg, query, k[, as_of, scope]).
+    P0-c: as_of/scope MUST enter the cache key so a filtered graph result never
+    collides with an unfiltered one for the same query."""
+    # only the graph leg consumes as_of/scope; keep the key stable (no None noise) for others.
+    ckey = (leg, query, k) if leg != "graph_search" else (leg, query, k, as_of or "", scope or "")
     if _CACHE_OK:
-        hit = _cache_get("hybrid_recall", leg, query, k, ttl_seconds=LEG_CACHE_TTL)
+        hit = _cache_get("hybrid_recall", *ckey, ttl_seconds=LEG_CACHE_TTL)
         if hit is not None:
             return hit
-    res = LEG_FN[leg](query, k)
+    if leg == "graph_search":
+        res = leg_graph_search(query, k, as_of=as_of, scope=scope)
+    else:
+        res = LEG_FN[leg](query, k)
     if _CACHE_OK:
         try:
-            _cache_set("hybrid_recall", leg, query, k, result=res)
+            _cache_set("hybrid_recall", *ckey, result=res)
         except Exception:
             pass
     return res
 
 
-def fire(legs: list[str], query: str, k: int, external_hits: list[dict]) -> list[dict]:
+def fire(legs: list[str], query: str, k: int, external_hits: list[dict],
+         as_of: str | None = None, scope: str | None = None) -> list[dict]:
     """Fire selected legs in PARALLEL (they are independent, each its own
     subprocess). memory_external is in-process (no subprocess) so it's cheap and
-    handled inline. Search legs are cached + threaded."""
+    handled inline. Search legs are cached + threaded.
+    P0-c: as_of/scope are threaded to the graph leg so temporal/privacy filtering
+    happens AT traversal (correct multi-hop), not only post-hoc."""
     from concurrent.futures import ThreadPoolExecutor
     cands: list[dict] = []
     search_legs = [lg for lg in legs if lg != "memory_external"]
@@ -201,7 +224,7 @@ def fire(legs: list[str], query: str, k: int, external_hits: list[dict]) -> list
     if search_legs:
         # threads are fine: the work is a blocking subprocess wait (releases GIL).
         with ThreadPoolExecutor(max_workers=len(search_legs)) as ex:
-            for res in ex.map(lambda lg: _cached_leg(lg, query, k), search_legs):
+            for res in ex.map(lambda lg: _cached_leg(lg, query, k, as_of, scope), search_legs):
                 cands += res
     return cands
 
@@ -409,6 +432,10 @@ def main(argv=None):
                     help="Bitemporal point-in-time query (ISO date). Keep only "
                          "candidates whose backing memory file was VALID at this "
                          "date. Omit = current facts only (today's behavior).")
+    ap.add_argument("--scope", default=None,
+                    help="Privacy scope filter (owner|project|peer) applied to the "
+                         "graph leg's edges BEFORE BFS traversal. Omit = no scope "
+                         "restriction (all edges eligible).")
     ap.add_argument("--json", action="store_true")
     args = ap.parse_args(argv)
 
@@ -423,7 +450,7 @@ def main(argv=None):
             external = []
 
     legs = classify(args.query, args.intent_hint)
-    cands = fire(legs, args.query, args.k, external)
+    cands = fire(legs, args.query, args.k, external, as_of=args.as_of, scope=args.scope)
     cands = fuse(cands)
     cands = rerank(cands)
     cands = apply_as_of(cands, args.as_of)
