@@ -605,6 +605,33 @@ def extract_relation_edges(memory_dir, nodes, entity_nodes=None):
             }))
 
     # --- Pass 2: spaCy SVO triples (optional, confidence 0.6) ---
+    # P3 QUALITY GATE: the SVO auto-miner may be dormant (spaCy not installed / prose yields no clean
+    # triples), but built-for-scale — when it activates or the corpus grows it WILL start mining
+    # triples from casual prose, and spaCy grabs spurious subject/verb/object (pronouns, stopwords,
+    # light/copula verbs like be/have/do/get) that would pollute the typed graph with low-signal
+    # edges. The gate below is a NO-OP while zero SVO edges are produced, and precision-filters
+    # automatically the moment they start. Deterministic / T1 / $0. Three cheap filters:
+    #   (1) verb blocklist — drop copula/light/aux verbs that carry no real relation.
+    #   (2) min endpoint length — drop 1-2 char / pronoun-ish endpoints.
+    #   (3) subject != object — drop degenerate self-loops.
+    # Endpoints still must BOTH resolve to real entity nodes (score>=0.70); this gate is an
+    # ADDITIONAL precision layer on top, never a loosening.
+    _SVO_VERB_BLOCKLIST = {
+        "be", "have", "do", "get", "go", "make", "take", "come", "seem", "become",
+        "say", "see", "know", "think", "want", "use", "look", "give", "tell", "call",
+    }
+    def _svo_ok(subj_text, verb_text, obj_text):
+        """Precision gate for auto-mined SVO triples. True = keep. NO-OP while SVO is dormant."""
+        s = (subj_text or "").strip()
+        o = (obj_text or "").strip()
+        v = (verb_text or "").strip().lower()
+        if len(s) < 3 or len(o) < 3:
+            return False
+        if v in _SVO_VERB_BLOCKLIST:
+            return False
+        if s.lower() == o.lower():
+            return False
+        return True
     if SPACY_AVAILABLE and nodes:
         for node in nodes:
             text = node["snippet"]
@@ -621,6 +648,9 @@ def extract_relation_edges(memory_dir, nodes, entity_nodes=None):
                                 subj_text = subj.text
                                 obj_text = obj.text
                                 verb_text = token.lemma_
+                                # P3: precision gate BEFORE the expensive endpoint resolve.
+                                if not _svo_ok(subj_text, verb_text, obj_text):
+                                    continue
                                 # P2: spaCy SVO endpoints via entity-name resolver too.
                                 idx_a, score_a = match_endpoint_entity(subj_text)
                                 idx_b, score_b = match_endpoint_entity(obj_text)
