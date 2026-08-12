@@ -877,9 +877,9 @@ if [ "$DO_CRON" = 1 ]; then
 import subprocess, json, os
 
 def _cron_add_argv(job):
-    """Build a flag-based `openclaw cron add` argv from a job dict.
-    OpenClaw 2026.6.6+ has no `cron add --json <blob>`; jobs are built from flags.
-    `--json` here is OUTPUT-only (so we can parse the created job id)."""
+    """Build a flag-based 'openclaw cron add' argv from a job dict.
+    OpenClaw 2026.6.6+ has no 'cron add --json <blob>'; jobs are built from flags.
+    '--json' here is OUTPUT-only (so we can parse the created job id)."""
     a = ['openclaw', 'cron', 'add']
     name = job.get('name')
     if name:
@@ -894,7 +894,7 @@ def _cron_add_argv(job):
         a += ['--every', str(sched['every'])]; _sched_flags += 1
     elif sched.get('kind') == 'at' and sched.get('at'):
         a += ['--at', str(sched['at'])]; _sched_flags += 1
-    # DEFENSIVE: `openclaw cron add` rejects zero-or-multiple schedule flags with
+    # DEFENSIVE: 'openclaw cron add' rejects zero-or-multiple schedule flags with
     # a cryptic 'Choose exactly one schedule' error that aborts the whole install
     # heredoc, killing every lane after it. Fail LOUD with the job name instead so
     # the self-check's repair path can surface exactly which lane is malformed.
@@ -941,14 +941,14 @@ def _cron_add_argv(job):
     return a
 
 def _cron_verify(name):
-    """Read back a cron job by name via `cron list --json`. Returns its id, or ''
+    """Read back a cron job by name via 'cron list --json'. Returns its id, or ''
     if the gateway did not actually store it (silent-failure guard)."""
     try:
-        lr = subprocess.run(['openclaw', 'cron', 'list', '--json'], capture_output=True, text=True, timeout=10)
+        lr = subprocess.run(['openclaw', 'cron', 'list', '--all', '--json'], capture_output=True, text=True, timeout=10)
         if lr.returncode != 0:
             return ''
         data = json.loads(lr.stdout)
-        joblist = data if isinstance(data, list) else data.get('jobs', {}).get('jobs', data.get('jobs', []))
+        joblist = data if isinstance(data, list) else (data.get('jobs') if isinstance(data.get('jobs'), list) else (data.get('jobs') or {}).get('jobs', []))
         for j in (joblist or []):
             if j.get('name','').strip().lower() == name.strip().lower():
                 return j.get('id','') or 'exists'
@@ -964,10 +964,10 @@ def upsert_cron_job(job, idfile, label, idsdir):
     name = job['name']
     existing_id = ''
     try:
-        lr = subprocess.run(['openclaw', 'cron', 'list', '--json'], capture_output=True, text=True, timeout=10)
+        lr = subprocess.run(['openclaw', 'cron', 'list', '--all', '--json'], capture_output=True, text=True, timeout=10)
         if lr.returncode == 0:
             data = json.loads(lr.stdout)
-            joblist = data if isinstance(data, list) else data.get('jobs', {}).get('jobs', data.get('jobs', []))
+            joblist = data if isinstance(data, list) else (data.get('jobs') if isinstance(data.get('jobs'), list) else (data.get('jobs') or {}).get('jobs', []))
             for j in (joblist or []):
                 if j.get('name','').strip().lower() == name.strip().lower():
                     existing_id = j.get('id',''); break
@@ -1034,9 +1034,9 @@ python3 - <<PYEOF
 import subprocess, json, os
 
 def _cron_add_argv(job):
-    """Build a flag-based `openclaw cron add` argv from a job dict.
-    OpenClaw 2026.6.6+ has no `cron add --json <blob>`; jobs are built from flags.
-    `--json` here is OUTPUT-only (so we can parse the created job id)."""
+    """Build a flag-based 'openclaw cron add' argv from a job dict.
+    OpenClaw 2026.6.6+ has no 'cron add --json <blob>'; jobs are built from flags.
+    '--json' here is OUTPUT-only (so we can parse the created job id)."""
     a = ['openclaw', 'cron', 'add']
     name = job.get('name')
     if name:
@@ -1051,7 +1051,7 @@ def _cron_add_argv(job):
         a += ['--every', str(sched['every'])]; _sched_flags += 1
     elif sched.get('kind') == 'at' and sched.get('at'):
         a += ['--at', str(sched['at'])]; _sched_flags += 1
-    # DEFENSIVE: `openclaw cron add` rejects zero-or-multiple schedule flags with
+    # DEFENSIVE: 'openclaw cron add' rejects zero-or-multiple schedule flags with
     # a cryptic 'Choose exactly one schedule' error that aborts the whole install
     # heredoc, killing every lane after it. Fail LOUD with the job name instead so
     # the self-check's repair path can surface exactly which lane is malformed.
@@ -1098,14 +1098,14 @@ def _cron_add_argv(job):
     return a
 
 def _cron_verify(name):
-    """Read back a cron job by name via `cron list --json`. Returns its id, or ''
+    """Read back a cron job by name via 'cron list --json'. Returns its id, or ''
     if the gateway did not actually store it (silent-failure guard)."""
     try:
-        lr = subprocess.run(['openclaw', 'cron', 'list', '--json'], capture_output=True, text=True, timeout=10)
+        lr = subprocess.run(['openclaw', 'cron', 'list', '--all', '--json'], capture_output=True, text=True, timeout=10)
         if lr.returncode != 0:
             return ''
         data = json.loads(lr.stdout)
-        joblist = data if isinstance(data, list) else data.get('jobs', {}).get('jobs', data.get('jobs', []))
+        joblist = data if isinstance(data, list) else (data.get('jobs') if isinstance(data.get('jobs'), list) else (data.get('jobs') or {}).get('jobs', []))
         for j in (joblist or []):
             if j.get('name','').strip().lower() == name.strip().lower():
                 return j.get('id','') or 'exists'
@@ -1118,10 +1118,10 @@ def upsert_cron_job(job, idfile, label, idsdir):
     name = job['name']
     existing_id = ''
     try:
-        lr = subprocess.run(['openclaw', 'cron', 'list', '--json'], capture_output=True, text=True, timeout=10)
+        lr = subprocess.run(['openclaw', 'cron', 'list', '--all', '--json'], capture_output=True, text=True, timeout=10)
         if lr.returncode == 0:
             data = json.loads(lr.stdout)
-            joblist = data if isinstance(data, list) else data.get('jobs', {}).get('jobs', data.get('jobs', []))
+            joblist = data if isinstance(data, list) else (data.get('jobs') if isinstance(data.get('jobs'), list) else (data.get('jobs') or {}).get('jobs', []))
             for j in (joblist or []):
                 if j.get('name','').strip().lower() == name.strip().lower():
                     existing_id = j.get('id',''); break
@@ -1183,9 +1183,9 @@ python3 - <<PYEOF
 import subprocess, json, os
 
 def _cron_add_argv(job):
-    """Build a flag-based `openclaw cron add` argv from a job dict.
-    OpenClaw 2026.6.6+ has no `cron add --json <blob>`; jobs are built from flags.
-    `--json` here is OUTPUT-only (so we can parse the created job id)."""
+    """Build a flag-based 'openclaw cron add' argv from a job dict.
+    OpenClaw 2026.6.6+ has no 'cron add --json <blob>'; jobs are built from flags.
+    '--json' here is OUTPUT-only (so we can parse the created job id)."""
     a = ['openclaw', 'cron', 'add']
     name = job.get('name')
     if name:
@@ -1200,7 +1200,7 @@ def _cron_add_argv(job):
         a += ['--every', str(sched['every'])]; _sched_flags += 1
     elif sched.get('kind') == 'at' and sched.get('at'):
         a += ['--at', str(sched['at'])]; _sched_flags += 1
-    # DEFENSIVE: `openclaw cron add` rejects zero-or-multiple schedule flags with
+    # DEFENSIVE: 'openclaw cron add' rejects zero-or-multiple schedule flags with
     # a cryptic 'Choose exactly one schedule' error that aborts the whole install
     # heredoc, killing every lane after it. Fail LOUD with the job name instead so
     # the self-check's repair path can surface exactly which lane is malformed.
@@ -1247,14 +1247,14 @@ def _cron_add_argv(job):
     return a
 
 def _cron_verify(name):
-    """Read back a cron job by name via `cron list --json`. Returns its id, or ''
+    """Read back a cron job by name via 'cron list --json'. Returns its id, or ''
     if the gateway did not actually store it (silent-failure guard)."""
     try:
-        lr = subprocess.run(['openclaw', 'cron', 'list', '--json'], capture_output=True, text=True, timeout=10)
+        lr = subprocess.run(['openclaw', 'cron', 'list', '--all', '--json'], capture_output=True, text=True, timeout=10)
         if lr.returncode != 0:
             return ''
         data = json.loads(lr.stdout)
-        joblist = data if isinstance(data, list) else data.get('jobs', {}).get('jobs', data.get('jobs', []))
+        joblist = data if isinstance(data, list) else (data.get('jobs') if isinstance(data.get('jobs'), list) else (data.get('jobs') or {}).get('jobs', []))
         for j in (joblist or []):
             if j.get('name','').strip().lower() == name.strip().lower():
                 return j.get('id','') or 'exists'
@@ -1267,10 +1267,10 @@ def upsert_cron_job(job, idfile, label, idsdir):
     name = job['name']
     existing_id = ''
     try:
-        lr = subprocess.run(['openclaw', 'cron', 'list', '--json'], capture_output=True, text=True, timeout=10)
+        lr = subprocess.run(['openclaw', 'cron', 'list', '--all', '--json'], capture_output=True, text=True, timeout=10)
         if lr.returncode == 0:
             data = json.loads(lr.stdout)
-            joblist = data if isinstance(data, list) else data.get('jobs', {}).get('jobs', data.get('jobs', []))
+            joblist = data if isinstance(data, list) else (data.get('jobs') if isinstance(data.get('jobs'), list) else (data.get('jobs') or {}).get('jobs', []))
             for j in (joblist or []):
                 if j.get('name','').strip().lower() == name.strip().lower():
                     existing_id = j.get('id',''); break
@@ -1357,7 +1357,7 @@ def _cron_add_argv(job):
         a += ['--every', str(sched['every'])]; _sched_flags += 1
     elif sched.get('kind') == 'at' and sched.get('at'):
         a += ['--at', str(sched['at'])]; _sched_flags += 1
-    # DEFENSIVE: `openclaw cron add` rejects zero-or-multiple schedule flags with
+    # DEFENSIVE: 'openclaw cron add' rejects zero-or-multiple schedule flags with
     # a cryptic 'Choose exactly one schedule' error that aborts the whole install
     # heredoc, killing every lane after it. Fail LOUD with the job name instead so
     # the self-check's repair path can surface exactly which lane is malformed.
@@ -1390,11 +1390,11 @@ def _cron_add_argv(job):
 
 def _cron_verify(name):
     try:
-        lr = subprocess.run(['openclaw', 'cron', 'list', '--json'], capture_output=True, text=True, timeout=10)
+        lr = subprocess.run(['openclaw', 'cron', 'list', '--all', '--json'], capture_output=True, text=True, timeout=10)
         if lr.returncode != 0:
             return ''
         data = json.loads(lr.stdout)
-        joblist = data if isinstance(data, list) else data.get('jobs', {}).get('jobs', data.get('jobs', []))
+        joblist = data if isinstance(data, list) else (data.get('jobs') if isinstance(data.get('jobs'), list) else (data.get('jobs') or {}).get('jobs', []))
         for j in (joblist or []):
             if j.get('name','').strip().lower() == name.strip().lower():
                 return j.get('id','') or 'exists'
@@ -1406,10 +1406,10 @@ def upsert_cron_job(job, idfile, label, idsdir):
     name = job['name']
     existing_id = ''
     try:
-        lr = subprocess.run(['openclaw', 'cron', 'list', '--json'], capture_output=True, text=True, timeout=10)
+        lr = subprocess.run(['openclaw', 'cron', 'list', '--all', '--json'], capture_output=True, text=True, timeout=10)
         if lr.returncode == 0:
             data = json.loads(lr.stdout)
-            joblist = data if isinstance(data, list) else data.get('jobs', {}).get('jobs', data.get('jobs', []))
+            joblist = data if isinstance(data, list) else (data.get('jobs') if isinstance(data.get('jobs'), list) else (data.get('jobs') or {}).get('jobs', []))
             for j in (joblist or []):
                 if j.get('name','').strip().lower() == name.strip().lower():
                     existing_id = j.get('id',''); break
@@ -1510,7 +1510,7 @@ CANON = [
 try:
     r = subprocess.run(['openclaw','cron','list','--json'], capture_output=True, text=True, timeout=10)
     data = json.loads(r.stdout) if r.returncode == 0 else []
-    jl = data if isinstance(data, list) else data.get('jobs', {}).get('jobs', data.get('jobs', []))
+    jl = data if isinstance(data, list) else (data.get('jobs') if isinstance(data.get('jobs'), list) else (data.get('jobs') or {}).get('jobs', []))
 except Exception:
     jl = []
 for cname in CANON:
@@ -1530,9 +1530,9 @@ if true; then
 import subprocess, json, os
 
 def _cron_add_argv(job):
-    """Build a flag-based `openclaw cron add` argv from a job dict.
-    OpenClaw 2026.6.6+ has no `cron add --json <blob>`; jobs are built from flags.
-    `--json` here is OUTPUT-only (so we can parse the created job id)."""
+    """Build a flag-based 'openclaw cron add' argv from a job dict.
+    OpenClaw 2026.6.6+ has no 'cron add --json <blob>'; jobs are built from flags.
+    '--json' here is OUTPUT-only (so we can parse the created job id)."""
     a = ['openclaw', 'cron', 'add']
     name = job.get('name')
     if name:
@@ -1547,7 +1547,7 @@ def _cron_add_argv(job):
         a += ['--every', str(sched['every'])]; _sched_flags += 1
     elif sched.get('kind') == 'at' and sched.get('at'):
         a += ['--at', str(sched['at'])]; _sched_flags += 1
-    # DEFENSIVE: `openclaw cron add` rejects zero-or-multiple schedule flags with
+    # DEFENSIVE: 'openclaw cron add' rejects zero-or-multiple schedule flags with
     # a cryptic 'Choose exactly one schedule' error that aborts the whole install
     # heredoc, killing every lane after it. Fail LOUD with the job name instead so
     # the self-check's repair path can surface exactly which lane is malformed.
@@ -1608,11 +1608,11 @@ idea = readid("brainstorm_ideator")  # neuron ideator lane; '' if not yet regist
 GATE_NAME = "Note Cron Gate"
 def _find_cron(name):
     try:
-        lr = subprocess.run(['openclaw', 'cron', 'list', '--json'], capture_output=True, text=True, timeout=10)
+        lr = subprocess.run(['openclaw', 'cron', 'list', '--all', '--json'], capture_output=True, text=True, timeout=10)
         if lr.returncode != 0:
             return ''
         data = json.loads(lr.stdout)
-        jl = data if isinstance(data, list) else data.get('jobs', {}).get('jobs', data.get('jobs', []))
+        jl = data if isinstance(data, list) else (data.get('jobs') if isinstance(data.get('jobs'), list) else (data.get('jobs') or {}).get('jobs', []))
         return next((j.get('id','') for j in (jl or []) if j.get('name','').strip().lower()==name.strip().lower()), '')
     except Exception:
         return ''
@@ -1761,9 +1761,9 @@ python3 - <<PYEOF
 import subprocess, json, os
 
 def _cron_add_argv(job):
-    """Build a flag-based `openclaw cron add` argv from a job dict.
-    OpenClaw 2026.6.6+ has no `cron add --json <blob>`; jobs are built from flags.
-    `--json` here is OUTPUT-only (so we can parse the created job id)."""
+    """Build a flag-based 'openclaw cron add' argv from a job dict.
+    OpenClaw 2026.6.6+ has no 'cron add --json <blob>'; jobs are built from flags.
+    '--json' here is OUTPUT-only (so we can parse the created job id)."""
     a = ['openclaw', 'cron', 'add']
     name = job.get('name')
     if name:
@@ -1778,7 +1778,7 @@ def _cron_add_argv(job):
         a += ['--every', str(sched['every'])]; _sched_flags += 1
     elif sched.get('kind') == 'at' and sched.get('at'):
         a += ['--at', str(sched['at'])]; _sched_flags += 1
-    # DEFENSIVE: `openclaw cron add` rejects zero-or-multiple schedule flags with
+    # DEFENSIVE: 'openclaw cron add' rejects zero-or-multiple schedule flags with
     # a cryptic 'Choose exactly one schedule' error that aborts the whole install
     # heredoc, killing every lane after it. Fail LOUD with the job name instead so
     # the self-check's repair path can surface exactly which lane is malformed.
@@ -1825,14 +1825,14 @@ def _cron_add_argv(job):
     return a
 
 def _cron_verify(name):
-    """Read back a cron job by name via `cron list --json`. Returns its id, or ''
+    """Read back a cron job by name via 'cron list --json'. Returns its id, or ''
     if the gateway did not actually store it (silent-failure guard)."""
     try:
-        lr = subprocess.run(['openclaw', 'cron', 'list', '--json'], capture_output=True, text=True, timeout=10)
+        lr = subprocess.run(['openclaw', 'cron', 'list', '--all', '--json'], capture_output=True, text=True, timeout=10)
         if lr.returncode != 0:
             return ''
         data = json.loads(lr.stdout)
-        joblist = data if isinstance(data, list) else data.get('jobs', {}).get('jobs', data.get('jobs', []))
+        joblist = data if isinstance(data, list) else (data.get('jobs') if isinstance(data.get('jobs'), list) else (data.get('jobs') or {}).get('jobs', []))
         for j in (joblist or []):
             if j.get('name','').strip().lower() == name.strip().lower():
                 return j.get('id','') or 'exists'
@@ -1853,10 +1853,10 @@ def upsert_gated(job, idfile, label, idsdir, gate_env_key):
     name = job['name']
     existing_id = ''
     try:
-        lr = subprocess.run(['openclaw', 'cron', 'list', '--json'], capture_output=True, text=True, timeout=10)
+        lr = subprocess.run(['openclaw', 'cron', 'list', '--all', '--json'], capture_output=True, text=True, timeout=10)
         if lr.returncode == 0:
             data = json.loads(lr.stdout)
-            joblist = data if isinstance(data, list) else data.get('jobs', {}).get('jobs', data.get('jobs', []))
+            joblist = data if isinstance(data, list) else (data.get('jobs') if isinstance(data.get('jobs'), list) else (data.get('jobs') or {}).get('jobs', []))
             for j in (joblist or []):
                 if j.get('name','').strip().lower() == name.strip().lower():
                     existing_id = j.get('id',''); break
@@ -1904,10 +1904,10 @@ def upsert_gated(job, idfile, label, idsdir, gate_env_key):
     # re-enable this worker on its own schedule so it still runs (behavior-preserving).
     gate_id = ''
     try:
-        lr = subprocess.run(['openclaw', 'cron', 'list', '--json'], capture_output=True, text=True, timeout=10)
+        lr = subprocess.run(['openclaw', 'cron', 'list', '--all', '--json'], capture_output=True, text=True, timeout=10)
         if lr.returncode == 0:
             data = json.loads(lr.stdout)
-            joblist = data if isinstance(data, list) else data.get('jobs', {}).get('jobs', data.get('jobs', []))
+            joblist = data if isinstance(data, list) else (data.get('jobs') if isinstance(data.get('jobs'), list) else (data.get('jobs') or {}).get('jobs', []))
             for j in (joblist or []):
                 if j.get('name','').strip().lower() == 'note cron gate':
                     gate_id = j.get('id',''); break
@@ -2736,14 +2736,14 @@ fi
 # cron-only). If we can't auto-repair, surface ONE copy-paste fix command and, on a
 # normal install (not already inside a repair run), exit NONZERO so the gap is loud.
 # Daily Note Review is treated as recommended-not-required (it's a redundant janitor).
-_REQUIRED_CRONS="Project Advancer|Project Improver (Component 2)|Verified Note Deleter (Component 1)|Note Cron Gate"
+_REQUIRED_CRONS="Project Advancer|Project Improver (Component 2)|Verified Note Deleter (Component 1)|Project Cron Gate"
 _MISSING_REQUIRED=""
 if command -v openclaw >/dev/null 2>&1; then
-  _CRON_LIST="$(openclaw cron list --json 2>/dev/null || echo '[]')"
+  _CRON_LIST="$(openclaw cron list --all --json 2>/dev/null || echo '[]')"
   # required lanes
   _IFS_SAVE="$IFS"; IFS='|'
   for _cname in $_REQUIRED_CRONS; do
-    if printf '%s' "$_CRON_LIST" | grep -qiF "$_cname"; then
+    if grep -qiF "$_cname" <<< "$_CRON_LIST"; then
       sc_pass "cron present: $_cname"
     else
       sc_warn "cron MISSING (required): $_cname"
@@ -2752,7 +2752,7 @@ if command -v openclaw >/dev/null 2>&1; then
   done
   IFS="$_IFS_SAVE"
   # recommended (non-blocking)
-  if printf '%s' "$_CRON_LIST" | grep -qiF "Daily Note Review"; then
+  if grep -qiF "Daily Note Review" <<< "$_CRON_LIST"; then
     sc_pass "cron present: Daily Note Review"
   else
     sc_warn "cron MISSING (recommended): Daily Note Review — general note janitor; not blocking"
@@ -2768,11 +2768,11 @@ if command -v openclaw >/dev/null 2>&1; then
       printf '  \033[33m[repair]\033[0m required cron(s) missing (%s) — auto-repairing (cron-only re-run)...\n' "$_MISSING_REQUIRED"
       if bash "$SKILL_DIR/scripts/install.sh" --workspace "$WS" --agent-id "$AGENT_ID" --repair-cron; then
         # re-verify after repair
-        _CRON_LIST2="$(openclaw cron list --json 2>/dev/null || echo '[]')"
+        _CRON_LIST2="$(openclaw cron list --all --json 2>/dev/null || echo '[]')"
         _STILL_MISSING=""
         _IFS_SAVE="$IFS"; IFS='|'
         for _cname in $_REQUIRED_CRONS; do
-          printf '%s' "$_CRON_LIST2" | grep -qiF "$_cname" || _STILL_MISSING="${_STILL_MISSING}${_STILL_MISSING:+, }$_cname"
+          grep -qiF "$_cname" <<< "$_CRON_LIST2" || _STILL_MISSING="${_STILL_MISSING}${_STILL_MISSING:+, }$_cname"
         done
         IFS="$_IFS_SAVE"
         if [ -z "$_STILL_MISSING" ]; then
