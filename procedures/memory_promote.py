@@ -173,6 +173,28 @@ def log_action(action, entry, extra=None):
         f.write(json.dumps(rec, ensure_ascii=False) + "\n")
 
 
+# Insight-side non-destructive RETIRE (analog of valid_time.retire() for facts).
+# A promotion-state entry is a JSON record, not a standalone file, so "retire" =
+# append the FULL entry to an append-only history ledger BEFORE it is deleted from
+# the live state. Nothing that was ever trusted/provisional is lost silently; a
+# demoted insight can be inspected or resurrected from the ledger. Fail-open: a
+# failed history write must NOT block the delete (state hygiene wins), it just
+# means that one record wasn't archived.
+def retire_insight(key, entry, reason):
+    """Append a demoted/expired insight to memory/_history/demoted_insights.jsonl
+    (non-destructive) before the caller deletes it from live state. Returns True
+    if archived. Fail-open."""
+    try:
+        hist = BASE / "memory" / "_history" / "demoted_insights.jsonl"
+        hist.parent.mkdir(parents=True, exist_ok=True)
+        rec = {"retired_at": now_iso(), "key": key, "reason": reason, "entry": entry}
+        with hist.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        return True
+    except Exception:
+        return False
+
+
 def check_contradiction(new_rule, trusted_rules):
     """Live L4 graduation gate → delegates to the single canonical implementation
     in contradiction_check.rules_contradict (one prompt / one logic, no drift).
@@ -353,7 +375,7 @@ def run(dry_run=False):
     new_handoff = bool(handoff_sig) and handoff_sig != last_consumed
 
     # ── Load pinned slugs (insights with a _pin_ file are immortal — skip decay) ──
-    MEMORY_DIR = Path(str(WORKSPACE_ROOT)) / "memory"
+    MEMORY_DIR = BASE / "memory"
     pinned_slugs = {f.stem.replace("_pin_", "") for f in MEMORY_DIR.glob("_pin_*.md")} if MEMORY_DIR.exists() else set()
 
     # ── Demotion-queue pass (reinforcement-weighted contradiction resolution) ──
@@ -379,6 +401,7 @@ def run(dry_run=False):
                 actions["demoted"] += 1
                 if not dry_run:
                     log_action("demoted", me, {"reason": "outweighed_by_reinforced_challenger"})
+                    retire_insight(mk, me, "outweighed_by_reinforced_challenger")
                     del state[mk]
         if not dry_run:
             # Queue consumed; clear it so incumbents aren't re-demoted next run.
@@ -394,7 +417,9 @@ def run(dry_run=False):
         if e.get("status") == "provisional" and expired(e, TTL_DAYS):
             actions["expired"] += 1
             if not dry_run:
-                log_action("expired", e, {"reason": f"no reinforcement in {TTL_DAYS}d"})
+                _r = f"no reinforcement in {TTL_DAYS}d"
+                log_action("expired", e, {"reason": _r})
+                retire_insight(k, e, _r)  # non-destructive archive before delete
                 del state[k]
         elif e.get("status") == "trusted":
             ttl = get_ttl(e, TRUSTED_TTL_DAYS)
@@ -410,12 +435,15 @@ def run(dry_run=False):
                     actions["demoted"] += 1
                     if not dry_run:
                         log_action("demoted", e, {"reason": "LLM review: invalidated"})
+                        retire_insight(k, e, "LLM review: invalidated")
                         del state[k]
                 else:
                     # LLM unavailable or skip — fall back to time-based decay
                     actions["demoted"] += 1
                     if not dry_run:
-                        log_action("demoted", e, {"reason": f"trusted but stale {ttl}d (category: {e.get('tag', 'default')})"})
+                        _r = f"trusted but stale {ttl}d (category: {e.get('tag', 'default')})"
+                        log_action("demoted", e, {"reason": _r})
+                        retire_insight(k, e, _r)
                         del state[k]
             else:
                 # Not expired yet — check if approaching TTL (>75%) for early LLM review
@@ -433,6 +461,7 @@ def run(dry_run=False):
                                 actions["demoted"] += 1
                                 if not dry_run:
                                     log_action("demoted", e, {"reason": "LLM early review: invalidated"})
+                                    retire_insight(k, e, "LLM early review: invalidated")
                                     del state[k]
                     except Exception:
                         pass

@@ -241,6 +241,12 @@ def main():
     ap.add_argument("--top", type=int, default=3, help="How many nearest matches to report.")
     ap.add_argument("--list", action="store_true",
                     help="Just list the files that would be compared, then exit.")
+    ap.add_argument("--execute-supersede", default="",
+                    help="Path to the ALREADY-WRITTEN new fact file. When the advisory "
+                         "supersede branch fires, actually run valid_time.supersede(old=target, "
+                         "new=THIS) — closes the old interval, links both ways, retires the old "
+                         "file to memory/_history/ (non-destructive). Activates the dormant "
+                         "retire() so supersession is real, not just recommended.")
     args = ap.parse_args()
 
     if args.list:
@@ -403,6 +409,24 @@ def main():
             "scoring": stats,
             "candidates": cand_list,
         }
+        # EXECUTOR: activate the dormant retire() path. Only when the caller passes
+        # --execute-supersede pointing at the already-written new fact. Fail-open:
+        # any error leaves everything in place (advisory still returned).
+        if args.execute_supersede:
+            try:
+                import sys as _s3
+                _s3.path.insert(0, str(_SCRIPT_DIR))
+                import valid_time as _vt2
+                new_p = Path(args.execute_supersede)
+                if not new_p.is_absolute():
+                    new_p = BASE / new_p
+                if new_p.exists() and best_file.exists():
+                    res = _vt2.supersede(best_file, new_p)
+                    out["superseded_executed"] = res  # {superseded,by,valid_until,retired_to}
+                else:
+                    out["superseded_executed"] = {"error": "new or target file missing; nothing moved"}
+            except Exception as _e:
+                out["superseded_executed"] = {"error": "fail-open: %s" % _e}
     elif is_match:
         out = {
             "match": True,
