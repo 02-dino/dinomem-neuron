@@ -632,42 +632,81 @@ def extract_relation_edges(memory_dir, nodes, entity_nodes=None):
         if s.lower() == o.lower():
             return False
         return True
+    def _svo_from_doc(doc, node):
+        """Extract + append SVO relation edges from ONE parsed doc. Identical token
+        logic to the original loop body, factored out so batched nlp.pipe() and the
+        single-doc fallback share EXACTLY the same extraction (byte-identical edges)."""
+        for token in doc:
+            if token.dep_ == "ROOT" and token.pos_ == "VERB":
+                subjects = [w for w in token.lefts if w.dep_ in ("nsubj", "nsubjpass")]
+                objects = [w for w in token.rights if w.dep_ in ("dobj", "attr", "pobj", "oprd")]
+                for subj in subjects:
+                    for obj in objects:
+                        subj_text = subj.text
+                        obj_text = obj.text
+                        verb_text = token.lemma_
+                        if not _svo_ok(subj_text, verb_text, obj_text):
+                            continue
+                        idx_a, score_a = match_endpoint_entity(subj_text)
+                        idx_b, score_b = match_endpoint_entity(obj_text)
+                        if score_a >= 0.70 and score_b >= 0.70:
+                            relation_edges.append(_enrich({
+                                "type": "relation",
+                                "label": verb_text,
+                                "subject": subj_text,
+                                "object": obj_text,
+                                "a": idx_a,
+                                "b": idx_b,
+                                "confidence": 0.6,
+                                "source": "spacy_svo",
+                                "source_file": node["file"],
+                            }))
+
     if SPACY_AVAILABLE and nodes:
-        for node in nodes:
-            text = node["snippet"]
-            if not text or len(text) < 20:
-                continue
+        # BATCHED + CPU-AWARE spaCy SVO (was: one nlp(text) per node, single-thread
+        # = the dominant rebuild cost). nlp.pipe() batches parsing and can fan out
+        # across cores; it PRESERVES input order and we pair each doc back to its
+        # node via as_tuples, so the emitted edge set + order stay byte-identical to
+        # the old loop. Short/empty snippets are skipped BEFORE piping (same len<20
+        # gate) so exactly the same docs get parsed.
+        _pairs = [(node["snippet"], node) for node in nodes
+                  if node.get("snippet") and len(node["snippet"]) >= 20]
+        # CPU-aware n_process: leave headroom (cores-1), cap at 4 (spaCy spawn/IPC
+        # overhead dominates past that on typical corpora), floor 1. Env override
+        # DINOMEM_GRAPH_NPROC for tiny/huge hosts. Force single-process on a small
+        # corpus where multiprocessing setup costs more than it saves.
+        try:
+            _cores = _os.cpu_count() or 1
+        except Exception:
+            _cores = 1
+        _nproc = max(1, min(4, _cores - 1))
+        if len(_pairs) < 400:
+            _nproc = 1
+        _ovp = _os.environ.get("DINOMEM_GRAPH_NPROC")
+        if _ovp:
             try:
-                doc = nlp(text)
-                for token in doc:
-                    if token.dep_ == "ROOT" and token.pos_ == "VERB":
-                        subjects = [w for w in token.lefts if w.dep_ in ("nsubj", "nsubjpass")]
-                        objects = [w for w in token.rights if w.dep_ in ("dobj", "attr", "pobj", "oprd")]
-                        for subj in subjects:
-                            for obj in objects:
-                                subj_text = subj.text
-                                obj_text = obj.text
-                                verb_text = token.lemma_
-                                # P3: precision gate BEFORE the expensive endpoint resolve.
-                                if not _svo_ok(subj_text, verb_text, obj_text):
-                                    continue
-                                # P2: spaCy SVO endpoints via entity-name resolver too.
-                                idx_a, score_a = match_endpoint_entity(subj_text)
-                                idx_b, score_b = match_endpoint_entity(obj_text)
-                                if score_a >= 0.70 and score_b >= 0.70:
-                                    relation_edges.append(_enrich({
-                                        "type": "relation",
-                                        "label": verb_text,
-                                        "subject": subj_text,
-                                        "object": obj_text,
-                                        "a": idx_a,
-                                        "b": idx_b,
-                                        "confidence": 0.6,
-                                        "source": "spacy_svo",
-                                        "source_file": node["file"],
-                                    }))
-            except Exception:
-                continue
+                _nproc = max(1, min(_cores, int(_ovp)))
+            except ValueError:
+                pass
+        _bs = 128 if _nproc == 1 else 64  # larger batch single-proc, smaller per-worker
+        print("[graph] spaCy SVO over %d nodes | nlp.pipe (n_process=%d, batch_size=%d, cores=%d)"
+              % (len(_pairs), _nproc, _bs, _cores), file=sys.stderr)
+        try:
+            for doc, node in nlp.pipe(_pairs, as_tuples=True,
+                                      batch_size=_bs, n_process=_nproc):
+                try:
+                    _svo_from_doc(doc, node)
+                except Exception:
+                    continue
+        except Exception as _pe:
+            # Any pipe/multiprocessing failure -> single-doc fallback (never lose the
+            # SVO layer over an infra hiccup). Same extraction per doc.
+            print("[graph] nlp.pipe failed (%s); single-doc fallback" % _pe, file=sys.stderr)
+            for text, node in _pairs:
+                try:
+                    _svo_from_doc(nlp(text), node)
+                except Exception:
+                    continue
 
     return relation_edges
 
@@ -975,28 +1014,38 @@ def main():
     # P2: endpoints resolve through entity NAMES -> entity.node_idx (valid nodes[] index).
     relation_edges = extract_relation_edges(memory_dir, nodes, entity_nodes)
 
-    (OUT_DIR / "memory_graph.json").write_text(
-        json.dumps(
-            {
-                "generated": now,
-                "params": vars(args),
-                "node_count": len(nodes),
-                "edge_count": len(edge_list),
-                "relation_edge_count": len(relation_edges),
-                "entity_node_count": len(entity_nodes),
-                "entity_edge_count": len(entity_edges),
-                "nodes": nodes,
-                "edges": edge_list,
-                "relation_edges": relation_edges,
-                "entity_nodes": entity_nodes,
-                "entity_edges": entity_edges,
-                "forward_refs": forward_refs,
-            },
-            indent=2,
-            ensure_ascii=False,
-        ),
-        encoding="utf-8",
-    )
+    _graph_payload = {
+        "generated": now,
+        "params": vars(args),
+        "node_count": len(nodes),
+        "edge_count": len(edge_list),
+        "relation_edge_count": len(relation_edges),
+        "entity_node_count": len(entity_nodes),
+        "entity_edge_count": len(entity_edges),
+        "nodes": nodes,
+        "edges": edge_list,
+        "relation_edges": relation_edges,
+        "entity_nodes": entity_nodes,
+        "entity_edges": entity_edges,
+        "forward_refs": forward_refs,
+    }
+    # P2 #6: persist THROUGH graph_store -> writes indexed graph.db AND dual-writes
+    # memory_graph.json for portability/back-compat. Fallback to raw JSON dump if
+    # the store import fails (keeps the builder working in a base/graph-less env).
+    try:
+        import sys as _sys
+        _sys.path.insert(0, str(_WS / "procedures"))
+        import graph_store as _gstore
+        _store = _gstore.open(json_path=str(OUT_DIR / "memory_graph.json"),
+                              db_path=str(OUT_DIR / "graph.db"))
+        _store.replace_all(_graph_payload, dual_write_json=True)
+        _store.close()
+    except Exception as _e:
+        print(f"⚠️ graph_store persist failed ({_e}); falling back to raw JSON", file=sys.stderr)
+        (OUT_DIR / "memory_graph.json").write_text(
+            json.dumps(_graph_payload, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
 
     # Human-readable
     lines = [

@@ -23,13 +23,64 @@ _REPO_ROOT = _SCRIPT_DIR.parent
 GRAPH_PATH = _REPO_ROOT / "kb" / "memory_neuron" / "l2_graph" / "memory_graph.json"
 
 
+class _GraphView:
+    """Dict-compatible view over a graph_store backend. Exposes exactly the
+    .get("nodes"|"edges"|"relation_edges") + "in" surface graph_search uses, so
+    every existing call site (build_adjacency, find_clusters, cluster_drill,
+    collect_forward_refs, main) stays byte-identical while the underlying load
+    becomes indexed SQLite (auto-migrated). Hot-path node/edge lists are cached
+    lazily; a query that only needs a start node never materializes edges."""
+
+    def __init__(self, store):
+        self._s = store
+        self._cache = {}
+
+    def _mat(self, key):
+        if key not in self._cache:
+            if key == "nodes":
+                self._cache[key] = self._s.nodes()
+            elif key == "relation_edges":
+                self._cache[key] = self._s.relation_edges()
+            elif key == "edges":
+                self._cache[key] = self._s.edges()
+            else:
+                self._cache[key] = self._s.meta().get(key)
+        return self._cache[key]
+
+    def get(self, key, default=None):
+        val = self._mat(key)
+        return default if val is None else val
+
+    def __contains__(self, key):
+        # 'relation_edges' in graph gate: true when the graph has any (or the
+        # key exists in meta). Preserves has_relation_edges semantics.
+        if key in ("nodes", "edges", "relation_edges"):
+            return bool(self._mat(key))
+        return key in self._s.meta()
+
+
 def load_graph(graph_path: Path) -> dict:
-    if not graph_path.exists():
-        print(f"Error: Graph file not found at {graph_path}", file=sys.stderr)
+    # graph_store lives in ../procedures relative to this tools/ file.
+    sys.path.insert(0, str(_REPO_ROOT / "procedures"))
+    try:
+        import graph_store as _gstore
+    except Exception:
+        # hard fallback: raw JSON (keeps the tool working even if store import fails)
+        if not graph_path.exists():
+            print(f"Error: Graph file not found at {graph_path}", file=sys.stderr)
+            print("Run memory_graph.py to build the graph first.", file=sys.stderr)
+            sys.exit(1)
+        with open(graph_path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    # store selects SQLite (indexed) by default, auto-migrating from the JSON at
+    # graph_path on first run. json_path pinned to the CLI --graph path so a
+    # custom path still works; db sits beside it.
+    store = _gstore.open(json_path=str(graph_path))
+    if not store.nodes():
+        print(f"Error: Graph is empty (no nodes) at {graph_path}", file=sys.stderr)
         print("Run memory_graph.py to build the graph first.", file=sys.stderr)
         sys.exit(1)
-    with open(graph_path, "r", encoding="utf-8") as f:
-        return json.load(f)
+    return _GraphView(store)
 
 
 def find_start_node(graph: dict, query: str, threshold: float = 0.60) -> tuple[int, dict] | tuple[None, None]:
@@ -187,6 +238,45 @@ def bfs_traverse(
                     })
                     visited.add(tgt)
 
+    return results
+
+
+def indexed_bfs_traverse(start_idx, store, nodes, max_hops, min_confidence,
+                         scope_allow=None, as_of=None):
+    """BFS that expands each node via store.neighbors_filtered() (indexed) instead
+    of pre-building a full adjacency map over the whole edge list. Behaviorally
+    IDENTICAL to build_adjacency + bfs_traverse (same filters, same directed
+    relation / undirected similarity semantics, same visited-set dedup, same
+    field shape), but only touches the start node's N-hop neighborhood — so it
+    scales to graphs where loading every edge is prohibitive."""
+    visited = {start_idx}
+    queue = deque()
+    for edge in store.neighbors_filtered(start_idx, min_confidence, scope_allow, as_of):
+        tgt = edge["target"]
+        if tgt not in visited and 0 <= tgt < len(nodes):
+            queue.append({"idx": tgt, "hop": 1, "label": edge["label"],
+                          "confidence": edge["confidence"],
+                          "edge_type": edge["edge_type"], "via": start_idx})
+            visited.add(tgt)
+    results = []
+    while queue:
+        item = queue.popleft()
+        idx = item["idx"]; hop = item["hop"]
+        node = nodes[idx]
+        results.append({
+            "idx": idx, "hop": hop, "label": item["label"],
+            "confidence": item["confidence"], "edge_type": item["edge_type"],
+            "via": item["via"], "title": node.get("title", f"node_{idx}"),
+            "snippet": node.get("snippet", ""),
+        })
+        if hop < max_hops:
+            for edge in store.neighbors_filtered(idx, min_confidence, scope_allow, as_of):
+                tgt = edge["target"]
+                if tgt not in visited and 0 <= tgt < len(nodes):
+                    queue.append({"idx": tgt, "hop": hop + 1, "label": edge["label"],
+                                  "confidence": edge["confidence"],
+                                  "edge_type": edge["edge_type"], "via": idx})
+                    visited.add(tgt)
     return results
 
 
@@ -618,8 +708,19 @@ def main():
         sys.exit(0)
 
     _scope_allow = set(s.strip() for s in args.scope.split(",") if s.strip()) if args.scope else None
-    adj = build_adjacency(graph, args.min_confidence, scope_allow=_scope_allow, as_of=args.as_of)
-    results = bfs_traverse(start_idx, adj, nodes, args.hops)
+    # Indexed BFS when the graph is store-backed (_GraphView exposes ._s): expand
+    # each node via store.neighbors_filtered() (indexed SQL WHERE) so we only touch
+    # the start node's N-hop neighborhood, never the full edge list. Falls back to
+    # the classic build_adjacency + bfs_traverse for raw-JSON graphs. Both paths
+    # are byte-identical in output (verified against the claim-protocol anchor).
+    _store = getattr(graph, "_s", None)
+    if _store is not None and hasattr(_store, "neighbors_filtered"):
+        results = indexed_bfs_traverse(start_idx, _store, nodes, args.hops,
+                                       args.min_confidence, scope_allow=_scope_allow,
+                                       as_of=args.as_of)
+    else:
+        adj = build_adjacency(graph, args.min_confidence, scope_allow=_scope_allow, as_of=args.as_of)
+        results = bfs_traverse(start_idx, adj, nodes, args.hops)
 
     visited_idxs = {start_idx} | {r["idx"] for r in results}
     forward_refs = collect_forward_refs(graph, visited_idxs, nodes)

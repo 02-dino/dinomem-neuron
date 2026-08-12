@@ -520,7 +520,7 @@ py_can_import pandas && skip "pandas (installed)" || (
   pip_install pandas && ok "pandas" || warn "pandas install failed"
 )
 py_can_import duckdb && skip "duckdb (installed)" || (
-  pip_install duckdb && ok "duckdb" || warn "duckdb install failed (structured_data feature unavailable; semantic tools unaffected)"
+  pip_install duckdb && ok "duckdb" || warn "duckdb install failed — data_query / structured-data feature OFFLINE (semantic tools unaffected; loud recap below)"
 )
 py_can_import yaml && skip "pyyaml (installed)" || (
   pip_install pyyaml && ok "pyyaml" || warn "pyyaml install failed"
@@ -528,6 +528,65 @@ py_can_import yaml && skip "pyyaml (installed)" || (
 py_can_import googleapiclient && skip "google-api-python-client (installed)" || (
   pip_install google-api-python-client google-auth google-auth-oauthlib google-auth-httplib2 && ok "google-api-python-client" || warn "google-api-python-client install failed"
 )
+
+# ── spaCy (SVO relation-mining) — MINIMUM-gated auto-install, no user choice ────
+# spaCy + en_core_web_sm powers the memory graph's SVO layer: verb-typed
+# subject->object relation edges auto-mined from memory prose (e.g. "X acquired
+# Y" -> a typed 'acquire' edge), enriching graph_search's relational leg
+# (why/led-to/affects/trace). The graph is FULLY FUNCTIONAL without it (similarity
+# + explicit [relation] edges); SVO is an ENRICHMENT of one leg.
+#
+# GATE PHILOSOPHY (two-tier — MINIMUM decides install, RECOMMENDED only informs):
+#   * MINIMUM (hard): "can it even run?" spaCy loads en_core_web_sm in ~200MB on
+#     1 core — so anything that runs the base clears this. We only HARD-SKIP on a
+#     genuinely tiny box (< SPACY_MIN_RAM_MB) where the model load would fight the
+#     graph build for RAM. RAM is the real can-it-load axis.
+#   * RECOMMENDED (soft, informational): "will it be slow?" SVO parse is single-
+#     threaded per doc; with < SPACY_REC_CPU cores rebuilds take extra minutes.
+#     We STILL INSTALL, but print a stated note so the noob isn't surprised by
+#     slower cron/reset rebuilds. Cores decide the note, NOT the install.
+# Net: install-by-default wherever it can run; note-if-slow; hard-skip only on
+# tiny-RAM. No flag, no prompt. TOTAL_RAM_MB / CPU_COUNT come from preflight.
+SPACY_MIN_RAM_MB=2048     # hard floor: below this, model load competes with graph build -> skip
+SPACY_REC_CPU=3           # recommended cores: below this, install anyway + slow-rebuild note
+_spacy_slow_note() {
+  if [ "${CPU_COUNT:-0}" -gt 0 ] && [ "${CPU_COUNT:-0}" -lt "$SPACY_REC_CPU" ]; then
+    warn "  note: ${CPU_COUNT}-core host is below the recommended ${SPACY_REC_CPU} cores for SVO — graph rebuilds will be slower (single-threaded parse). Runs on cron/reset, so interactive use is unaffected."
+  fi
+}
+if py_can_import spacy && "$PY" -c "import spacy; spacy.load('en_core_web_sm')" >/dev/null 2>&1; then
+  skip "spacy + en_core_web_sm (installed) — SVO relation-mining ON"
+  _spacy_slow_note
+elif [ "${TOTAL_RAM_MB:-0}" -gt 0 ] && [ "${TOTAL_RAM_MB:-0}" -lt "$SPACY_MIN_RAM_MB" ]; then
+  # Below the HARD RAM minimum -> genuinely can't run comfortably; skip w/ reason.
+  skip "spacy — SVO OFF: host ${TOTAL_RAM_MB}MB below hard minimum ${SPACY_MIN_RAM_MB}MB (model load would fight the graph build). Graph fully functional without it."
+else
+  # Clears the hard minimum (or RAM unknown) -> INSTALL BY DEFAULT. Slow-rebuild
+  # note fires separately if cores are below the recommended bar.
+  if pip_install spacy; then
+    # Install the MODEL through pip_install (NOT `spacy download`) so it inherits
+    # the PEP-668 --break-system-packages fallback + retry loop. `spacy download`
+    # bypasses pip_install and hard-fails on externally-managed hosts / flaky nets
+    # (verified live 2026-08-12: PEP 668 blocked it; RemoteDisconnected reset it).
+    # en_core_web_sm is NOT on PyPI -> install from spaCy's release wheel URL, tag
+    # matched to the installed spaCy major.minor (models track spaCy's X.Y line).
+    _spacy_xy="$("$PY" -c 'import spacy;print(".".join(spacy.__version__.split(".")[:2]))' 2>/dev/null)"
+    _model_ver="${_spacy_xy:-3.8}.0"
+    _model_whl="https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-${_model_ver}/en_core_web_sm-${_model_ver}-py3-none-any.whl"
+    if pip_install "$_model_whl" && "$PY" -c "import spacy; spacy.load('en_core_web_sm')" >/dev/null 2>&1; then
+      ok "spacy + en_core_web_sm (${_model_ver}) — SVO relation-mining ON"
+      _spacy_slow_note
+    elif pip_install en_core_web_sm && "$PY" -c "import spacy; spacy.load('en_core_web_sm')" >/dev/null 2>&1; then
+      # Fallback: some spaCy versions publish the model as a plain pip name too.
+      ok "spacy + en_core_web_sm — SVO relation-mining ON"
+      _spacy_slow_note
+    else
+      warn "spacy installed but en_core_web_sm model did not install — SVO stays OFF. Fix: $PY -m pip install $_model_whl  (add --break-system-packages if PEP-668)"
+    fi
+  else
+    warn "spacy install failed — SVO relation-mining OFF (graph still works on similarity + explicit relations)"
+  fi
+fi
 
 # ── HARD post-install assertion: the langchain trio GATES the KB-search tools ──
 # These are NOT a nicety — docs_search / session_search / semantic_search (and
@@ -550,6 +609,50 @@ if [ -n "$KB_DEPS_MISSING" ]; then
   echo "     If that errors with 'externally-managed-environment', append: --break-system-packages"
   echo "     Then re-run this installer (idempotent) to finish wiring the KB tools."
   echo ""
+fi
+
+# ── HARD post-install assertion: duckdb GATES data_query (structured-data SQL) ──
+# Same principle as the KB trio: a feature that legit can't run without its dep
+# must not fail SILENTLY. duckdb was Tier-B (buried one-line warn); promote it to
+# a loud, named, copy-paste-fixable recap so the noob knows data_query is OFFLINE
+# and how to fix it, instead of hitting an import error later with no context.
+if ! py_can_import duckdb; then
+  echo ""
+  printf '  \033[1;33m⚠ data_query is OFFLINE — duckdb did not install.\033[0m\n'
+  echo "     Affected (will error until fixed): data_query (structured CSV/JSON/parquet SQL)"
+  echo "     (+ its ingest: data_register). memory_search / graph_search / KB tools are UNAFFECTED."
+  printf '     \033[1mFix (copy-paste):\033[0m %s -m pip install duckdb\n' "$PY"
+  echo "     If that errors with 'externally-managed-environment', append: --break-system-packages"
+  echo "     Then re-run this installer (idempotent)."
+  echo ""
+fi
+
+# ── spaCy SVO recap: STATE its status (installed / off-by-spec / failed) ───────
+# SVO is an ENRICHMENT (graph works without it), so a missing spaCy is NOT a
+# broken promise the way duckdb/KB are — but silent-nothing still leaves the noob
+# guessing why their relational recall is thinner. So we STATE the outcome either
+# way: ON (installed), OFF-by-design (below the hard RAM minimum, intentional), or
+# FAILED (cleared the minimum but pip/model download broke -> here's the fix).
+if py_can_import spacy && "$PY" -c "import spacy; spacy.load('en_core_web_sm')" >/dev/null 2>&1; then
+  : # ON — already surfaced via ok/skip in the dep pass; no recap needed.
+elif [ "${TOTAL_RAM_MB:-0}" -gt 0 ] && [ "${TOTAL_RAM_MB:-0}" -lt "${SPACY_MIN_RAM_MB:-2048}" ]; then
+  : # OFF-by-design (below hard RAM minimum) — already stated via skip in the dep pass; intentional, no error recap.
+else
+  # Cleared the hard RAM minimum (or RAM unknown) yet spaCy still isn't importable
+  # -> a real install FAILURE. Under the two-tier gate, few-cores does NOT skip the
+  # install (it installs + notes slow rebuilds), so a not-importable spaCy here is a
+  # genuine pip/model break, not a spec decision.
+  if ! (py_can_import spacy && "$PY" -c "import spacy; spacy.load('en_core_web_sm')" >/dev/null 2>&1); then
+  echo ""
+  printf '  \033[1;33m⚠ SVO relation-mining is OFF — spaCy cleared the spec gate but did not install.\033[0m\n'
+  echo "     Impact: graph_search's relational leg (why/led-to/affects/trace) is THINNER"
+  echo "     (auto-mined verb-typed relation edges absent). Similarity + explicit relations UNAFFECTED."
+  printf '     \033[1mFix (copy-paste):\033[0m %s -m pip install spacy && %s -m pip install "$_model_whl"\n' "$PY" "$PY"
+  echo "     If pip errors with 'externally-managed-environment', append --break-system-packages to each pip step."
+  echo "     (Model is NOT on PyPI; install it from spaCy's release wheel URL, not 'spacy download'.)"
+  echo "     Then re-run this installer (idempotent)."
+  echo ""
+  fi
 fi
 
 # ── 1) Create directories ─────────────────────────────────────────────────────
@@ -598,7 +701,7 @@ hr "Copying scripts"
 # The scripts/*.sh + resolve_done_notes.py + distill_done_note.py helpers are the
 # cron targets referenced in the cron prompts; without them a fresh neuron install
 # registers crons whose scripts are missing (Step-0 pre-gate fails).
-for f in procedures/extract_memory.py procedures/memory_graph.py procedures/memory_synthesis.py procedures/memory_promote.py procedures/contradiction_check.py procedures/confidence_engine.py procedures/lifecycle_state.py procedures/explain_memory.py procedures/generate_topic_index.py procedures/docs_ingest.py procedures/pdf_visual_probe.py procedures/session_ingest.py procedures/_schema_adapter.py procedures/_cheap_model.py procedures/valid_time.py procedures/data_register.py tools/docs_search.py tools/session_search.py tools/graph_search.py tools/fact_query.py tools/hybrid_recall.py tools/cache_utils.py tools/data_query.py scripts/claim_note.sh scripts/check_projects.sh scripts/check_improvable.sh scripts/check_deletable.sh scripts/check_ideator.sh scripts/cron_gate.sh scripts/resolve_done_notes.py scripts/distill_done_note.py; do
+for f in procedures/extract_memory.py procedures/memory_graph.py procedures/graph_store.py procedures/graph_store_test.py procedures/memory_synthesis.py procedures/memory_promote.py procedures/contradiction_check.py procedures/confidence_engine.py procedures/lifecycle_state.py procedures/explain_memory.py procedures/generate_topic_index.py procedures/docs_ingest.py procedures/pdf_visual_probe.py procedures/session_ingest.py procedures/_schema_adapter.py procedures/_cheap_model.py procedures/valid_time.py procedures/data_register.py tools/docs_search.py tools/session_search.py tools/graph_search.py tools/fact_query.py tools/hybrid_recall.py tools/cache_utils.py tools/data_query.py scripts/claim_note.sh scripts/check_projects.sh scripts/check_improvable.sh scripts/check_deletable.sh scripts/check_ideator.sh scripts/cron_gate.sh scripts/resolve_done_notes.py scripts/distill_done_note.py; do
   dst="$WS/$f"
   # extract_memory.py is the neuron superset over base's copy — always overwrite it,
   # even without --force, or the upgrade ships base's older engine.
