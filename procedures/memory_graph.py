@@ -345,7 +345,7 @@ def extract_entity_nodes(memory_dir):
     return sorted(seen.values(), key=lambda x: x["mentions"], reverse=True)
 
 
-def extract_relation_edges(memory_dir, nodes):
+def extract_relation_edges(memory_dir, nodes, entity_nodes=None):
     """Scan memory/*.md for [relation] lines and build typed edges.
 
     Returns list of relation edge dicts:
@@ -353,8 +353,19 @@ def extract_relation_edges(memory_dir, nodes):
        "confidence": 0.9, "subject": str, "object": str}
     Unmatched subjects/objects are returned as forward references with node_idx=-1.
     Also runs spaCy SVO extraction if SPACY_AVAILABLE (confidence 0.6).
+
+    P2: relation endpoints resolve through ENTITY NAMES, not the chunk node_texts. Relation
+    subjects/objects are SHORT strings (e.g. a filename, a short label); they cannot reach the
+    MATCH_THRESHOLD SequenceMatcher ratio against a long `title+snippet` node_text, so matching
+    vs chunk-texts leaves every edge at a=-1/b=-1 (endpoint-less, unwalkable). We instead match
+    each endpoint against the SHORT entity NAMES, then map the winning entity to its
+    representative nodes[] index via `entity_nodes[i]["node_idx"]` (the backref build_graph
+    stamps = the entity's best-matching chunk). This keeps a/b VALID nodes[] indices, so
+    graph_search's existing reader traverses them unchanged. Fail-open: no entity_nodes / no
+    node_idx -> fall back to the legacy chunk fuzzy scan (old a=-1 behavior, nothing regresses).
     """
     from difflib import SequenceMatcher
+    entity_nodes = entity_nodes or []
 
     RELATION_RE = re.compile(
         r'^\[relation\]\s*(.+?)\s*\u2192\s*(.+?)\s*\u2192\s*(.+?)\s*$'
@@ -417,20 +428,20 @@ def extract_relation_edges(memory_dir, nodes):
         cut = len(term_lower) + 30
         sm = SequenceMatcher(None, term_lower, "")
         best_idx, best_score = -1, 0.0
-        # Length-feasible band for the threshold. A node's effective compared length is
-        # min(len(nt), cut); ratio upper bound vs a length-L term is 2*min(L,eff)/(L+eff),
-        # which is >= _MATCH_THRESHOLD only for eff in [~0.538L, ~1.857L] (at 0.70). Bucket
-        # key is RAW node length; long nodes capped to `cut` still have eff<=cut, so widen
-        # the high bound to cut to stay conservative (never drop a feasible node).
+        # Length-feasible band. EFFECTIVE compared length of a node is eff = min(len(nt), cut).
+        # ratio upper bound vs a length-L term is 2*min(L,eff)/(L+eff), which is >= _MATCH_THRESHOLD
+        # only when eff >= L*r/(2-r). BUGFIX: the old band ALSO imposed an UPPER bound on RAW node
+        # length and pruned any node longer than it. That was wrong: a long node is capped to `cut`
+        # chars, so its eff = cut = L+30 (> L) is ALWAYS feasible -- the upper bound incorrectly
+        # excluded EVERY long chunk-text for a short term, returning -1 where the naive full scan
+        # finds a real best. Correct band keeps ONLY the lower bound (eff = min(rl,cut); since cut is
+        # always feasible, eff<lo iff rl<lo). Byte-identical to the naive scan.
         L = len(term_lower)
         _r = _MATCH_THRESHOLD
         lo = int(L * _r / (2 - _r))
-        hi = max(int(L * (2 - _r) / _r) + 1, cut)
         _lidx = _bisect.bisect_left(_bucket_lengths, lo)
         _candidate_idxs = []
         for _bl in _bucket_lengths[_lidx:]:
-            if _bl > hi:
-                break
             _candidate_idxs.extend(_len_buckets[_bl])
         for idx in _candidate_idxs:
             nt = node_texts[idx]
@@ -454,6 +465,59 @@ def extract_relation_edges(memory_dir, nodes):
         forms collapse to one node; identical (idx, score) to matching the raw term when the
         resolver is unavailable."""
         return fuzzy_match_node(_canon(term, _alias_map))
+
+    # ── P2: entity-name endpoint resolver (the walkability fix) ──
+    #    Build (entity_name_lower -> representative nodes[] idx) from the node_idx backrefs
+    #    build_graph stamps on each entity_node. Also index by surface_forms so aliased variants
+    #    resolve. match_endpoint_entity fuzzy-matches the (canonicalized) term against the SHORT
+    #    entity names (not the chunk node_texts) and returns that entity's representative nodes[]
+    #    idx when score>=_MATCH_THRESHOLD. This is what turns a=-1/b=-1 into walkable endpoints.
+    #    Deterministic / T1 / $0. Fail-open: no entity map -> legacy chunk matcher (old behavior).
+    _ent_name_to_nodeidx = {}
+    _ent_names = []
+    for _ent in entity_nodes:
+        _nidx = _ent.get("node_idx", -1)
+        if _nidx is None or _nidx < 0:
+            continue
+        for _form in ([_ent.get("name", "")] + list(_ent.get("surface_forms", []))):
+            _k = (_form or "").lower().strip()
+            if _k and _k not in _ent_name_to_nodeidx:
+                _ent_name_to_nodeidx[_k] = _nidx
+                _ent_names.append(_k)
+    _ent_match_cache = {}
+
+    def match_endpoint_entity(term):
+        """Resolve a relation endpoint to a representative nodes[] idx by matching the CANONICAL
+        term against short entity names. Returns (node_idx, score). Falls back to the legacy chunk
+        matcher (match_endpoint) only when no entity map is available."""
+        if not _ent_name_to_nodeidx:
+            return match_endpoint(term)   # fail-open: legacy behavior (a=-1 as before)
+        canon = (_canon(term, _alias_map) or "").lower().strip()
+        if not canon:
+            return (-1, 0.0)
+        cached = _ent_match_cache.get(canon)
+        if cached is not None:
+            return cached
+        exact = _ent_name_to_nodeidx.get(canon)   # exact-name O(1) hit first
+        if exact is not None:
+            res = (exact, 1.0)
+            _ent_match_cache[canon] = res
+            return res
+        best_name, best_score = None, 0.0        # else fuzzy over the SHORT entity-name list
+        sm = SequenceMatcher(None, canon, "")
+        for nm in _ent_names:
+            sm.set_seq2(nm)
+            if sm.real_quick_ratio() <= best_score:
+                continue
+            s = sm.ratio()
+            if s > best_score:
+                best_score, best_name = s, nm
+        if best_name is not None and best_score >= _MATCH_THRESHOLD:
+            res = (_ent_name_to_nodeidx[best_name], round(best_score, 4))
+        else:
+            res = (-1, round(best_score, 4))
+        _ent_match_cache[canon] = res
+        return res
 
     # ── P0-b fact-graph enrichment (HARMONIZED with neuron's existing mechanisms) ──
     # DEEP-UNDERSTANDING NOTE (2026-08-11): neuron ALREADY has a record-time + confidence
@@ -520,9 +584,10 @@ def extract_relation_edges(memory_dir, nodes):
             verb = m.group(2).strip()
             obj = m.group(3).strip()
 
-            # P1: match on the CANONICAL form so aliased endpoints collapse to one node.
-            idx_a, score_a = match_endpoint(subject)
-            idx_b, score_b = match_endpoint(obj)
+            # P2: resolve endpoints via short entity NAMES -> representative nodes[] idx
+            # (makes edges walkable). Fail-open to legacy chunk matcher inside match_endpoint_entity.
+            idx_a, score_a = match_endpoint_entity(subject)
+            idx_b, score_b = match_endpoint_entity(obj)
 
             matched_a = score_a >= 0.70
             matched_b = score_b >= 0.70
@@ -556,9 +621,9 @@ def extract_relation_edges(memory_dir, nodes):
                                 subj_text = subj.text
                                 obj_text = obj.text
                                 verb_text = token.lemma_
-                                # P1: canonicalize spaCy SVO endpoints too.
-                                idx_a, score_a = match_endpoint(subj_text)
-                                idx_b, score_b = match_endpoint(obj_text)
+                                # P2: spaCy SVO endpoints via entity-name resolver too.
+                                idx_a, score_a = match_endpoint_entity(subj_text)
+                                idx_b, score_b = match_endpoint_entity(obj_text)
                                 if score_a >= 0.70 and score_b >= 0.70:
                                     relation_edges.append(_enrich({
                                         "type": "relation",
@@ -821,11 +886,11 @@ def main():
         forward_refs = find_forward_refs(chunks, nodes)
         write_forward_refs_md(forward_refs, FORWARD_REFS_FILE, now)
 
-    # Relation edges from explicit [relation] lines + spaCy SVO
+    # Entity nodes from explicit [entity] lines + entity→chunk edges.
+    # NOTE: built BEFORE relation edges — P2 needs each entity's representative nodes[] idx
+    # (node_idx backref) so extract_relation_edges can resolve short entity-name endpoints to a
+    # VALID nodes[] index (graph_search walks nodes[], not entity_nodes[]).
     memory_dir = _WS / "memory"
-    relation_edges = extract_relation_edges(memory_dir, nodes)
-
-    # Entity nodes from explicit [entity] lines + entity→chunk edges
     entity_nodes = extract_entity_nodes(memory_dir)
     entity_edges = []
     if entity_nodes and nodes:
@@ -834,8 +899,20 @@ def main():
             (n["title"] + " " + n["snippet"]).lower()
             for n in nodes
         ]
+        # P2: node_idx backref via SUBSTRING CONTAINMENT, not ratio. An entity NAME is a tiny
+        # fraction of a long title+snippet, so SequenceMatcher.ratio() tops out well below
+        # threshold -> ratio can NEVER pick a representative chunk. Containment is the right
+        # relation: the representative chunk is one whose text CONTAINS the entity name. Pick the
+        # highest-degree containing chunk (most central mention); -1 if the name never appears
+        # verbatim (honestly unmatchable -> those relation endpoints stay a=-1 as before).
+        # entity_edges kept on the OLD ratio>=0.75 rule so that legacy consumer is unchanged.
         for ent in entity_nodes:
             name_lower = ent["name"].lower()
+            containing = [i for i, nt in enumerate(node_texts) if name_lower in nt]
+            if containing:
+                ent["node_idx"] = max(containing, key=lambda i: nodes[i].get("degree", 0))
+            else:
+                ent["node_idx"] = -1
             for idx, nt in enumerate(node_texts):
                 score = SequenceMatcher(None, name_lower, nt[:len(name_lower) + 30]).ratio()
                 if score >= 0.75:
@@ -845,6 +922,10 @@ def main():
                         "node_idx": idx,
                         "confidence": 0.85,
                     })
+
+    # Relation edges from explicit [relation] lines + spaCy SVO.
+    # P2: endpoints resolve through entity NAMES -> entity.node_idx (valid nodes[] index).
+    relation_edges = extract_relation_edges(memory_dir, nodes, entity_nodes)
 
     (OUT_DIR / "memory_graph.json").write_text(
         json.dumps(
