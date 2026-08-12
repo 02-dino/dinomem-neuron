@@ -523,34 +523,70 @@ def build_graph(chunks, topk, threshold, cross_file_only, mutual=False):
     nz = norms[:, 0] > 0
     Mn = np.zeros_like(M)
     Mn[nz] = M[nz] / norms[nz]
+    paths = np.array([c["path"] for c in chunks]) if cross_file_only else None
 
-    # Full cosine matrix in one BLAS call, then exclude self-pairs.
-    S = Mn @ Mn.T
-    np.fill_diagonal(S, -np.inf)
+    # ── RESOURCE-AWARE ROW-BATCHING (fixes the O(n^2)-RAM OOM) ──
+    # The old path built the FULL n×n cosine matrix (S = Mn @ Mn.T) plus, for
+    # cross-file, a SECOND n×n boolean mask — ~n^2*8 + n^2 bytes held at once.
+    # Fine at a few-thousand-chunk corpus (~tens of MB); past ~10k chunks that's
+    # >1 GB PER matrix and OOM-kills on small hosts. Installers run on wildly
+    # different hardware, so instead of assuming RAM is big enough we STREAM rows
+    # in blocks: each block computes only (B × n) similarities -> peak RAM O(B·n)
+    # not O(n²), producing a BYTE-IDENTICAL edge set (same pairs, sims, ranks,
+    # tie-breaks). Batch size auto-scales to available RAM (checks the hardware),
+    # override with env DINOMEM_GRAPH_BATCH=<rows> for tiny/huge hosts.
+    def _avail_bytes():
+        try:  # linux: read MemAvailable, no psutil dep
+            for ln in open("/proc/meminfo"):
+                if ln.startswith("MemAvailable:"):
+                    return int(ln.split()[1]) * 1024
+        except Exception:
+            pass
+        return 1 << 30  # conservative 1 GB fallback (non-Linux / unreadable)
+    bytes_per_row = n * 8  # one float64 similarity row
+    budget = int(_avail_bytes() * 0.25)  # use at most 1/4 of free RAM for the block
+    batch = max(64, min(2048, budget // max(bytes_per_row, 1)))
+    _ov = _os.environ.get("DINOMEM_GRAPH_BATCH")
+    if _ov:
+        try:
+            batch = max(1, min(n, int(_ov)))
+        except ValueError:
+            pass
+    est_full = n * n * 8 / 1e9
+    print(f"[graph] {n} chunks | full-matrix would need ~{est_full:.2f} GB; "
+          f"row-batching at B={batch} (peak ~{batch*bytes_per_row/1e6:.0f} MB). "
+          f"avail~{_avail_bytes()/1e9:.1f} GB", file=sys.stderr)
 
-    # cross-file: forbid same-path pairs by driving their sim to -inf so they can
-    # never be selected as neighbours (equivalent to the old `continue`).
-    if cross_file_only:
-        paths = np.array([c["path"] for c in chunks])
-        S = np.where(paths[:, None] == paths[None, :], -np.inf, S)
-
-    # Pass 1: per-node top-k neighbour sets + 1-based ranks. lexsort with
-    # primary key -sim and secondary key j reproduces the old ordering exactly
-    # (value desc; stable ascending-j tie-break).
+    # Pass 1 (batched): per-node top-k neighbour sets + 1-based ranks + the sim of
+    # each kept neighbour (stashed so Pass 2 never needs the full matrix). lexsort
+    # with primary key -sim, secondary key j reproduces the old ordering exactly.
     topk_sets = [set() for _ in range(n)]
     rank_of = [dict() for _ in range(n)]
-    for i in range(n):
-        row = S[i]
-        elig = np.where(row >= threshold)[0]
-        if elig.size == 0:
-            continue
-        order = np.lexsort((elig, -row[elig]))
-        top = elig[order][:topk]
-        topk_sets[i] = {int(j) for j in top}
-        for r, j in enumerate(top, start=1):
-            rank_of[i][int(j)] = r
+    sim_of = [dict() for _ in range(n)]  # (i -> {j: cosine}) for kept neighbours only
+    for start in range(0, n, batch):
+        stop = min(start + batch, n)
+        Sb = Mn[start:stop] @ Mn.T  # (b, n) block — the only large temp
+        for r in range(stop - start):  # self-pairs: exclude column i in row (start+r)
+            Sb[r, start + r] = -np.inf
+        if cross_file_only:  # same-path pairs -> -inf (never selected), block-local
+            Sb[paths[start:stop][:, None] == paths[None, :]] = -np.inf
+        for r in range(stop - start):
+            i = start + r
+            row = Sb[r]
+            elig = np.where(row >= threshold)[0]
+            if elig.size == 0:
+                continue
+            order = np.lexsort((elig, -row[elig]))
+            top = elig[order][:topk]
+            topk_sets[i] = {int(j) for j in top}
+            for rank, j in enumerate(top, start=1):
+                j = int(j)
+                rank_of[i][j] = rank
+                sim_of[i][j] = float(row[j])  # exact cosine for this kept pair
+        del Sb
 
-    # Pass 2: assemble edges (identical logic to the scalar version).
+    # Pass 2: assemble edges (identical logic; sim comes from the stashed dict,
+    # which holds the SAME raw cosine the old S[a,b] lookup returned).
     edges = {}
     for i in range(n):
         for j in topk_sets[i]:
@@ -561,8 +597,8 @@ def build_graph(chunks, topk, threshold, cross_file_only, mutual=False):
                 continue
             inv = [1.0 / r for r in (rank_of[i].get(j), rank_of[j].get(i)) if r]
             rank_strength = sum(inv) / len(inv) if inv else 0.0
-            # S[a, b] is the raw cosine for a kept pair (never diagonal / masked).
-            edges[(a, b)] = {"sim": float(S[a, b]), "rank_strength": round(rank_strength, 4)}
+            sim = sim_of[i].get(j, sim_of[j].get(i))
+            edges[(a, b)] = {"sim": float(sim), "rank_strength": round(rank_strength, 4)}
     return edges
 
 
