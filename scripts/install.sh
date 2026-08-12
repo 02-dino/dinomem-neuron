@@ -598,7 +598,7 @@ hr "Copying scripts"
 # The scripts/*.sh + resolve_done_notes.py + distill_done_note.py helpers are the
 # cron targets referenced in the cron prompts; without them a fresh neuron install
 # registers crons whose scripts are missing (Step-0 pre-gate fails).
-for f in procedures/extract_memory.py procedures/memory_graph.py procedures/memory_synthesis.py procedures/memory_promote.py procedures/contradiction_check.py procedures/generate_topic_index.py procedures/docs_ingest.py procedures/pdf_visual_probe.py procedures/session_ingest.py procedures/_schema_adapter.py procedures/_cheap_model.py procedures/valid_time.py procedures/data_register.py tools/docs_search.py tools/session_search.py tools/graph_search.py tools/fact_query.py tools/hybrid_recall.py tools/cache_utils.py tools/data_query.py scripts/claim_note.sh scripts/check_projects.sh scripts/check_improvable.sh scripts/check_deletable.sh scripts/check_ideator.sh scripts/cron_gate.sh scripts/resolve_done_notes.py scripts/distill_done_note.py; do
+for f in procedures/extract_memory.py procedures/memory_graph.py procedures/memory_synthesis.py procedures/memory_promote.py procedures/contradiction_check.py procedures/confidence_engine.py procedures/generate_topic_index.py procedures/docs_ingest.py procedures/pdf_visual_probe.py procedures/session_ingest.py procedures/_schema_adapter.py procedures/_cheap_model.py procedures/valid_time.py procedures/data_register.py tools/docs_search.py tools/session_search.py tools/graph_search.py tools/fact_query.py tools/hybrid_recall.py tools/cache_utils.py tools/data_query.py scripts/claim_note.sh scripts/check_projects.sh scripts/check_improvable.sh scripts/check_deletable.sh scripts/check_ideator.sh scripts/cron_gate.sh scripts/resolve_done_notes.py scripts/distill_done_note.py; do
   dst="$WS/$f"
   # extract_memory.py is the neuron superset over base's copy — always overwrite it,
   # even without --force, or the upgrade ships base's older engine.
@@ -745,8 +745,12 @@ if [ "$DO_CRON" = 1 ]; then
   upsert_cron "memory_graph.py" "dinomem-neuron: L2 graph linking" "$GRAPH_CRON" "memory_graph cron (daily 3:00 UTC)"
 
   # memory_synthesis + contradiction_check — daily at 3:30 UTC (L3, reasoning=True)
-  SYNTH_CRON="30 3 * * * cd $WS && ${REASON_ENV}python3 procedures/memory_synthesis.py >> logs/memory_synthesis.log 2>&1 && ${REASON_ENV}python3 procedures/contradiction_check.py >> logs/contradiction_check.log 2>&1"
-  upsert_cron "memory_synthesis.py" "dinomem-neuron: L3 synthesis + contradiction check" "$SYNTH_CRON" "memory_synthesis + contradiction_check cron (daily 3:30 UTC)"
+  # confidence_engine (P1 #1, no-LLM calibration) runs AFTER synthesis writes
+  # current_insights.json and AFTER contradiction_check, BEFORE the weekly promote
+  # reads it — so the gate inherits calibrated confidence with zero downstream
+  # change. Chained into the same daily L3 run; pure bookkeeping, cannot OOM.
+  SYNTH_CRON="30 3 * * * cd $WS && ${REASON_ENV}python3 procedures/memory_synthesis.py >> logs/memory_synthesis.log 2>&1 && ${REASON_ENV}python3 procedures/contradiction_check.py >> logs/contradiction_check.log 2>&1 && python3 procedures/confidence_engine.py >> logs/confidence_engine.log 2>&1"
+  upsert_cron "memory_synthesis.py" "dinomem-neuron: L3 synthesis + contradiction check + calibration" "$SYNTH_CRON" "memory_synthesis + contradiction_check + confidence_engine cron (daily 3:30 UTC)"
 
   # memory_promote (no LLM) + generate_topic_index (no-reasoning) — weekly Sun 4:00 UTC (L4)
   PROMOTE_CRON="0 4 * * 0 cd $WS && python3 procedures/memory_promote.py >> logs/memory_promote.log 2>&1 && ${CHEAP_ENV}python3 procedures/generate_topic_index.py >> logs/topic_index.log 2>&1"
