@@ -1,0 +1,2 @@
+# latency_cost: a routine fact lookup must return within a latency + subprocess budget.
+{"id": "cost-simple-fact", "query": "Project Atlas current lead", "intent_hint": "fact", "budget_latency_s": 45, "budget_calls": 3}

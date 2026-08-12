@@ -1,0 +1,538 @@
+{
+  "configs": [
+    "base",
+    "neuron"
+  ],
+  "results": {
+    "base": {
+      "pass": 13,
+      "fail": 10,
+      "skip": 0,
+      "cases": [
+        {
+          "id": "temporal-lead-jan",
+          "scenario": "temporal",
+          "ok": false,
+          "detail": "LEAKED=['lead is Carol', 'lead is Bob']",
+          "latency_s": 0.002,
+          "calls": 1
+        },
+        {
+          "id": "temporal-lead-apr",
+          "scenario": "temporal",
+          "ok": false,
+          "detail": "LEAKED=['lead is Carol', 'lead is Alice']",
+          "latency_s": 0.001,
+          "calls": 1
+        },
+        {
+          "id": "temporal-lead-now",
+          "scenario": "temporal",
+          "ok": false,
+          "detail": "LEAKED=['lead is Alice', 'lead is Bob']",
+          "latency_s": 0.002,
+          "calls": 1
+        },
+        {
+          "id": "contra-db-current",
+          "scenario": "contradiction",
+          "ok": true,
+          "detail": "ok",
+          "latency_s": 0.001,
+          "calls": 1
+        },
+        {
+          "id": "contra-db-asof-early",
+          "scenario": "contradiction",
+          "ok": true,
+          "detail": "ok",
+          "latency_s": 0.001,
+          "calls": 1
+        },
+        {
+          "id": "hop-api-to-latency",
+          "scenario": "multi_hop",
+          "ok": true,
+          "detail": "ok",
+          "latency_s": 0.002,
+          "calls": 1
+        },
+        {
+          "id": "hop-cache-to-latency",
+          "scenario": "multi_hop",
+          "ok": true,
+          "detail": "ok",
+          "latency_s": 0.001,
+          "calls": 1
+        },
+        {
+          "id": "entity-bob-robert",
+          "scenario": "entity_res",
+          "ok": true,
+          "detail": "ok",
+          "latency_s": 0.002,
+          "calls": 1
+        },
+        {
+          "id": "entity-rchen",
+          "scenario": "entity_res",
+          "ok": true,
+          "detail": "ok",
+          "latency_s": 0.001,
+          "calls": 1
+        },
+        {
+          "id": "noise-lead",
+          "scenario": "noise_resistance",
+          "ok": true,
+          "detail": "ok",
+          "latency_s": 0.001,
+          "calls": 1
+        },
+        {
+          "id": "noise-db",
+          "scenario": "noise_resistance",
+          "ok": true,
+          "detail": "ok",
+          "latency_s": 0.001,
+          "calls": 1
+        },
+        {
+          "id": "long-v1",
+          "scenario": "longitudinal",
+          "ok": false,
+          "detail": "LEAKED=['lead is Bob', 'lead is Carol']",
+          "latency_s": 0.002,
+          "calls": 1
+        },
+        {
+          "id": "long-v2",
+          "scenario": "longitudinal",
+          "ok": false,
+          "detail": "LEAKED=['lead is Alice', 'lead is Carol']",
+          "latency_s": 0.002,
+          "calls": 1
+        },
+        {
+          "id": "long-v3",
+          "scenario": "longitudinal",
+          "ok": false,
+          "detail": "LEAKED=['lead is Alice', 'lead is Bob']",
+          "latency_s": 0.001,
+          "calls": 1
+        },
+        {
+          "id": "fp-budget-rumor",
+          "scenario": "false_promotion",
+          "ok": true,
+          "detail": "ok",
+          "latency_s": 0.001,
+          "calls": 1
+        },
+        {
+          "id": "beh-report-format",
+          "scenario": "behavior",
+          "ok": true,
+          "detail": "ok",
+          "latency_s": 0.001,
+          "calls": 1
+        },
+        {
+          "id": "rec-status-current",
+          "scenario": "recovery",
+          "ok": true,
+          "detail": "ok",
+          "latency_s": 0.001,
+          "calls": 1
+        },
+        {
+          "id": "rec-status-asof-wrongwindow",
+          "scenario": "recovery",
+          "ok": true,
+          "detail": "ok",
+          "latency_s": 0.002,
+          "calls": 1
+        },
+        {
+          "id": "leak-salary-scoped",
+          "scenario": "privacy_leak",
+          "ok": false,
+          "detail": "LEAKED=['confidential-xyz-123']",
+          "latency_s": 0.001,
+          "calls": 1
+        },
+        {
+          "id": "cost-simple-fact",
+          "scenario": "latency_cost",
+          "ok": true,
+          "detail": "latency=0.002s/45s calls=1/3",
+          "latency_s": 0.002,
+          "calls": 1
+        },
+        {
+          "id": "sql-filter-row",
+          "scenario": "structured_query",
+          "ok": false,
+          "detail": "missing=['Carol']",
+          "latency_s": 0.602,
+          "calls": 1
+        },
+        {
+          "id": "sql-count",
+          "scenario": "structured_query",
+          "ok": false,
+          "detail": "missing=['4']",
+          "latency_s": 0.179,
+          "calls": 1
+        },
+        {
+          "id": "sql-aggregate",
+          "scenario": "structured_query",
+          "ok": false,
+          "detail": "missing=['420']",
+          "latency_s": 0.166,
+          "calls": 1
+        }
+      ]
+    },
+    "neuron": {
+      "pass": 19,
+      "fail": 4,
+      "skip": 0,
+      "cases": [
+        {
+          "id": "temporal-lead-jan",
+          "scenario": "temporal",
+          "ok": true,
+          "detail": "ok",
+          "latency_s": 0.226,
+          "calls": 1
+        },
+        {
+          "id": "temporal-lead-apr",
+          "scenario": "temporal",
+          "ok": true,
+          "detail": "ok",
+          "latency_s": 0.228,
+          "calls": 1
+        },
+        {
+          "id": "temporal-lead-now",
+          "scenario": "temporal",
+          "ok": false,
+          "detail": "LEAKED=['lead is Alice', 'lead is Bob']",
+          "latency_s": 0.208,
+          "calls": 1
+        },
+        {
+          "id": "contra-db-current",
+          "scenario": "contradiction",
+          "ok": true,
+          "detail": "ok",
+          "latency_s": 0.212,
+          "calls": 1
+        },
+        {
+          "id": "contra-db-asof-early",
+          "scenario": "contradiction",
+          "ok": true,
+          "detail": "ok",
+          "latency_s": 0.214,
+          "calls": 1
+        },
+        {
+          "id": "hop-api-to-latency",
+          "scenario": "multi_hop",
+          "ok": true,
+          "detail": "ok",
+          "latency_s": 0.208,
+          "calls": 1
+        },
+        {
+          "id": "hop-cache-to-latency",
+          "scenario": "multi_hop",
+          "ok": true,
+          "detail": "ok",
+          "latency_s": 0.201,
+          "calls": 1
+        },
+        {
+          "id": "entity-bob-robert",
+          "scenario": "entity_res",
+          "ok": true,
+          "detail": "ok",
+          "latency_s": 0.204,
+          "calls": 1
+        },
+        {
+          "id": "entity-rchen",
+          "scenario": "entity_res",
+          "ok": true,
+          "detail": "ok",
+          "latency_s": 0.209,
+          "calls": 1
+        },
+        {
+          "id": "noise-lead",
+          "scenario": "noise_resistance",
+          "ok": true,
+          "detail": "ok",
+          "latency_s": 0.203,
+          "calls": 1
+        },
+        {
+          "id": "noise-db",
+          "scenario": "noise_resistance",
+          "ok": true,
+          "detail": "ok",
+          "latency_s": 0.22,
+          "calls": 1
+        },
+        {
+          "id": "long-v1",
+          "scenario": "longitudinal",
+          "ok": true,
+          "detail": "ok",
+          "latency_s": 0.215,
+          "calls": 1
+        },
+        {
+          "id": "long-v2",
+          "scenario": "longitudinal",
+          "ok": true,
+          "detail": "ok",
+          "latency_s": 0.221,
+          "calls": 1
+        },
+        {
+          "id": "long-v3",
+          "scenario": "longitudinal",
+          "ok": true,
+          "detail": "ok",
+          "latency_s": 0.216,
+          "calls": 1
+        },
+        {
+          "id": "fp-budget-rumor",
+          "scenario": "false_promotion",
+          "ok": true,
+          "detail": "ok",
+          "latency_s": 0.205,
+          "calls": 1
+        },
+        {
+          "id": "beh-report-format",
+          "scenario": "behavior",
+          "ok": true,
+          "detail": "ok",
+          "latency_s": 0.207,
+          "calls": 1
+        },
+        {
+          "id": "rec-status-current",
+          "scenario": "recovery",
+          "ok": true,
+          "detail": "ok",
+          "latency_s": 0.202,
+          "calls": 1
+        },
+        {
+          "id": "rec-status-asof-wrongwindow",
+          "scenario": "recovery",
+          "ok": true,
+          "detail": "ok",
+          "latency_s": 0.205,
+          "calls": 1
+        },
+        {
+          "id": "leak-salary-scoped",
+          "scenario": "privacy_leak",
+          "ok": true,
+          "detail": "ok",
+          "latency_s": 0.224,
+          "calls": 1
+        },
+        {
+          "id": "cost-simple-fact",
+          "scenario": "latency_cost",
+          "ok": true,
+          "detail": "latency=0.227s/45s calls=1/3",
+          "latency_s": 0.227,
+          "calls": 1
+        },
+        {
+          "id": "sql-filter-row",
+          "scenario": "structured_query",
+          "ok": false,
+          "detail": "missing=['Carol']",
+          "latency_s": 0.166,
+          "calls": 1
+        },
+        {
+          "id": "sql-count",
+          "scenario": "structured_query",
+          "ok": false,
+          "detail": "missing=['4']",
+          "latency_s": 0.164,
+          "calls": 1
+        },
+        {
+          "id": "sql-aggregate",
+          "scenario": "structured_query",
+          "ok": false,
+          "detail": "missing=['420']",
+          "latency_s": 0.177,
+          "calls": 1
+        }
+      ]
+    }
+  },
+  "by_scenario": {
+    "temporal": {
+      "base": {
+        "pass": 0,
+        "fail": 3,
+        "skip": 0
+      },
+      "neuron": {
+        "pass": 2,
+        "fail": 1,
+        "skip": 0
+      }
+    },
+    "contradiction": {
+      "base": {
+        "pass": 2,
+        "fail": 0,
+        "skip": 0
+      },
+      "neuron": {
+        "pass": 2,
+        "fail": 0,
+        "skip": 0
+      }
+    },
+    "multi_hop": {
+      "base": {
+        "pass": 2,
+        "fail": 0,
+        "skip": 0
+      },
+      "neuron": {
+        "pass": 2,
+        "fail": 0,
+        "skip": 0
+      }
+    },
+    "entity_res": {
+      "base": {
+        "pass": 2,
+        "fail": 0,
+        "skip": 0
+      },
+      "neuron": {
+        "pass": 2,
+        "fail": 0,
+        "skip": 0
+      }
+    },
+    "noise_resistance": {
+      "base": {
+        "pass": 2,
+        "fail": 0,
+        "skip": 0
+      },
+      "neuron": {
+        "pass": 2,
+        "fail": 0,
+        "skip": 0
+      }
+    },
+    "longitudinal": {
+      "base": {
+        "pass": 0,
+        "fail": 3,
+        "skip": 0
+      },
+      "neuron": {
+        "pass": 3,
+        "fail": 0,
+        "skip": 0
+      }
+    },
+    "false_promotion": {
+      "base": {
+        "pass": 1,
+        "fail": 0,
+        "skip": 0
+      },
+      "neuron": {
+        "pass": 1,
+        "fail": 0,
+        "skip": 0
+      }
+    },
+    "behavior": {
+      "base": {
+        "pass": 1,
+        "fail": 0,
+        "skip": 0
+      },
+      "neuron": {
+        "pass": 1,
+        "fail": 0,
+        "skip": 0
+      }
+    },
+    "recovery": {
+      "base": {
+        "pass": 2,
+        "fail": 0,
+        "skip": 0
+      },
+      "neuron": {
+        "pass": 2,
+        "fail": 0,
+        "skip": 0
+      }
+    },
+    "privacy_leak": {
+      "base": {
+        "pass": 0,
+        "fail": 1,
+        "skip": 0
+      },
+      "neuron": {
+        "pass": 1,
+        "fail": 0,
+        "skip": 0
+      }
+    },
+    "latency_cost": {
+      "base": {
+        "pass": 1,
+        "fail": 0,
+        "skip": 0
+      },
+      "neuron": {
+        "pass": 1,
+        "fail": 0,
+        "skip": 0
+      }
+    },
+    "structured_query": {
+      "base": {
+        "pass": 0,
+        "fail": 3,
+        "skip": 0
+      },
+      "neuron": {
+        "pass": 0,
+        "fail": 3,
+        "skip": 0
+      }
+    }
+  },
+  "n_cases": 23,
+  "generated": "2026-08-12T13:14:35.671707+00:00"
+}

@@ -1,0 +1,3 @@
+# entity_res: Bob == Robert Chen == R. Chen. Aliases resolve to one person.
+{"id": "entity-bob-robert", "query": "Bob Robert Chen same person alias", "intent_hint": "fact", "expect": ["Robert", "Bob"]}
+{"id": "entity-rchen", "query": "R. Chen also known as", "intent_hint": "fact", "expect": ["Robert"]}

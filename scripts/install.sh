@@ -678,6 +678,25 @@ if [ -d "$SKILL_DIR/skills" ]; then
   done
 fi
 
+# ── Install benchmark suite (self-contained memory-quality A/B harness) ───────
+# Ships run_benchmark.py + fixtures/seed.py + scenarios/*.jsonl. No placeholder
+# sed needed — the runner resolves tool paths relative to its own ROOT (the WS).
+# Overwrite code/fixtures/scenarios (upgrade ships neuron's versions) but never
+# clobber a user's results/ (their prior benchmark runs). Gives installers a
+# one-command health-check:  python3 $WS/benchmark/run_benchmark.py --all
+if [ -d "$SKILL_DIR/benchmark" ]; then
+  hr "Benchmark suite (memory-quality A/B)"
+  mkdir -p "$WS/benchmark/results"
+  cp "$SKILL_DIR/benchmark/run_benchmark.py" "$WS/benchmark/run_benchmark.py"
+  [ -f "$SKILL_DIR/benchmark/README.md" ] && cp "$SKILL_DIR/benchmark/README.md" "$WS/benchmark/README.md"
+  mkdir -p "$WS/benchmark/fixtures"
+  cp "$SKILL_DIR/benchmark/fixtures/seed.py" "$WS/benchmark/fixtures/seed.py"
+  [ -f "$SKILL_DIR/benchmark/fixtures/atlas_metrics.csv" ] && cp "$SKILL_DIR/benchmark/fixtures/atlas_metrics.csv" "$WS/benchmark/fixtures/atlas_metrics.csv"
+  rm -rf "$WS/benchmark/scenarios"
+  cp -r "$SKILL_DIR/benchmark/scenarios" "$WS/benchmark/scenarios"
+  ok "benchmark/ copied (run: python3 $WS/benchmark/run_benchmark.py --all)"
+fi
+
 fi  # end REPAIR-CRON FAST PATH (heavy phases)
 if [ "$REPAIR_CRON" = 1 ]; then
   hr "repair-cron mode"

@@ -1,0 +1,4 @@
+# false_promotion: a single unconfirmed rumor must NOT be returned as fact.
+# The guard: query for the budget claim; the rumor may surface but must carry its
+# 'unconfirmed/low confidence' qualifier, and must NOT appear stated as settled fact.
+{"id": "fp-budget-rumor", "query": "Atlas budget 10x increase unconfirmed rumor", "intent_hint": "fact", "expect": ["Unconfirmed"], "forbid": ["confirmed 10x budget increase"]}

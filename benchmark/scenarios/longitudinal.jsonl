@@ -1,0 +1,6 @@
+# longitudinal: same fact across 3 update windows. Each as_of returns the then-valid
+# ASSERTION and forbids the others' assertions (not mere mentions — graph provenance
+# prose legitimately names superseded people). base (no as_of) leaks; neuron filters.
+{"id": "long-v1", "query": "Project Atlas lead roadmap owner", "as_of": "2026-01-15", "intent_hint": "fact", "expect": ["lead is Alice"], "forbid": ["lead is Bob", "lead is Carol"]}
+{"id": "long-v2", "query": "Project Atlas lead roadmap owner", "as_of": "2026-04-15", "intent_hint": "fact", "expect": ["lead is Bob"], "forbid": ["lead is Alice", "lead is Carol"]}
+{"id": "long-v3", "query": "Project Atlas lead roadmap owner", "as_of": "2026-08-01", "intent_hint": "fact", "expect": ["lead is Carol"], "forbid": ["lead is Alice", "lead is Bob"]}

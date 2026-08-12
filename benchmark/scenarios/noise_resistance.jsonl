@@ -1,0 +1,3 @@
+# noise_resistance: 20 filler memos must not drown the one real answer.
+{"id": "noise-lead", "query": "who is the current Project Atlas lead", "intent_hint": "fact", "expect": ["Carol"], "forbid": ["filler memo number"]}
+{"id": "noise-db", "query": "what database does Project Atlas use now", "intent_hint": "fact", "expect": ["DuckDB"], "forbid": ["filler memo number"]}

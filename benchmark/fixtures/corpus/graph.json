@@ -1,0 +1,567 @@
+{
+  "generated": "2026-08-12T13:20:41.532664+00:00",
+  "params": {
+    "fixture": true
+  },
+  "node_count": 34,
+  "edge_count": 0,
+  "relation_edge_count": 5,
+  "entity_node_count": 0,
+  "entity_edge_count": 0,
+  "nodes": [
+    {
+      "idx": 0,
+      "id": "a52002c08c8cb4f86d13e59a4682561b4d63925f475cc3cf13986285dd548276",
+      "file": "atlas_lead_v1.md",
+      "lines": [
+        1,
+        9
+      ],
+      "degree": 0,
+      "title": "Project Atlas lead is Alice. Alice owns the roadma",
+      "snippet": "Project Atlas lead is Alice. Alice owns the roadmap.",
+      "valid_at": "2026-01-01",
+      "invalid_at": "2026-03-01",
+      "scope": "project"
+    },
+    {
+      "idx": 1,
+      "id": "162f179a038c8cc22c2296e72596136f0cce0054c8e2b450e383d26e074de6fb",
+      "file": "atlas_lead_v2.md",
+      "lines": [
+        1,
+        9
+      ],
+      "degree": 0,
+      "title": "Project Atlas lead is Bob. Bob took over the roadm",
+      "snippet": "Project Atlas lead is Bob. Bob took over the roadmap from Alice.",
+      "valid_at": "2026-03-01",
+      "invalid_at": "2026-06-01",
+      "scope": "project"
+    },
+    {
+      "idx": 2,
+      "id": "17e3ba2481f0b50998554d94202fedcbd6c7ffc9d1dc5fc86860689ec3222afa",
+      "file": "atlas_lead_v3.md",
+      "lines": [
+        1,
+        9
+      ],
+      "degree": 0,
+      "title": "Project Atlas lead is Carol. Carol is the current ",
+      "snippet": "Project Atlas lead is Carol. Carol is the current roadmap owner.",
+      "valid_at": "2026-06-01",
+      "invalid_at": null,
+      "scope": "project"
+    },
+    {
+      "idx": 3,
+      "id": "66c01df1bc63353edb98a783d852ce9cfd64c3f1b41443db44ed286b6e22029d",
+      "file": "atlas_db_old.md",
+      "lines": [
+        1,
+        9
+      ],
+      "degree": 0,
+      "title": "Project Atlas uses Postgres as its database.",
+      "snippet": "Project Atlas uses Postgres as its database.",
+      "valid_at": "2026-01-01",
+      "invalid_at": "2026-05-01",
+      "scope": "project"
+    },
+    {
+      "idx": 4,
+      "id": "f246d4fdc828ef6b223ea703b9aebd032242dea66c1714fe466bed3328965b4a",
+      "file": "atlas_db_new.md",
+      "lines": [
+        1,
+        9
+      ],
+      "degree": 0,
+      "title": "Project Atlas migrated to DuckDB. The database is ",
+      "snippet": "Project Atlas migrated to DuckDB. The database is DuckDB now, not Postgres.",
+      "valid_at": "2026-05-01",
+      "invalid_at": null,
+      "scope": "project"
+    },
+    {
+      "idx": 5,
+      "id": "967bc7d0dc15d5893765b612374a15b968f3824a4430e8ee9adf2d0166094a3b",
+      "file": "atlas_api.md",
+      "lines": [
+        1,
+        9
+      ],
+      "degree": 0,
+      "title": "The Atlas API is the public entry point for Projec",
+      "snippet": "The Atlas API is the public entry point for Project Atlas.",
+      "valid_at": "2026-02-01",
+      "invalid_at": null,
+      "scope": "project"
+    },
+    {
+      "idx": 6,
+      "id": "14d1e58c68de7c83a52a70356d1a70ba133c26ff4503cca7a92a4517057b0387",
+      "file": "atlas_cache.md",
+      "lines": [
+        1,
+        9
+      ],
+      "degree": 0,
+      "title": "The Atlas cache layer sits behind the Atlas API.",
+      "snippet": "The Atlas cache layer sits behind the Atlas API.",
+      "valid_at": "2026-02-01",
+      "invalid_at": null,
+      "scope": "project"
+    },
+    {
+      "idx": 7,
+      "id": "09352601f6b818d85d3f0aa5e492b411883b439d3d59b87638053fe4d0943d9a",
+      "file": "atlas_latency.md",
+      "lines": [
+        1,
+        9
+      ],
+      "degree": 0,
+      "title": "Atlas query latency is the key performance metric ",
+      "snippet": "Atlas query latency is the key performance metric for Project Atlas.",
+      "valid_at": "2026-02-01",
+      "invalid_at": null,
+      "scope": "project"
+    },
+    {
+      "idx": 8,
+      "id": "29d2dfed62cb90b4df0930c79c071ae77a2bab3dc470da55d6ab3800fd8a0153",
+      "file": "robert_alias.md",
+      "lines": [
+        1,
+        9
+      ],
+      "degree": 0,
+      "title": "Bob is also known as Robert Chen. Bob, Robert, and",
+      "snippet": "Bob is also known as Robert Chen. Bob, Robert, and R. Chen are the same person.",
+      "valid_at": "2026-02-01",
+      "invalid_at": null,
+      "scope": "project"
+    },
+    {
+      "idx": 9,
+      "id": "eda42d1b918113086cc82a8892ac4867aa66b6dd33c96b0967e1f0317c8db6f5",
+      "file": "pref_reports.md",
+      "lines": [
+        1,
+        9
+      ],
+      "degree": 0,
+      "title": "Preference: Atlas status reports must be delivered",
+      "snippet": "Preference: Atlas status reports must be delivered as bullet points, never prose paragraphs.",
+      "valid_at": "2026-01-01",
+      "invalid_at": null,
+      "scope": "owner"
+    },
+    {
+      "idx": 10,
+      "id": "e3b3bc03e680be2254496b8af3717cc3bcddca28da595d00b344ce2e45d713a6",
+      "file": "rumor_funding.md",
+      "lines": [
+        1,
+        9
+      ],
+      "degree": 0,
+      "title": "Unconfirmed single-source rumor: Atlas may get a 1",
+      "snippet": "Unconfirmed single-source rumor: Atlas may get a 10x budget increase. Not verified. Confidence low. Do not treat as fact.",
+      "valid_at": "2026-04-01",
+      "invalid_at": null,
+      "scope": "project"
+    },
+    {
+      "idx": 11,
+      "id": "25b7acd79447b2444eb5150a1018c09f07ee4ce47502278761f8238096b739a3",
+      "file": "peer_secret.md",
+      "lines": [
+        1,
+        9
+      ],
+      "degree": 0,
+      "title": "PRIVATE peer note: Dave's personal salary figure i",
+      "snippet": "PRIVATE peer note: Dave's personal salary figure is confidential-xyz-123.",
+      "valid_at": "2026-03-01",
+      "invalid_at": null,
+      "scope": "private"
+    },
+    {
+      "idx": 12,
+      "id": "160953b248348ee7760922efcaab77a20f1c1b69c9b416a6554176aebc55dc6d",
+      "file": "noise_1.md",
+      "lines": [
+        1,
+        9
+      ],
+      "degree": 0,
+      "title": "Generic filler memo number 1 about unrelated logis",
+      "snippet": "Generic filler memo number 1 about unrelated logistics and scheduling minutiae.",
+      "valid_at": "2026-01-01",
+      "invalid_at": null,
+      "scope": "world"
+    },
+    {
+      "idx": 13,
+      "id": "298e0d1a50843b1af37c3e1fbc117282009bc8497a2cc7ca1f5395f83083fce6",
+      "file": "noise_2.md",
+      "lines": [
+        1,
+        9
+      ],
+      "degree": 0,
+      "title": "Generic filler memo number 2 about unrelated logis",
+      "snippet": "Generic filler memo number 2 about unrelated logistics and scheduling minutiae.",
+      "valid_at": "2026-01-01",
+      "invalid_at": null,
+      "scope": "world"
+    },
+    {
+      "idx": 14,
+      "id": "773820f4ca36d7c6dca9a6c73d2b3becdfd6017334af4cba4ca21e02c757c693",
+      "file": "noise_3.md",
+      "lines": [
+        1,
+        9
+      ],
+      "degree": 0,
+      "title": "Generic filler memo number 3 about unrelated logis",
+      "snippet": "Generic filler memo number 3 about unrelated logistics and scheduling minutiae.",
+      "valid_at": "2026-01-01",
+      "invalid_at": null,
+      "scope": "world"
+    },
+    {
+      "idx": 15,
+      "id": "55e4481cac11dac252824d2517a9fa7b870b7d26014d5abf90f2d2e16221d54d",
+      "file": "noise_4.md",
+      "lines": [
+        1,
+        9
+      ],
+      "degree": 0,
+      "title": "Generic filler memo number 4 about unrelated logis",
+      "snippet": "Generic filler memo number 4 about unrelated logistics and scheduling minutiae.",
+      "valid_at": "2026-01-01",
+      "invalid_at": null,
+      "scope": "world"
+    },
+    {
+      "idx": 16,
+      "id": "79939563409f88ded8b009d469a6cede2c90f8b0ba6f8a654df6bb5fc6064d7c",
+      "file": "noise_5.md",
+      "lines": [
+        1,
+        9
+      ],
+      "degree": 0,
+      "title": "Generic filler memo number 5 about unrelated logis",
+      "snippet": "Generic filler memo number 5 about unrelated logistics and scheduling minutiae.",
+      "valid_at": "2026-01-01",
+      "invalid_at": null,
+      "scope": "world"
+    },
+    {
+      "idx": 17,
+      "id": "7bdaad0e8acd51ff478763441cfe30beca3ef22c6212dc3f67bb2ab7b71086ed",
+      "file": "noise_6.md",
+      "lines": [
+        1,
+        9
+      ],
+      "degree": 0,
+      "title": "Generic filler memo number 6 about unrelated logis",
+      "snippet": "Generic filler memo number 6 about unrelated logistics and scheduling minutiae.",
+      "valid_at": "2026-01-01",
+      "invalid_at": null,
+      "scope": "world"
+    },
+    {
+      "idx": 18,
+      "id": "2fc1b698a6a25c6c73e5e6de8ee9a075d8ca28ab06e673706a8a789fd858c519",
+      "file": "noise_7.md",
+      "lines": [
+        1,
+        9
+      ],
+      "degree": 0,
+      "title": "Generic filler memo number 7 about unrelated logis",
+      "snippet": "Generic filler memo number 7 about unrelated logistics and scheduling minutiae.",
+      "valid_at": "2026-01-01",
+      "invalid_at": null,
+      "scope": "world"
+    },
+    {
+      "idx": 19,
+      "id": "50cd52e5639cb7ef35561de21e66c56f8de3a4f231966a792c6d28f81b64870c",
+      "file": "noise_8.md",
+      "lines": [
+        1,
+        9
+      ],
+      "degree": 0,
+      "title": "Generic filler memo number 8 about unrelated logis",
+      "snippet": "Generic filler memo number 8 about unrelated logistics and scheduling minutiae.",
+      "valid_at": "2026-01-01",
+      "invalid_at": null,
+      "scope": "world"
+    },
+    {
+      "idx": 20,
+      "id": "2adfc2b526df3fcd15a792abd09448169a419a0bca7b60757d98bbe9eea5a0e3",
+      "file": "noise_9.md",
+      "lines": [
+        1,
+        9
+      ],
+      "degree": 0,
+      "title": "Generic filler memo number 9 about unrelated logis",
+      "snippet": "Generic filler memo number 9 about unrelated logistics and scheduling minutiae.",
+      "valid_at": "2026-01-01",
+      "invalid_at": null,
+      "scope": "world"
+    },
+    {
+      "idx": 21,
+      "id": "1b18e5881d023499fc26c660cc720b3416d594446ca9095edcde3cd80c00735a",
+      "file": "noise_10.md",
+      "lines": [
+        1,
+        9
+      ],
+      "degree": 0,
+      "title": "Generic filler memo number 10 about unrelated logi",
+      "snippet": "Generic filler memo number 10 about unrelated logistics and scheduling minutiae.",
+      "valid_at": "2026-01-01",
+      "invalid_at": null,
+      "scope": "world"
+    },
+    {
+      "idx": 22,
+      "id": "f5d2daa216aa8a01a1076dff4fa8f775f025533c1c5f6deed11d1ff48e3fc350",
+      "file": "noise_11.md",
+      "lines": [
+        1,
+        9
+      ],
+      "degree": 0,
+      "title": "Generic filler memo number 11 about unrelated logi",
+      "snippet": "Generic filler memo number 11 about unrelated logistics and scheduling minutiae.",
+      "valid_at": "2026-01-01",
+      "invalid_at": null,
+      "scope": "world"
+    },
+    {
+      "idx": 23,
+      "id": "a01ef939433a75b9319721bf16be96fa9939330ea3670388c46d503737558735",
+      "file": "noise_12.md",
+      "lines": [
+        1,
+        9
+      ],
+      "degree": 0,
+      "title": "Generic filler memo number 12 about unrelated logi",
+      "snippet": "Generic filler memo number 12 about unrelated logistics and scheduling minutiae.",
+      "valid_at": "2026-01-01",
+      "invalid_at": null,
+      "scope": "world"
+    },
+    {
+      "idx": 24,
+      "id": "408e35b44a622dcca5712ff9c14089069f0f09f45337d3cf87b3085565fd5a21",
+      "file": "noise_13.md",
+      "lines": [
+        1,
+        9
+      ],
+      "degree": 0,
+      "title": "Generic filler memo number 13 about unrelated logi",
+      "snippet": "Generic filler memo number 13 about unrelated logistics and scheduling minutiae.",
+      "valid_at": "2026-01-01",
+      "invalid_at": null,
+      "scope": "world"
+    },
+    {
+      "idx": 25,
+      "id": "b09d41a3aa976b0cfbb8d29fccc824915c1f6f790a7dc7176dd1a76353902736",
+      "file": "noise_14.md",
+      "lines": [
+        1,
+        9
+      ],
+      "degree": 0,
+      "title": "Generic filler memo number 14 about unrelated logi",
+      "snippet": "Generic filler memo number 14 about unrelated logistics and scheduling minutiae.",
+      "valid_at": "2026-01-01",
+      "invalid_at": null,
+      "scope": "world"
+    },
+    {
+      "idx": 26,
+      "id": "05df26884a3ad5239ab9fccfb1d5b666cae318ea0f5b0907c7364ff13427b401",
+      "file": "noise_15.md",
+      "lines": [
+        1,
+        9
+      ],
+      "degree": 0,
+      "title": "Generic filler memo number 15 about unrelated logi",
+      "snippet": "Generic filler memo number 15 about unrelated logistics and scheduling minutiae.",
+      "valid_at": "2026-01-01",
+      "invalid_at": null,
+      "scope": "world"
+    },
+    {
+      "idx": 27,
+      "id": "bf49c44242958b31d76ce5b1ada8e3ad486a70c398d874406605cea7cd905c02",
+      "file": "noise_16.md",
+      "lines": [
+        1,
+        9
+      ],
+      "degree": 0,
+      "title": "Generic filler memo number 16 about unrelated logi",
+      "snippet": "Generic filler memo number 16 about unrelated logistics and scheduling minutiae.",
+      "valid_at": "2026-01-01",
+      "invalid_at": null,
+      "scope": "world"
+    },
+    {
+      "idx": 28,
+      "id": "6ad4c11a44e806ed92ca2b6ce67f2d20b2ab56fa7ce270f3ecd0e396594cbbdb",
+      "file": "noise_17.md",
+      "lines": [
+        1,
+        9
+      ],
+      "degree": 0,
+      "title": "Generic filler memo number 17 about unrelated logi",
+      "snippet": "Generic filler memo number 17 about unrelated logistics and scheduling minutiae.",
+      "valid_at": "2026-01-01",
+      "invalid_at": null,
+      "scope": "world"
+    },
+    {
+      "idx": 29,
+      "id": "420fbb0cc5d42b04aa7048c692084102a83f6756481a9d5faac379205fb9d1af",
+      "file": "noise_18.md",
+      "lines": [
+        1,
+        9
+      ],
+      "degree": 0,
+      "title": "Generic filler memo number 18 about unrelated logi",
+      "snippet": "Generic filler memo number 18 about unrelated logistics and scheduling minutiae.",
+      "valid_at": "2026-01-01",
+      "invalid_at": null,
+      "scope": "world"
+    },
+    {
+      "idx": 30,
+      "id": "86d09a8c9f2d625b87135512831d7963d9186120f92895b8a87dd9d51d8c95c8",
+      "file": "noise_19.md",
+      "lines": [
+        1,
+        9
+      ],
+      "degree": 0,
+      "title": "Generic filler memo number 19 about unrelated logi",
+      "snippet": "Generic filler memo number 19 about unrelated logistics and scheduling minutiae.",
+      "valid_at": "2026-01-01",
+      "invalid_at": null,
+      "scope": "world"
+    },
+    {
+      "idx": 31,
+      "id": "f5e722487501a494975c472883428b5c0253d00e756114548985e66462244a8b",
+      "file": "noise_20.md",
+      "lines": [
+        1,
+        9
+      ],
+      "degree": 0,
+      "title": "Generic filler memo number 20 about unrelated logi",
+      "snippet": "Generic filler memo number 20 about unrelated logistics and scheduling minutiae.",
+      "valid_at": "2026-01-01",
+      "invalid_at": null,
+      "scope": "world"
+    },
+    {
+      "idx": 32,
+      "id": "7e4afa60f0482a767c9ce062e33d9c77a0a8b5502f458a206b5fddfd215e62e2",
+      "file": "atlas_status_wrong.md",
+      "lines": [
+        1,
+        9
+      ],
+      "degree": 0,
+      "title": "Atlas launch status: DELAYED indefinitely.",
+      "snippet": "Atlas launch status: DELAYED indefinitely.",
+      "valid_at": "2026-05-01",
+      "invalid_at": "2026-05-10",
+      "scope": "project"
+    },
+    {
+      "idx": 33,
+      "id": "4b920b680659b891b8374cd87dac187ee234491001cfceb569410f3f45f24f23",
+      "file": "atlas_status_fixed.md",
+      "lines": [
+        1,
+        9
+      ],
+      "degree": 0,
+      "title": "Correction: Atlas launched on schedule. Status is ",
+      "snippet": "Correction: Atlas launched on schedule. Status is LIVE, not delayed.",
+      "valid_at": "2026-05-10",
+      "invalid_at": null,
+      "scope": "project"
+    }
+  ],
+  "edges": [],
+  "relation_edges": [
+    {
+      "a": 5,
+      "b": 6,
+      "label": "depends_on",
+      "confidence": 0.9,
+      "scope": "project"
+    },
+    {
+      "a": 6,
+      "b": 7,
+      "label": "affects",
+      "confidence": 0.9,
+      "scope": "project"
+    },
+    {
+      "a": 0,
+      "b": 1,
+      "label": "superseded_by",
+      "confidence": 1.0,
+      "scope": "project",
+      "valid_at": "2026-03-01"
+    },
+    {
+      "a": 1,
+      "b": 2,
+      "label": "superseded_by",
+      "confidence": 1.0,
+      "scope": "project",
+      "valid_at": "2026-06-01"
+    },
+    {
+      "a": 3,
+      "b": 4,
+      "label": "superseded_by",
+      "confidence": 1.0,
+      "scope": "project",
+      "valid_at": "2026-05-01"
+    }
+  ],
+  "entity_nodes": [],
+  "entity_edges": [],
+  "forward_refs": []
+}

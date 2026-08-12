@@ -142,6 +142,13 @@ def leg_graph_search(query: str, k: int, as_of: str | None = None,
     # (a hop through an edge invalid/out-of-scope at the as-of date is never taken).
     # Fail-safe: only append flags when set, so legacy/untimed graphs are untouched.
     cmd = [PY, str(TOOLS / "graph_search.py"), query, "--hops", "2", "--output-format", "json"]
+    # HYBRID_GRAPH_PATH lets a caller (e.g. the benchmark's fixture run) point the
+    # graph leg at an alternate graph.json so its candidates flow THROUGH the
+    # compiler. Unset in normal use = the live workspace graph (default).
+    import os as _os_g
+    _gpath = _os_g.environ.get("HYBRID_GRAPH_PATH")
+    if _gpath:
+        cmd += ["--graph", _gpath]
     if as_of:
         cmd += ["--as-of", as_of]
     if scope:
@@ -387,6 +394,151 @@ def apply_as_of(cands: list[dict], as_of: str | None) -> list[dict]:
     return kept
 
 
+def _load_valid_time():
+    """Import valid_time from WS/procedures or the tool's sibling ../procedures."""
+    for _cand_dir in (WS / "procedures", Path(__file__).resolve().parent.parent / "procedures"):
+        try:
+            sys.path.insert(0, str(_cand_dir))
+            import valid_time as _vt  # type: ignore
+            return _vt
+        except Exception:
+            continue
+    return None
+
+
+def _read_scope(path, content: str) -> str | None:
+    """Read the frontmatter `scope:` field. valid_time.VT_FIELDS does NOT include
+    scope (it only parses valid-time), so the compiler needs its own reader or the
+    scope gate silently no-ops (=privacy leak). Prefer the file's head; fall back
+    to the candidate content's head. Returns the scope string or None."""
+    head = ""
+    if path is not None:
+        try:
+            head = path.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            head = ""
+    if not head:
+        head = content or ""
+    for line in head.splitlines()[:12]:
+        m = _re.match(r"\s*scope\s*:\s*(\S+)", line)
+        if m:
+            v = m.group(1).strip()
+            return None if v.lower() in ("null", "none", "") else v
+    return None
+
+
+def _resolve_candidate_file(uri: str):
+    """Resolve a candidate uri to a real memory file path, or None."""
+    if not isinstance(uri, str) or not uri:
+        return None
+    p = Path(uri) if uri.startswith("/") else (WS / uri)
+    if p.exists():
+        return p
+    base = Path(uri).name
+    for cand in (WS / "memory" / base, WS / "memory" / "_history" / base):
+        if cand.exists():
+            return cand
+    return None
+
+
+def compile_context(cands: list[dict], as_of: str | None, scope: str | None) -> list[dict]:
+    """P2 #3 CONTEXT COMPILER.
+
+    Applies scope-gate + temporal (valid-time) resolution to EVERY candidate,
+    including the folded memory_external hits — not just the graph leg. Closes the
+    gap where as_of/scope only protected graph traversal, so memory_search hits
+    leaked stale/out-of-scope facts.
+
+    Order:
+      1. SCOPE GATE — drop candidates whose backing-file scope is not allowed.
+      2. TEMPORAL   — drop candidates not valid at as_of (valid_from<=DATE<until).
+    Unresolvable-uri candidates fail-open for scope; for temporal we also read
+    valid-time straight from candidate CONTENT frontmatter. DETERMINISTIC, $0.
+    Emits a per-candidate _compiler trace (why kept/dropped).
+    """
+    # NOTE: do NOT early-return on (not as_of and not scope): supersession
+    # resolution (step 3) runs precisely when as_of is ABSENT (a 'current' query),
+    # dropping superseded chain members. Only skip the whole compiler if there's
+    # no valid_time module (nothing to judge with).
+    _vt = _load_valid_time()
+    if _vt is None:
+        return cands  # fail-open: no valid_time module -> no filtering
+
+    scope_allow = None
+    if scope:
+        scope_allow = {s.strip() for s in scope.split(",") if s.strip()}
+
+    kept: list[dict] = []
+    for c in cands:
+        uri = c.get("uri", "")
+        p = _resolve_candidate_file(uri)
+        if p is not None:
+            fields = _vt.read_fields(p)
+        else:
+            fields = _vt.fields_from_text(c.get("content", ""))
+        trace = {"scope": None, "temporal": None}
+
+        # 1. SCOPE GATE. Read scope via our OWN parser (valid_time doesn't carry
+        #    it). Missing scope defaults to 'owner' (don't silently drop legacy
+        #    untagged facts). Graph-leg cands already scope-filtered at traversal;
+        #    this catches memory/docs/session cands too.
+        cand_scope = _read_scope(p, c.get("content", "")) or "owner"
+        if scope_allow is not None and cand_scope not in scope_allow:
+            trace["scope"] = f"DROP({cand_scope} not in {sorted(scope_allow)})"
+            c["_compiler"] = trace
+            continue
+        trace["scope"] = f"ok({cand_scope})"
+
+        # 2. TEMPORAL. Only judge candidates that carry valid-time; undated ones
+        #    fail-open keep.
+        if as_of and (fields.get("valid_from") or fields.get("valid_until")
+                      or fields.get("valid_at") or fields.get("invalid_at")):
+            if not _vt.is_valid_at(fields, as_of):
+                trace["temporal"] = f"DROP(not valid at {as_of})"
+                c["_compiler"] = trace
+                continue
+            trace["temporal"] = f"ok(valid at {as_of})"
+        else:
+            trace["temporal"] = "undated(keep)" if as_of else "n/a"
+
+        c["_compiler"] = trace
+        kept.append(c)
+
+    # 3. SUPERSESSION RESOLUTION (only when NO as_of = a 'current' query). Group
+    #    survivors by subject; if a group has any CURRENT member (valid_until null
+    #    AND not superseded_by), drop the non-current members of that group. This
+    #    is what a bare 'current lead' query needs: without a temporal anchor the
+    #    scope/temporal passes can't drop stale-but-in-scope facts, so all chain
+    #    versions would surface. Fail-safe: cands with no subject are untouched;
+    #    a group with NO current member keeps everything (don't guess).
+    if not as_of:
+        by_subject: dict[str, list[dict]] = {}
+        for c in kept:
+            p = _resolve_candidate_file(c.get("uri", ""))
+            fields = _vt.read_fields(p) if p is not None else _vt.fields_from_text(c.get("content", ""))
+            subj = fields.get("subject")
+            c["_vt_fields"] = fields
+            if subj:
+                by_subject.setdefault(subj, []).append(c)
+        drop = set()
+        for subj, group in by_subject.items():
+            if len(group) < 2:
+                continue
+            currents = [c for c in group if _vt.is_current(c["_vt_fields"])]
+            if not currents:
+                continue  # no clear current -> keep all (fail-open)
+            for c in group:
+                if c not in currents:
+                    tr = c.setdefault("_compiler", {})
+                    tr["supersession"] = f"DROP(superseded in subject '{subj}')"
+                    drop.add(id(c))
+        if drop:
+            kept = [c for c in kept if id(c) not in drop]
+        for c in kept:
+            c.pop("_vt_fields", None)  # internal scratch, don't leak into output
+    return kept
+
+
 def compile_block(cands: list[dict], k: int) -> dict:
     """Minimal answer block + full provenance trail. L0 = the fused top-k lines;
     provenance carries every corroborating leg/uri/score so the answer is
@@ -454,6 +606,10 @@ def main(argv=None):
     cands = fuse(cands)
     cands = rerank(cands)
     cands = apply_as_of(cands, args.as_of)
+    # P2 #3: context compiler applies scope-gate + temporal resolution to ALL
+    # candidates (incl. folded memory hits), superseding the graph-leg-only
+    # apply_as_of. This is what lets neuron actually beat base on temporal/scope.
+    cands = compile_context(cands, args.as_of, args.scope)
     block = compile_block(cands, args.k)
     block["_meta"] = {"legs_fired": legs, "candidate_count": len(cands),
                       "query": args.query, "k": args.k}
