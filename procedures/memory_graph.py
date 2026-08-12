@@ -694,7 +694,12 @@ def build_graph(chunks, topk, threshold, cross_file_only, mutual=False):
     # Unit-normalize every vector -> (n, d) matrix. Mirrors normalize(): a
     # zero-norm row stays all-zeros (cosine 0 with everything, so below any
     # positive threshold), exactly as the scalar path treated it.
-    M = np.asarray([c["vec"] for c in chunks], dtype=np.float64)
+    # RESOURCE-AWARE: use float32 for the embedding matrix, not float64. The (n x d) matrix
+    # and every (B x n) similarity block are the peak allocations that OOM-kill small hosts;
+    # float32 HALVES both. Cosine similarity is unaffected at the ~1e-3 threshold granularity
+    # this graph uses (float32 carries ~7 significant digits); the emitted edge set is stable.
+    _FDT = np.float32
+    M = np.asarray([c["vec"] for c in chunks], dtype=_FDT)
     norms = np.linalg.norm(M, axis=1, keepdims=True)
     nz = norms[:, 0] > 0
     Mn = np.zeros_like(M)
@@ -719,19 +724,32 @@ def build_graph(chunks, topk, threshold, cross_file_only, mutual=False):
         except Exception:
             pass
         return 1 << 30  # conservative 1 GB fallback (non-Linux / unreadable)
-    bytes_per_row = n * 8  # one float64 similarity row
-    budget = int(_avail_bytes() * 0.25)  # use at most 1/4 of free RAM for the block
-    batch = max(64, min(2048, budget // max(bytes_per_row, 1)))
+    bytes_per_row = n * 4  # one float32 similarity row (was float64 n*8)
+    avail = _avail_bytes()
+    # RESOURCE-AWARE BUDGET: scale the fraction of free RAM we grab to how much is ACTUALLY
+    # free, so a memory-pressured host goes SLOWER (smaller blocks, more iterations) instead of
+    # grabbing 25% blindly and getting OOM-killed. Under ~1.5 GB free -> 10% (tiny blocks, crawl
+    # but survive); under ~3 GB -> 18%; otherwise 25%. Plus a hard 512 MB cap per block so a huge
+    # host can't allocate a giant temp either. Env DINOMEM_GRAPH_BATCH=<rows> overrides.
+    if avail < (1500 << 20):
+        frac, note = 0.10, "LOW-MEM: crawling (10% budget)"
+    elif avail < (3 << 30):
+        frac, note = 0.18, "tight mem (18% budget)"
+    else:
+        frac, note = 0.25, "ample mem (25% budget)"
+    budget = min(int(avail * frac), 512 << 20)  # <=512MB per block, hard cap
+    batch = max(32, min(2048, budget // max(bytes_per_row, 1)))
     _ov = _os.environ.get("DINOMEM_GRAPH_BATCH")
     if _ov:
         try:
             batch = max(1, min(n, int(_ov)))
+            note = f"override B={batch}"
         except ValueError:
             pass
-    est_full = n * n * 8 / 1e9
+    est_full = n * n * 4 / 1e9
     print(f"[graph] {n} chunks | full-matrix would need ~{est_full:.2f} GB; "
-          f"row-batching at B={batch} (peak ~{batch*bytes_per_row/1e6:.0f} MB). "
-          f"avail~{_avail_bytes()/1e9:.1f} GB", file=sys.stderr)
+          f"row-batching at B={batch} (peak ~{batch*bytes_per_row/1e6:.0f} MB, {note}). "
+          f"avail~{avail/1e9:.1f} GB", file=sys.stderr)
 
     # Pass 1 (batched): per-node top-k neighbour sets + 1-based ranks + the sim of
     # each kept neighbour (stashed so Pass 2 never needs the full matrix). lexsort
