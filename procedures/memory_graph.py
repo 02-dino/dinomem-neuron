@@ -360,10 +360,39 @@ def extract_relation_edges(memory_dir, nodes):
         r'^\[relation\]\s*(.+?)\s*\u2192\s*(.+?)\s*\u2192\s*(.+?)\s*$'
     )
 
+    # P1: resolve surface-form variants into canonical entities (aliases[]) so that
+    # backtick/quote/glob/whitespace variants of the same entity collapse to ONE node
+    # endpoint. Only the MATCH KEY is canonicalized; the raw subject/object text is still
+    # stored on the edge. Fail-open: if the resolver is unavailable -> identity (old behavior).
+    try:
+        from entity_resolver import build_alias_map, canonicalize as _canon  # noqa: E402
+        _alias_map = build_alias_map(extract_entity_nodes(memory_dir))
+    except Exception:
+        _alias_map = {}
+        def _canon(t, m):  # noqa: E306
+            return t
+
     # Build lookup: node_idx -> combined text for fuzzy matching
     node_texts = []
     for n in nodes:
         node_texts.append((n["title"] + " " + n["snippet"]).lower())
+
+    # ── Length-bucket index (perf, byte-identical output) ──
+    #    fuzzy_match_node otherwise touches every node for each unique endpoint term
+    #    (O(terms × nodes)) -> a multi-minute CPU stall once the corpus grows to many
+    #    thousands of chunks. SequenceMatcher.ratio() has a hard length upper bound:
+    #    ratio <= 2*min(La,Lb)/(La+Lb). To clear MATCH_THRESHOLD a term of length L can
+    #    ONLY match node-texts whose compared length lies in a narrow band around L. Bucket
+    #    node indices by length once, then scan ONLY the feasible band per term. Every
+    #    skipped node is provably below threshold, so the argmax/score is unchanged.
+    #    Deterministic / T1 / $0 / no LLM/embed/network.
+    _MATCH_THRESHOLD = 0.70
+    from collections import defaultdict as _dd
+    import bisect as _bisect
+    _len_buckets = _dd(list)
+    for _i, _nt in enumerate(node_texts):
+        _len_buckets[len(_nt)].append(_i)
+    _bucket_lengths = sorted(_len_buckets.keys())
 
     # ── Bottleneck #2 fix (2026-08-12): fuzzy_match_node was O(terms × nodes) pure-Python
     #    SequenceMatcher.ratio() called ~4× per [relation] line across every md file -> multi-
@@ -388,7 +417,23 @@ def extract_relation_edges(memory_dir, nodes):
         cut = len(term_lower) + 30
         sm = SequenceMatcher(None, term_lower, "")
         best_idx, best_score = -1, 0.0
-        for idx, nt in enumerate(node_texts):
+        # Length-feasible band for the threshold. A node's effective compared length is
+        # min(len(nt), cut); ratio upper bound vs a length-L term is 2*min(L,eff)/(L+eff),
+        # which is >= _MATCH_THRESHOLD only for eff in [~0.538L, ~1.857L] (at 0.70). Bucket
+        # key is RAW node length; long nodes capped to `cut` still have eff<=cut, so widen
+        # the high bound to cut to stay conservative (never drop a feasible node).
+        L = len(term_lower)
+        _r = _MATCH_THRESHOLD
+        lo = int(L * _r / (2 - _r))
+        hi = max(int(L * (2 - _r) / _r) + 1, cut)
+        _lidx = _bisect.bisect_left(_bucket_lengths, lo)
+        _candidate_idxs = []
+        for _bl in _bucket_lengths[_lidx:]:
+            if _bl > hi:
+                break
+            _candidate_idxs.extend(_len_buckets[_bl])
+        for idx in _candidate_idxs:
+            nt = node_texts[idx]
             sm.set_seq2(nt[:cut])
             # real_quick_ratio() (length bound) and quick_ratio() (multiset bound) are cheap
             # monotone upper bounds on ratio(); prune when they can't exceed the running best.
@@ -403,6 +448,12 @@ def extract_relation_edges(memory_dir, nodes):
         result = (best_idx, best_score)
         _fuzzy_cache[term_lower] = result
         return result
+
+    def match_endpoint(term):
+        """Canonicalize the endpoint term, then fuzzy-match against nodes. Aliased surface
+        forms collapse to one node; identical (idx, score) to matching the raw term when the
+        resolver is unavailable."""
+        return fuzzy_match_node(_canon(term, _alias_map))
 
     # ── P0-b fact-graph enrichment (HARMONIZED with neuron's existing mechanisms) ──
     # DEEP-UNDERSTANDING NOTE (2026-08-11): neuron ALREADY has a record-time + confidence
@@ -469,8 +520,9 @@ def extract_relation_edges(memory_dir, nodes):
             verb = m.group(2).strip()
             obj = m.group(3).strip()
 
-            idx_a, score_a = fuzzy_match_node(subject)
-            idx_b, score_b = fuzzy_match_node(obj)
+            # P1: match on the CANONICAL form so aliased endpoints collapse to one node.
+            idx_a, score_a = match_endpoint(subject)
+            idx_b, score_b = match_endpoint(obj)
 
             matched_a = score_a >= 0.70
             matched_b = score_b >= 0.70
@@ -504,8 +556,9 @@ def extract_relation_edges(memory_dir, nodes):
                                 subj_text = subj.text
                                 obj_text = obj.text
                                 verb_text = token.lemma_
-                                idx_a, score_a = fuzzy_match_node(subj_text)
-                                idx_b, score_b = fuzzy_match_node(obj_text)
+                                # P1: canonicalize spaCy SVO endpoints too.
+                                idx_a, score_a = match_endpoint(subj_text)
+                                idx_b, score_b = match_endpoint(obj_text)
                                 if score_a >= 0.70 and score_b >= 0.70:
                                     relation_edges.append(_enrich({
                                         "type": "relation",
