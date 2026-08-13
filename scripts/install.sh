@@ -93,6 +93,21 @@ skip() { printf '  \033[33m[skip]\033[0m %s\n' "$*"; }
 warn() { printf '  \033[33m[warn]\033[0m %s\n' "$*"; }
 fail() { printf '  \033[31m[fail]\033[0m %s\n' "$*"; exit 1; }
 hr()   { printf '\033[1m== %s ==\033[0m\n' "$*"; }
+# SUDO: surgical auto-elevation for the FEW steps that genuinely need root (system
+# package installs: python/poppler/ffmpeg). Empty when already root or sudo absent,
+# degrading to a bare call (which then warns cleanly). NEVER used for workspace
+# files / cron / config -- those MUST stay owned by the invoking user (root-owned
+# files break the user's gateway). Noob-proof middle ground: auto-elevate the pkg
+# steps, keep everything else as the user. Defined HERE (early) so the python
+# preflight below can use it.
+SUDO=""; [ "$(id -u)" -ne 0 ] && command -v sudo >/dev/null 2>&1 && SUDO="sudo"
+# openclaw_running: timeout-guarded gateway probe. Bare `openclaw status` can BLOCK
+# indefinitely on a contended gateway socket; under `set -e` that FREEZES the whole
+# installer (silently killed -> 'exited nonzero', no error). Wrap in a hard timeout.
+openclaw_running() {
+  command -v openclaw >/dev/null 2>&1 || return 1
+  timeout 10 openclaw status >/dev/null 2>&1
+}
 
 [ -d "$WS" ] || fail "Workspace not found: $WS  (pass --workspace DIR)"
 
@@ -243,12 +258,12 @@ if ! command -v python3 &>/dev/null; then
   if command -v brew &>/dev/null; then
     brew install python3 && ok "python3 installed (brew)" || warn "python3 install failed — install manually: https://python.org"
   elif command -v apt-get &>/dev/null; then
-    apt-get install -y software-properties-common 2>/dev/null
-    add-apt-repository -y ppa:deadsnakes/ppa 2>/dev/null || true
-    apt-get update -q && apt-get install -y python3.12 python3.12-venv python3-pip \
-      && ln -sf /usr/bin/python3.12 /usr/local/bin/python3 \
+    $SUDO apt-get install -y software-properties-common 2>/dev/null
+    $SUDO add-apt-repository -y ppa:deadsnakes/ppa 2>/dev/null || true
+    $SUDO apt-get update -q && $SUDO apt-get install -y python3.12 python3.12-venv python3-pip \
+      && $SUDO ln -sf /usr/bin/python3.12 /usr/local/bin/python3 \
       && ok "python3.12 installed (deadsnakes)" \
-      || warn "python3 install failed — install manually: https://python.org"
+      || warn "python3 install failed — run as a user with sudo, or install manually: https://python.org"
   elif command -v curl &>/dev/null; then
     curl https://pyenv.run | bash \
       && export PATH="$HOME/.pyenv/bin:$PATH" \
@@ -400,7 +415,7 @@ fi
 # Missing → plain text/markdown ingest still works; only PDF/Office is gated.
 # Mirrors the python3 auto-install pattern above: detect PM → install → warn-fallback.
 # Never hard-fails (warn, not fail) — the feature degrades, it does not block install.
-SUDO=""; [ "$(id -u)" -ne 0 ] && command -v sudo &>/dev/null && SUDO="sudo"
+# SUDO already defined early (after log helpers) — was re-defined here; kept as no-op.
 pm_install() { # $@ = packages; prints command, runs via detected PM, returns nonzero on failure
   if   command -v apt-get &>/dev/null; then $SUDO apt-get update -q && $SUDO apt-get install -y "$@"
   elif command -v dnf     &>/dev/null; then $SUDO dnf install -y "$@"
@@ -750,7 +765,7 @@ if [ -d "$SKILL_DIR/hooks/dinomem-open-notes" ]; then
   rm -rf "$HOOK_DST"
   cp -r "$HOOK_SRC" "$HOOK_DST"
   ok "hooks/dinomem-open-notes/ copied (neuron superset overwrites base)"
-  if command -v openclaw >/dev/null 2>&1 && openclaw status >/dev/null 2>&1; then
+  if openclaw_running; then
     openclaw hooks enable dinomem-open-notes >/dev/null 2>&1 \
       && ok "dinomem-open-notes hook enabled (restart OpenClaw to activate)" \
       || warn "openclaw hooks enable failed — run manually: openclaw hooks enable dinomem-open-notes"
@@ -2874,7 +2889,7 @@ if command -v openclaw >/dev/null 2>&1; then
   else
     sc_warn "openclaw.json FAILS schema validation — DO NOT restart yet; gateway would not come back. Run: openclaw config validate"
   fi
-  if openclaw status >/dev/null 2>&1; then
+  if openclaw_running; then
     sc_pass "OpenClaw gateway responding now (restart to load dinomem changes)"
   else
     sc_warn "OpenClaw gateway not responding to 'openclaw status' — start/restart it: openclaw gateway restart"
@@ -2918,7 +2933,7 @@ if command -v openclaw >/dev/null 2>&1; then
   # — so don't loop; just surface the manual command + fail.
   if [ -n "$_MISSING_REQUIRED" ]; then
     _REPAIR_CMD="bash $SKILL_DIR/scripts/install.sh --workspace $WS --agent-id $AGENT_ID --repair-cron"
-    if [ "$REPAIR_CRON" = 0 ] && openclaw status >/dev/null 2>&1; then
+    if [ "$REPAIR_CRON" = 0 ] && openclaw_running; then
       printf '  \033[33m[repair]\033[0m required cron(s) missing (%s) — auto-repairing (cron-only re-run)...\n' "$_MISSING_REQUIRED"
       if bash "$SKILL_DIR/scripts/install.sh" --workspace "$WS" --agent-id "$AGENT_ID" --repair-cron; then
         # re-verify after repair
@@ -2977,7 +2992,7 @@ fi
 #    not the gateway's scanned workspace, the hook in $WS/hooks/ silently never
 #    loads. Assert eligibility via `hooks check --json` (grep on the table is
 #    unreliable — emoji wrap splits names). Self-heal into global ~/.openclaw/hooks/.
-if command -v openclaw >/dev/null 2>&1 && openclaw status >/dev/null 2>&1; then
+if openclaw_running; then
   _elig="$(openclaw hooks check --json 2>/dev/null | "$PY" -c "import json,sys;
 try:
   d=json.load(sys.stdin); print('yes' if 'dinomem-open-notes' in d.get('hooks',{}).get('eligible',[]) else 'no')
