@@ -29,6 +29,9 @@ MEM="$WS/memory"
 # Same v2 pattern as check_daily_notes.sh / check_ideator.sh / check_projects.sh.
 SCRIPTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=_gate_refire_guard.sh
+# _gate_refire_guard.sh is a thin shim over base's gate_lib.sh, so sensor_*/
+# defer_if_busy are available here too. (Legacy shim without them -> defer_if_busy
+# stays undefined -> the guarded block below no-ops, gate behaviour unchanged.)
 source "$SCRIPTS_DIR/_gate_refire_guard.sh"
 STATE_FILE="$SCRIPTS_DIR/.check_improvable.last_run"
 MIN_INTERVAL_SECS=$(( 24 * 3600 ))  # daily floor for frozen/stuck notes
@@ -77,6 +80,22 @@ done
 [ "${#qualifying[@]}" -gt 0 ] || exit 1
 
 if refire_should_fire "$STATE_FILE" "$MIN_INTERVAL_SECS" "${qualifying[@]}"; then
+  # CPU backpressure (same Layer-B/C consumer pattern as check_projects.sh): the
+  # Improver re-runs verification on a done note and can spawn a re-attempt/build.
+  # Waking it while the box is already saturated piles latency on real user work.
+  # If load is over the ceiling, DEFER this tick -- skip the LLM wake, retry next.
+  # NO STARVATION: refire_should_fire ABOVE already stamped STATE_FILE, so the
+  # daily MIN_INTERVAL floor still elapses regardless of how many ticks we defer
+  # -> a permanently-busy box still eventually improves (spec Layer-C contract).
+  # fail-open: if defer_if_busy is undefined (legacy shim) or the sensor is
+  # unknown, we FALL THROUGH and fire as before -- backpressure never blocks a
+  # real signal, it only smooths it.
+  if declare -F defer_if_busy >/dev/null 2>&1; then
+    ceiling="${DINOMEM_IMPROVER_LOAD_CEILING:-2.0}"
+    if ! defer_if_busy "$(sensor_load_ratio)" "$ceiling"; then
+      exit 1   # box busy -> defer to next tick (interval floor guarantees eventual run)
+    fi
+  fi
   exit 0
 fi
 exit 1
