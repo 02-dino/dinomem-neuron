@@ -430,6 +430,25 @@ crontab -l | grep memory_promote
 
 After the first full week, check `topics/PERSISTENT_AUTO.md` — promoted insights will appear there.
 
+### Verify it actually works — on demand
+
+Neuron adds a deeper introspection layer on top of base's audit/undo. When you (or the agent) want to check *why* a memory exists and what state it's in — not just that it changed:
+
+```bash
+# WHY IS THIS MEMORY HERE? — joins lifecycle state + retrieval history
+# (when it was recalled, at what rank/score) + promotion evidence into one trace.
+# Promotion confidence is calibrated against an outcome ledger.
+python3 procedures/explain_memory.py --file memory/<some_memory>.md
+
+# LIFECYCLE STATE — where a fact/insight sits in its FSM (active/decayed/superseded…)
+python3 procedures/lifecycle_state.py
+```
+
+- **Explainable, not asserted.** `explain_memory.py` makes every promoted memory *auditable*: why it's here, when it was used, how confident (and calibrated) that confidence is. Deterministic, read-only.
+- **Prove recall quality (citable).** For a hard number on the same benchmark the papers use, run the neuron LongMemEval harness (neuron repo) — it measures the *full* neuron stack (hybrid_recall: memory + graph + session legs) on LongMemEval-S with the official scorer, in an isolated throwaway workspace (your real memory is never touched). Same protocol as base's harness, richer legs.
+
+> Base ships the transparent+reversible layer (`_memory_diff.py` audit log with byte-exact `restore_ref` undo, `weekly_stats.py` counts). Neuron adds the *explainable* layer on top.
+
 ---
 
 ### Why multi-signal evaluation?
