@@ -56,6 +56,37 @@ Now **every** investing conversation reflects it — no recall, no prompting, no
 
 ---
 
+## The second fix: it knows *when* things were true
+
+### ❌ BEFORE — memory has no clock
+
+You change your mind. In June you told it one thing; in November, the opposite.
+
+```
+June:      "Deploying Atlas on the old DB."
+November:  "Migrated Atlas to the new DB."
+```
+
+Plain memory holds **both**. Ask "what's Atlas running on?" and it might hand you the June answer — the stale one. Or it flags June-vs-November as a **contradiction** it can't resolve and escalates. And ask "what did I think back in June?" and it can't separate *then* from *now* at all — memory is a flat pile with no timeline.
+
+### ✅ AFTER — dinomem-neuron
+
+Every fact carries a **validity interval** — when it started being true, and when it stopped. Superseding a belief doesn't fight the old one; it **retires** it:
+
+```
+Atlas DB (old)  valid: Jun ──────► Nov   [retired → memory/_history/]
+Atlas DB (new)  valid: Nov ──────► now   [current]
+```
+
+- **"what's Atlas on?"** → the new DB. The current truth wins, automatically.
+- **"what did I think in June?"** → an `as_of` query returns the June answer — the agent can read its own history.
+- **same-subject + newer = supersession, not contradiction** — it recognizes an *update* and short-circuits the "conflict!" escalation.
+- nothing is deleted — the old fact moves to `_history/`, fully recoverable.
+
+Memory stops being a flat pile and becomes a **timeline**. The agent knows not just *what* you believe, but *when* each belief was true.
+
+---
+
 ## What that unlocks, before vs after
 
 | | ❌ Base alone | ✅ With neuron |
