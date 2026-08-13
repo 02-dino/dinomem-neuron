@@ -93,6 +93,46 @@ skip() { printf '  \033[33m[skip]\033[0m %s\n' "$*"; }
 warn() { printf '  \033[33m[warn]\033[0m %s\n' "$*"; }
 fail() { printf '  \033[31m[fail]\033[0m %s\n' "$*"; exit 1; }
 hr()   { printf '\033[1m== %s ==\033[0m\n' "$*"; }
+# _apply_subst FILE — apply ALL neuron placeholder substitutions in place (sed).
+# One place, so copy + content-compare stay identical.
+_apply_subst() {
+  local _f="$1"
+  sed -i "s|DINOMEM_WORKSPACE_PLACEHOLDER|$WS|g" "$_f"
+  sed -i "s|DINOMEM_SQLITE_PLACEHOLDER|$SQLITE_PATH|g" "$_f"
+  sed -i "s|DINOMEM_OPENCLAW_MEMORY_PLACEHOLDER|$OPENCLAW_MEMORY_DIR|g" "$_f"
+  sed -i "s|DINOMEM_HF_CACHE_PLACEHOLDER|$HOME/.cache/huggingface|g" "$_f"
+  sed -i "s|DINOMEM_AGENT_ID_PLACEHOLDER|$AGENT_ID|g" "$_f"
+  sed -i "s|DINOMEM_AGENT_SESSIONS_PLACEHOLDER|$SESSIONS_DIR|g" "$_f"
+}
+# neuron_copy_engine_file REL [always_overwrite] — THE one neuron copy primitive.
+# Content-aware: copies $SKILL_DIR/REL -> $WS/REL with placeholder subst, decides
+# copy-vs-skip by CONTENT (substituted-source vs installed), not mere existence,
+# so re-running the installer actually UPGRADES changed engine files instead of
+# the old skip-if-exists (which meant upgrades NEVER landed on existing files).
+# --force forces; always_overwrite=1 forces regardless (extract_memory.py must
+# always win over base's older copy). Auto-discovery loops call this so a NEW
+# engine file ships automatically without editing a hardcoded manifest.
+neuron_copy_engine_file() {
+  local _rel="$1" _force_always="${2:-0}" _src _dst
+  _src="$SKILL_DIR/$_rel"; _dst="$WS/$_rel"
+  [ -f "$_src" ] || { warn "source missing: $_rel (skipped)"; return 0; }
+  if [ "$FORCE" = 0 ] && [ "$_force_always" = 0 ] && [ -f "$_dst" ]; then
+    # content-compare: substitute a throwaway copy of source, cmp to installed
+    local _t; _t="$(mktemp)" || return 1
+    cp "$_src" "$_t"; _apply_subst "$_t"
+    if cmp -s "$_t" "$_dst"; then rm -f "$_t"; skip "$_rel (up-to-date)"; return 0; fi
+    rm -f "$_t"
+  fi
+  if [ "${DRY_RUN:-0}" = 1 ]; then
+    if [ -f "$_dst" ]; then printf '  [plan] UPGRADE %s (content changed)\n' "$_rel"; else printf '  [plan] install %s\n' "$_rel"; fi
+    return 0
+  fi
+  mkdir -p "$(dirname "$_dst")"
+  cp "$_src" "$_dst"
+  _apply_subst "$_dst"
+  case "$_rel" in *.sh) chmod +x "$_dst" 2>/dev/null || true;; esac
+  ok "$_rel"
+}
 # SUDO: surgical auto-elevation for the FEW steps that genuinely need root (system
 # package installs: python/poppler/ffmpeg). Empty when already root or sudo absent,
 # degrading to a bare call (which then warns cleanly). NEVER used for workspace
@@ -716,28 +756,29 @@ hr "Copying scripts"
 # The scripts/*.sh + resolve_done_notes.py + distill_done_note.py helpers are the
 # cron targets referenced in the cron prompts; without them a fresh neuron install
 # registers crons whose scripts are missing (Step-0 pre-gate fails).
-for f in procedures/extract_memory.py procedures/memory_graph.py procedures/graph_store.py procedures/graph_store_test.py procedures/memory_synthesis.py procedures/memory_promote.py procedures/contradiction_check.py procedures/confidence_engine.py procedures/lifecycle_state.py procedures/explain_memory.py procedures/generate_topic_index.py procedures/docs_ingest.py procedures/pdf_visual_probe.py procedures/session_ingest.py procedures/_schema_adapter.py procedures/_cheap_model.py procedures/valid_time.py procedures/data_register.py tools/docs_search.py tools/session_search.py tools/graph_search.py tools/fact_query.py tools/hybrid_recall.py tools/cache_utils.py tools/data_query.py scripts/claim_note.sh scripts/check_projects.sh scripts/check_improvable.sh scripts/check_deletable.sh scripts/check_ideator.sh scripts/cron_gate.sh scripts/_gate_git_ctx.sh scripts/_gate_refire_guard.sh scripts/resolve_done_notes.py scripts/distill_done_note.py; do
-  dst="$WS/$f"
-  # extract_memory.py is the neuron superset over base's copy — always overwrite it,
-  # even without --force, or the upgrade ships base's older engine.
-  always_overwrite=0
-  case "$f" in procedures/extract_memory.py) always_overwrite=1 ;; esac
-  # license_check.py must sit beside procedures so the runtime guard can import it.
-  true
-  if [ -f "$dst" ] && [ "$FORCE" = 0 ] && [ "$always_overwrite" = 0 ]; then
-    skip "$f (exists, use --force to overwrite)"
-  else
-    mkdir -p "$(dirname "$dst")"
-    cp "$SKILL_DIR/$f" "$dst"
-    sed -i "s|DINOMEM_WORKSPACE_PLACEHOLDER|$WS|g" "$dst"
-    sed -i "s|DINOMEM_SQLITE_PLACEHOLDER|$SQLITE_PATH|g" "$dst"
-    sed -i "s|DINOMEM_OPENCLAW_MEMORY_PLACEHOLDER|$OPENCLAW_MEMORY_DIR|g" "$dst"
-    sed -i "s|DINOMEM_HF_CACHE_PLACEHOLDER|$HOME/.cache/huggingface|g" "$dst"
-    sed -i "s|DINOMEM_AGENT_ID_PLACEHOLDER|$AGENT_ID|g" "$dst"
-    sed -i "s|DINOMEM_AGENT_SESSIONS_PLACEHOLDER|$SESSIONS_DIR|g" "$dst"
-    case "$f" in *.sh) chmod +x "$dst" 2>/dev/null || true;; esac
-    ok "$f"
-  fi
+# AUTO-DISCOVERY + CONTENT-AWARE UPGRADE (mirrors base). Every neuron engine file
+# is copied via neuron_copy_engine_file (content-hash: upgrades changed files,
+# skips identical, --force overrides). procedures/tools/scripts are DISCOVERED by
+# glob, not a hardcoded list, so a NEW file added to the repo ships automatically.
+# Fixes: (1) hardcoded manifest omitted ~14 real engine files (compile_user,
+# entity_resolver, extract_user, mem_authority, promotion_*, skill_extract,
+# run_log, _embed, person_link, ...) -> they never installed; (2) skip-if-exists
+# meant re-running never UPGRADED an existing file. Test files (*_test.py) and the
+# installer/uninstaller are excluded by design. extract_memory.py keeps its
+# always-overwrite (neuron superset must beat base's older copy).
+for _dir in procedures tools scripts; do
+  [ -d "$SKILL_DIR/$_dir" ] || continue
+  for _src in "$SKILL_DIR/$_dir"/*.py "$SKILL_DIR/$_dir"/*.sh; do
+    [ -f "$_src" ] || continue                        # glob-no-match guard
+    _bn="$(basename "$_src")"
+    case "$_bn" in
+      *_test.py) continue ;;                            # test fixtures don't ship
+      install.sh|uninstall.sh|update.sh) continue ;;    # installer never self-copies
+    esac
+    _fa=0
+    case "$_dir/$_bn" in procedures/extract_memory.py) _fa=1 ;; esac
+    neuron_copy_engine_file "$_dir/$_bn" "$_fa"
+  done
 done
 
 # license_check.py -> workspace procedures/ (runtime guard import target)
@@ -1643,6 +1684,7 @@ PYEOF
 if true; then
   python3 - <<PYEOF
 import subprocess, json, os
+import os as _os  # fix#13: this block references _os (like sibling blocks) but only imported plain 'os' -> NameError in _find_cron on re-run
 
 def _cron_add_argv(job):
     """Build a flag-based 'openclaw cron add' argv from a job dict.
