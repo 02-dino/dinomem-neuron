@@ -811,11 +811,21 @@ fi
 upsert_cron() {
   local keyword="$1" comment="$2" cron_line="$3" label="$4"
   local existing
-  existing=$(crontab -l 2>/dev/null | grep "$keyword" || true)
+  # AGENT-SCOPED MATCH (multi-agent safety): the crontab is per-USER(root), shared
+  # by every agent on this host. A bare `grep "$keyword"` (e.g. memory_graph.py)
+  # matches EVERY agent's line, so `grep -v` would strip another agent's cron.
+  # We scope the match by the workspace fingerprint ("cd $WS &&"), which is unique
+  # per agent, AND suffix the comment marker with [agent:$AGENT_ID] for clarity.
+  # Fallback: if $WS is somehow empty, degrade to the old keyword match (single-
+  # agent buyer path is unaffected — one agent, one line).
+  local scope
+  if [ -n "${WS:-}" ]; then scope="cd $WS && .*$keyword"; else scope="$keyword"; fi
+  comment="$comment [agent:${AGENT_ID:-default}]"
+  existing=$(crontab -l 2>/dev/null | grep -E "$scope" || true)
   if [ "$existing" = "$cron_line" ]; then
     skip "$label (exists, up to date)"
   elif [ -n "$existing" ]; then
-    { crontab -l 2>/dev/null | grep -v "$keyword"; echo "# $comment"; echo "$cron_line"; } | crontab -
+    { crontab -l 2>/dev/null | grep -vE "$scope"; echo "# $comment"; echo "$cron_line"; } | crontab -
     ok "$label (updated)"
   else
     { crontab -l 2>/dev/null; echo "# $comment"; echo "$cron_line"; } | crontab -
@@ -873,8 +883,21 @@ if [ "$DO_CRON" = 1 ]; then
 
   # project_advancer — OpenClaw agentTurn cron (NOT shell crontab): auto-advance type:project in_progress notes
   # one step per run, unattended, announces progress. Premium: only neuron installs this.
-  python3 - <<PYEOF
+  DINOMEM_AGENT_ID="$AGENT_ID" python3 - <<PYEOF
 import subprocess, json, os
+import os as _os
+_DINO_AID = (_os.environ.get('DINOMEM_AGENT_ID','') or '').strip().lower()
+def _dino_name_agent_match(j, name):
+    if j.get('name','').strip().lower() != name.strip().lower():
+        return False
+    jaid = (j.get('agentId') or '')
+    jaid = jaid.strip().lower() if isinstance(jaid, str) else ''
+    # single-agent / legacy fallback: if we don't know our agent id, or the
+    # stored job has no agentId, match by name only (preserves buyer path).
+    if not _DINO_AID or not jaid:
+        return True
+    return jaid == _DINO_AID
+# --dino-agent-match-helper--
 
 def _cron_add_argv(job):
     """Build a flag-based 'openclaw cron add' argv from a job dict.
@@ -924,6 +947,9 @@ def _cron_add_argv(job):
             a += ['--thinking', pay['thinking']]
         if pay.get('lightContext'):
             a += ['--light-context']
+    _ta = pay.get('toolsAllow') or job.get('toolsAllow')
+    if _ta:
+        a += ['--tools', ','.join(_ta) if isinstance(_ta, (list, tuple)) else str(_ta)]
     st = job.get('sessionTarget')
     if st in ('main', 'isolated'):
         a += ['--session', st]
@@ -950,7 +976,7 @@ def _cron_verify(name):
         data = json.loads(lr.stdout)
         joblist = data if isinstance(data, list) else (data.get('jobs') if isinstance(data.get('jobs'), list) else (data.get('jobs') or {}).get('jobs', []))
         for j in (joblist or []):
-            if j.get('name','').strip().lower() == name.strip().lower():
+            if _dino_name_agent_match(j, name):
                 return j.get('id','') or 'exists'
     except Exception:
         return ''
@@ -969,7 +995,7 @@ def upsert_cron_job(job, idfile, label, idsdir):
             data = json.loads(lr.stdout)
             joblist = data if isinstance(data, list) else (data.get('jobs') if isinstance(data.get('jobs'), list) else (data.get('jobs') or {}).get('jobs', []))
             for j in (joblist or []):
-                if j.get('name','').strip().lower() == name.strip().lower():
+                if _dino_name_agent_match(j, name):
                     existing_id = j.get('id',''); break
     except Exception:
         existing_id = ''
@@ -1030,8 +1056,21 @@ fi
 # Self-improving closer, half 1 of 2: LLM improves COMPLETED-but-unverified
 # project notes (behavior-preserving, all domains), then stamps verified: true.
 # Zero-LLM pre-gate (check_improvable.sh) guards cost. Premium: neuron only.
-python3 - <<PYEOF
+DINOMEM_AGENT_ID="$AGENT_ID" python3 - <<PYEOF
 import subprocess, json, os
+import os as _os
+_DINO_AID = (_os.environ.get('DINOMEM_AGENT_ID','') or '').strip().lower()
+def _dino_name_agent_match(j, name):
+    if j.get('name','').strip().lower() != name.strip().lower():
+        return False
+    jaid = (j.get('agentId') or '')
+    jaid = jaid.strip().lower() if isinstance(jaid, str) else ''
+    # single-agent / legacy fallback: if we don't know our agent id, or the
+    # stored job has no agentId, match by name only (preserves buyer path).
+    if not _DINO_AID or not jaid:
+        return True
+    return jaid == _DINO_AID
+# --dino-agent-match-helper--
 
 def _cron_add_argv(job):
     """Build a flag-based 'openclaw cron add' argv from a job dict.
@@ -1081,6 +1120,9 @@ def _cron_add_argv(job):
             a += ['--thinking', pay['thinking']]
         if pay.get('lightContext'):
             a += ['--light-context']
+    _ta = pay.get('toolsAllow') or job.get('toolsAllow')
+    if _ta:
+        a += ['--tools', ','.join(_ta) if isinstance(_ta, (list, tuple)) else str(_ta)]
     st = job.get('sessionTarget')
     if st in ('main', 'isolated'):
         a += ['--session', st]
@@ -1107,7 +1149,7 @@ def _cron_verify(name):
         data = json.loads(lr.stdout)
         joblist = data if isinstance(data, list) else (data.get('jobs') if isinstance(data.get('jobs'), list) else (data.get('jobs') or {}).get('jobs', []))
         for j in (joblist or []):
-            if j.get('name','').strip().lower() == name.strip().lower():
+            if _dino_name_agent_match(j, name):
                 return j.get('id','') or 'exists'
     except Exception:
         return ''
@@ -1123,7 +1165,7 @@ def upsert_cron_job(job, idfile, label, idsdir):
             data = json.loads(lr.stdout)
             joblist = data if isinstance(data, list) else (data.get('jobs') if isinstance(data.get('jobs'), list) else (data.get('jobs') or {}).get('jobs', []))
             for j in (joblist or []):
-                if j.get('name','').strip().lower() == name.strip().lower():
+                if _dino_name_agent_match(j, name):
                     existing_id = j.get('id',''); break
     except Exception:
         existing_id = ''
@@ -1179,8 +1221,21 @@ PYEOF
 # Self-improving closer, half 2 of 2: thin wrapper over resolve_done_notes.py.
 # Deterministically deletes notes carrying verified: true (snapshot + _pin_
 # promote + non-blocking lock + claim-respect). Premium: neuron only.
-python3 - <<PYEOF
+DINOMEM_AGENT_ID="$AGENT_ID" python3 - <<PYEOF
 import subprocess, json, os
+import os as _os
+_DINO_AID = (_os.environ.get('DINOMEM_AGENT_ID','') or '').strip().lower()
+def _dino_name_agent_match(j, name):
+    if j.get('name','').strip().lower() != name.strip().lower():
+        return False
+    jaid = (j.get('agentId') or '')
+    jaid = jaid.strip().lower() if isinstance(jaid, str) else ''
+    # single-agent / legacy fallback: if we don't know our agent id, or the
+    # stored job has no agentId, match by name only (preserves buyer path).
+    if not _DINO_AID or not jaid:
+        return True
+    return jaid == _DINO_AID
+# --dino-agent-match-helper--
 
 def _cron_add_argv(job):
     """Build a flag-based 'openclaw cron add' argv from a job dict.
@@ -1230,6 +1285,9 @@ def _cron_add_argv(job):
             a += ['--thinking', pay['thinking']]
         if pay.get('lightContext'):
             a += ['--light-context']
+    _ta = pay.get('toolsAllow') or job.get('toolsAllow')
+    if _ta:
+        a += ['--tools', ','.join(_ta) if isinstance(_ta, (list, tuple)) else str(_ta)]
     st = job.get('sessionTarget')
     if st in ('main', 'isolated'):
         a += ['--session', st]
@@ -1256,7 +1314,7 @@ def _cron_verify(name):
         data = json.loads(lr.stdout)
         joblist = data if isinstance(data, list) else (data.get('jobs') if isinstance(data.get('jobs'), list) else (data.get('jobs') or {}).get('jobs', []))
         for j in (joblist or []):
-            if j.get('name','').strip().lower() == name.strip().lower():
+            if _dino_name_agent_match(j, name):
                 return j.get('id','') or 'exists'
     except Exception:
         return ''
@@ -1272,7 +1330,7 @@ def upsert_cron_job(job, idfile, label, idsdir):
             data = json.loads(lr.stdout)
             joblist = data if isinstance(data, list) else (data.get('jobs') if isinstance(data.get('jobs'), list) else (data.get('jobs') or {}).get('jobs', []))
             for j in (joblist or []):
-                if j.get('name','').strip().lower() == name.strip().lower():
+                if _dino_name_agent_match(j, name):
                     existing_id = j.get('id',''); break
     except Exception:
         existing_id = ''
@@ -1322,6 +1380,7 @@ job = {
         "kind": "agentTurn",
         **({"model": _cheap} if _cheap else {}),
         "message": "Verified Note Deleter (Component 1). Deterministic janitor: delete project/task notes that carry verified: true, so the workspace stays clean after Component 2 has improved+validated them. This is a THIN wrapper around a script that does all the real work (zero-LLM gate, claim-respect, snapshot, distill-to-regular-memory, non-blocking lock).\n\nStep 1: Run exactly this command: python3 $WS/scripts/resolve_done_notes.py\n\nStep 2: Read its output. The script self-gates: if no status:done note exists it exits immediately (no work). It deletes ONLY notes with verified: true that are NOT freshly claimed by another job; before deleting each it snapshots it and DISTILLS its knowledge into normal schema memory entries (which then age/freeze on merit via the usual retention review). There is no _pin_ promotion — durable pins are authored directly as _pin_ files, never produced by note retirement.\n\nStep 3: ANNOUNCE only if it actually deleted something (grep the output for 'deleted verified note'). If so, send ONE terse line to the owner via the message tool using the agent's default owner channel (platform-appropriate; do not hardcode a chat id): e.g. 'Retired N verified note(s): <names>.' If it deleted nothing (gate exit, lock busy, or no verified notes), stay SILENT — no message.\n\nDo nothing else. Do not edit notes, do not re-check done_when, do not stamp verified — that is Component 2's job. You are the janitor.",
+        "toolsAllow": ["read", "write", "exec", "process", "message"],
         "lightContext": True,
         "timeoutSeconds": 120
     },
@@ -1339,8 +1398,21 @@ PYEOF
 # section. It NEVER builds/advances/completes/reaps a note, NEVER mutates the body,
 # NEVER changes type/status (promotion is owner-only — it only suggests). Premium:
 # only neuron installs this. Disabled; driven by the Note Cron Gate like the trio.
-  python3 - <<PYEOF
+  DINOMEM_AGENT_ID="$AGENT_ID" python3 - <<PYEOF
 import subprocess, json, os
+import os as _os
+_DINO_AID = (_os.environ.get('DINOMEM_AGENT_ID','') or '').strip().lower()
+def _dino_name_agent_match(j, name):
+    if j.get('name','').strip().lower() != name.strip().lower():
+        return False
+    jaid = (j.get('agentId') or '')
+    jaid = jaid.strip().lower() if isinstance(jaid, str) else ''
+    # single-agent / legacy fallback: if we don't know our agent id, or the
+    # stored job has no agentId, match by name only (preserves buyer path).
+    if not _DINO_AID or not jaid:
+        return True
+    return jaid == _DINO_AID
+# --dino-agent-match-helper--
 
 def _cron_add_argv(job):
     a = ['openclaw', 'cron', 'add']
@@ -1372,6 +1444,9 @@ def _cron_add_argv(job):
         a += ['--thinking', pay['thinking']]
     if pay.get('lightContext'):
         a += ['--light-context']
+    _ta = pay.get('toolsAllow') or job.get('toolsAllow')
+    if _ta:
+        a += ['--tools', ','.join(_ta) if isinstance(_ta, (list, tuple)) else str(_ta)]
     st = job.get('sessionTarget')
     if st in ('main', 'isolated'):
         a += ['--session', st]
@@ -1396,7 +1471,7 @@ def _cron_verify(name):
         data = json.loads(lr.stdout)
         joblist = data if isinstance(data, list) else (data.get('jobs') if isinstance(data.get('jobs'), list) else (data.get('jobs') or {}).get('jobs', []))
         for j in (joblist or []):
-            if j.get('name','').strip().lower() == name.strip().lower():
+            if _dino_name_agent_match(j, name):
                 return j.get('id','') or 'exists'
     except Exception:
         return ''
@@ -1411,7 +1486,7 @@ def upsert_cron_job(job, idfile, label, idsdir):
             data = json.loads(lr.stdout)
             joblist = data if isinstance(data, list) else (data.get('jobs') if isinstance(data.get('jobs'), list) else (data.get('jobs') or {}).get('jobs', []))
             for j in (joblist or []):
-                if j.get('name','').strip().lower() == name.strip().lower():
+                if _dino_name_agent_match(j, name):
                     existing_id = j.get('id',''); break
     except Exception:
         existing_id = ''
@@ -1483,7 +1558,7 @@ try:
     r = subprocess.run(['openclaw','cron','list','--json'], capture_output=True, text=True, timeout=10)
     jobs = json.loads(r.stdout) if r.returncode == 0 else []
     jl = jobs if isinstance(jobs, list) else jobs.get('jobs', {}).get('jobs', [])
-    print(next((j.get('id','') for j in jl if j.get('name','').strip().lower()=='project cron gate'), ''))
+    print(next((j.get('id','') for j in jl if (j.get('name','').strip().lower()=='project cron gate' and (not _DINO_AID or not (j.get('agentId') or '') or (j.get('agentId') or '').strip().lower()==_DINO_AID))), ''))
 except: print('')
 " 2>/dev/null)
 if [ -n "$LEGACY_GATE_ID" ]; then
@@ -1497,8 +1572,21 @@ fi
 # job shares it, keep the NEWEST (highest createdAtMs) and remove the rest. This
 # makes 'update dinomem' converge to exactly one of each lane no matter what state
 # it started from. Pure cleanup: never creates anything, only removes true dupes.
-python3 - <<'PYEOF'
+DINOMEM_AGENT_ID="$AGENT_ID" python3 - <<'PYEOF'
 import subprocess, json
+import os as _os
+_DINO_AID = (_os.environ.get('DINOMEM_AGENT_ID','') or '').strip().lower()
+def _dino_name_agent_match(j, name):
+    if j.get('name','').strip().lower() != name.strip().lower():
+        return False
+    jaid = (j.get('agentId') or '')
+    jaid = jaid.strip().lower() if isinstance(jaid, str) else ''
+    # single-agent / legacy fallback: if we don't know our agent id, or the
+    # stored job has no agentId, match by name only (preserves buyer path).
+    if not _DINO_AID or not jaid:
+        return True
+    return jaid == _DINO_AID
+# --dino-agent-match-helper--
 CANON = [
     "Project Advancer",
     "Project Improver (Component 2)",
@@ -1514,7 +1602,7 @@ try:
 except Exception:
     jl = []
 for cname in CANON:
-    matches = [j for j in (jl or []) if j.get('name','').strip().lower() == cname.lower()]
+    matches = [j for j in (jl or []) if _dino_name_agent_match(j, cname)]
     if len(matches) <= 1:
         continue
     # keep the newest by createdAtMs (fallback updatedAtMs); remove the rest
@@ -1577,6 +1665,9 @@ def _cron_add_argv(job):
             a += ['--thinking', pay['thinking']]
         if pay.get('lightContext'):
             a += ['--light-context']
+    _ta = pay.get('toolsAllow') or job.get('toolsAllow')
+    if _ta:
+        a += ['--tools', ','.join(_ta) if isinstance(_ta, (list, tuple)) else str(_ta)]
     st = job.get('sessionTarget')
     if st in ('main', 'isolated'):
         a += ['--session', st]
@@ -1757,8 +1848,21 @@ fi
 # never touches a freshly-claimed note (live-session <120m / other <30m).
 # Premium: neuron only. Without this, done task_bound + non-verified done notes
 # would never auto-retire on a buyer install.
-python3 - <<PYEOF
+DINOMEM_AGENT_ID="$AGENT_ID" python3 - <<PYEOF
 import subprocess, json, os
+import os as _os
+_DINO_AID = (_os.environ.get('DINOMEM_AGENT_ID','') or '').strip().lower()
+def _dino_name_agent_match(j, name):
+    if j.get('name','').strip().lower() != name.strip().lower():
+        return False
+    jaid = (j.get('agentId') or '')
+    jaid = jaid.strip().lower() if isinstance(jaid, str) else ''
+    # single-agent / legacy fallback: if we don't know our agent id, or the
+    # stored job has no agentId, match by name only (preserves buyer path).
+    if not _DINO_AID or not jaid:
+        return True
+    return jaid == _DINO_AID
+# --dino-agent-match-helper--
 
 def _cron_add_argv(job):
     """Build a flag-based 'openclaw cron add' argv from a job dict.
@@ -1808,6 +1912,9 @@ def _cron_add_argv(job):
             a += ['--thinking', pay['thinking']]
         if pay.get('lightContext'):
             a += ['--light-context']
+    _ta = pay.get('toolsAllow') or job.get('toolsAllow')
+    if _ta:
+        a += ['--tools', ','.join(_ta) if isinstance(_ta, (list, tuple)) else str(_ta)]
     st = job.get('sessionTarget')
     if st in ('main', 'isolated'):
         a += ['--session', st]
@@ -1834,7 +1941,7 @@ def _cron_verify(name):
         data = json.loads(lr.stdout)
         joblist = data if isinstance(data, list) else (data.get('jobs') if isinstance(data.get('jobs'), list) else (data.get('jobs') or {}).get('jobs', []))
         for j in (joblist or []):
-            if j.get('name','').strip().lower() == name.strip().lower():
+            if _dino_name_agent_match(j, name):
                 return j.get('id','') or 'exists'
     except Exception:
         return ''
@@ -1858,7 +1965,7 @@ def upsert_gated(job, idfile, label, idsdir, gate_env_key):
             data = json.loads(lr.stdout)
             joblist = data if isinstance(data, list) else (data.get('jobs') if isinstance(data.get('jobs'), list) else (data.get('jobs') or {}).get('jobs', []))
             for j in (joblist or []):
-                if j.get('name','').strip().lower() == name.strip().lower():
+                if _dino_name_agent_match(j, name):
                     existing_id = j.get('id',''); break
     except Exception:
         existing_id = ''
@@ -1909,7 +2016,7 @@ def upsert_gated(job, idfile, label, idsdir, gate_env_key):
             data = json.loads(lr.stdout)
             joblist = data if isinstance(data, list) else (data.get('jobs') if isinstance(data.get('jobs'), list) else (data.get('jobs') or {}).get('jobs', []))
             for j in (joblist or []):
-                if j.get('name','').strip().lower() == 'note cron gate':
+                if (j.get('name','').strip().lower() == 'note cron gate' and (not _DINO_AID or not (j.get('agentId') or '') or (j.get('agentId') or '').strip().lower()==_DINO_AID)):
                     gate_id = j.get('id',''); break
     except Exception:
         gate_id = ''
@@ -2834,8 +2941,17 @@ except Exception: print('unknown')" 2>/dev/null)"
     _ghd="${OPENCLAW_DIR:-$HOME/.openclaw}/hooks"
     if [ -d "$SKILL_DIR/hooks/dinomem-open-notes" ]; then
       mkdir -p "$_ghd"
-      rm -rf "$_ghd/dinomem-open-notes"
-      cp -r "$SKILL_DIR/hooks/dinomem-open-notes" "$_ghd/dinomem-open-notes"
+      # dino-guard-rmrf: only remove the global-fallback hook if it is ours
+      # (marker file names this agent) OR unmarked (legacy). Never blow away
+      # another agent that also fell back to the shared global hooks dir.
+      _hmk="$_ghd/dinomem-open-notes/.dino-agent"
+      if [ ! -e "$_ghd/dinomem-open-notes" ] || [ ! -f "$_hmk" ] || [ "$(cat "$_hmk" 2>/dev/null)" = "$AGENT_ID" ]; then
+        rm -rf "$_ghd/dinomem-open-notes"
+        cp -r "$SKILL_DIR/hooks/dinomem-open-notes" "$_ghd/dinomem-open-notes"
+        printf "%s" "$AGENT_ID" > "$_ghd/dinomem-open-notes/.dino-agent" 2>/dev/null || true
+      else
+        echo "  [warn] global-fallback hook owned by a different agent ($(cat "$_hmk" 2>/dev/null)); not overwriting"
+      fi
       openclaw hooks enable dinomem-open-notes >/dev/null 2>&1 || true
       sc_warn "dinomem-open-notes not eligible from \$WS/hooks/ — copied to global $_ghd/ + re-enabled; RESTART OpenClaw, then verify: openclaw hooks check --json"
     else
