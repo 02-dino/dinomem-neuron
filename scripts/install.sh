@@ -907,6 +907,9 @@ def _cron_add_argv(job):
     name = job.get('name')
     if name:
         a += ['--name', name]
+    _aid = (_os.environ.get('DINOMEM_AGENT_ID','') or '').strip()
+    if _aid:
+        a += ['--agent', _aid]  # fix#8: agent-scope every registered job
     sched = job.get('schedule', {}) or {}
     _sched_flags = 0
     if sched.get('kind') == 'cron' and sched.get('expr'):
@@ -1080,6 +1083,9 @@ def _cron_add_argv(job):
     name = job.get('name')
     if name:
         a += ['--name', name]
+    _aid = (_os.environ.get('DINOMEM_AGENT_ID','') or '').strip()
+    if _aid:
+        a += ['--agent', _aid]  # fix#8: agent-scope every registered job
     sched = job.get('schedule', {}) or {}
     _sched_flags = 0
     if sched.get('kind') == 'cron' and sched.get('expr'):
@@ -1245,6 +1251,9 @@ def _cron_add_argv(job):
     name = job.get('name')
     if name:
         a += ['--name', name]
+    _aid = (_os.environ.get('DINOMEM_AGENT_ID','') or '').strip()
+    if _aid:
+        a += ['--agent', _aid]  # fix#8: agent-scope every registered job
     sched = job.get('schedule', {}) or {}
     _sched_flags = 0
     if sched.get('kind') == 'cron' and sched.get('expr'):
@@ -1419,6 +1428,9 @@ def _cron_add_argv(job):
     name = job.get('name')
     if name:
         a += ['--name', name]
+    _aid = (_os.environ.get('DINOMEM_AGENT_ID','') or '').strip()
+    if _aid:
+        a += ['--agent', _aid]  # fix#8: agent-scope every registered job
     sched = job.get('schedule', {}) or {}
     _sched_flags = 0
     if sched.get('kind') == 'cron' and sched.get('expr'):
@@ -1625,6 +1637,9 @@ def _cron_add_argv(job):
     name = job.get('name')
     if name:
         a += ['--name', name]
+    _aid = (_os.environ.get('DINOMEM_AGENT_ID','') or '').strip()
+    if _aid:
+        a += ['--agent', _aid]  # fix#8: agent-scope every registered job
     sched = job.get('schedule', {}) or {}
     _sched_flags = 0
     if sched.get('kind') == 'cron' and sched.get('expr'):
@@ -1872,6 +1887,9 @@ def _cron_add_argv(job):
     name = job.get('name')
     if name:
         a += ['--name', name]
+    _aid = (_os.environ.get('DINOMEM_AGENT_ID','') or '').strip()
+    if _aid:
+        a += ['--agent', _aid]  # fix#8: agent-scope every registered job
     sched = job.get('schedule', {}) or {}
     _sched_flags = 0
     if sched.get('kind') == 'cron' and sched.get('expr'):
