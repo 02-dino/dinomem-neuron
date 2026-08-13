@@ -44,21 +44,15 @@ done
 [ "${#qualifying[@]}" -gt 0 ] || exit 1
 
 if refire_should_fire "$STATE_FILE" "$MIN_INTERVAL_SECS" "${qualifying[@]}"; then
-  # CPU backpressure (first live gate_lib Layer-B/C consumer): the Advancer can
-  # drive a HEAVY build step (multi-file edits, spawns, git). Waking it while the
-  # box is already saturated piles latency on real user work. If load is over the
-  # ceiling, DEFER this tick -- skip the LLM wake, try again next */15.
-  # NO STARVATION: refire_should_fire ABOVE already stamped STATE_FILE, so the
-  # daily MIN_INTERVAL floor still elapses regardless of how many ticks we defer
-  # -> a permanently-busy box still eventually advances (spec Layer-C contract).
-  # fail-open: if defer_if_busy is undefined (legacy shim) or the sensor is
-  # unknown, we FALL THROUGH and fire as before -- backpressure never blocks a
-  # real signal, it only smooths it.
-  if declare -F defer_if_busy >/dev/null 2>&1; then
-    ceiling="${DINOMEM_ADVANCER_LOAD_CEILING:-2.0}"
-    if ! defer_if_busy "$(sensor_load_ratio)" "$ceiling"; then
-      exit 1   # box busy -> defer to next tick (interval floor guarantees eventual run)
-    fi
+  # CPU backpressure: the Advancer can drive a HEAVY build (multi-file edits,
+  # spawns, git); waking it on an already-saturated box piles latency on real
+  # user work. gate_fire_or_defer returns 1 (defer this tick) only when load is
+  # over the ceiling. STARVATION-SAFE: refire_should_fire already stamped
+  # STATE_FILE, so the daily MIN_INTERVAL floor still elapses -> a permanently
+  # busy box eventually advances. fail-open: undefined helper (legacy shim) or
+  # unknown sensor -> fires as before. (Shared impl in gate_lib.sh, one place.)
+  if declare -F gate_fire_or_defer >/dev/null 2>&1; then
+    gate_fire_or_defer "${DINOMEM_ADVANCER_LOAD_CEILING:-2.0}" || exit 1
   fi
   exit 0
 fi

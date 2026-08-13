@@ -80,21 +80,13 @@ done
 [ "${#qualifying[@]}" -gt 0 ] || exit 1
 
 if refire_should_fire "$STATE_FILE" "$MIN_INTERVAL_SECS" "${qualifying[@]}"; then
-  # CPU backpressure (same Layer-B/C consumer pattern as check_projects.sh): the
-  # Improver re-runs verification on a done note and can spawn a re-attempt/build.
-  # Waking it while the box is already saturated piles latency on real user work.
-  # If load is over the ceiling, DEFER this tick -- skip the LLM wake, retry next.
-  # NO STARVATION: refire_should_fire ABOVE already stamped STATE_FILE, so the
-  # daily MIN_INTERVAL floor still elapses regardless of how many ticks we defer
-  # -> a permanently-busy box still eventually improves (spec Layer-C contract).
-  # fail-open: if defer_if_busy is undefined (legacy shim) or the sensor is
-  # unknown, we FALL THROUGH and fire as before -- backpressure never blocks a
-  # real signal, it only smooths it.
-  if declare -F defer_if_busy >/dev/null 2>&1; then
-    ceiling="${DINOMEM_IMPROVER_LOAD_CEILING:-2.0}"
-    if ! defer_if_busy "$(sensor_load_ratio)" "$ceiling"; then
-      exit 1   # box busy -> defer to next tick (interval floor guarantees eventual run)
-    fi
+  # CPU backpressure (same shared helper as check_projects.sh): the Improver
+  # re-verifies a done note and can spawn a re-attempt; skip the wake on a
+  # saturated box. gate_fire_or_defer returns 1 (defer) only over the ceiling.
+  # STARVATION-SAFE: STATE_FILE already stamped -> daily floor still elapses.
+  # fail-open: undefined helper / unknown sensor -> fires as before.
+  if declare -F gate_fire_or_defer >/dev/null 2>&1; then
+    gate_fire_or_defer "${DINOMEM_IMPROVER_LOAD_CEILING:-2.0}" || exit 1
   fi
   exit 0
 fi
