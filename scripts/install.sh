@@ -2946,7 +2946,12 @@ fi
 # Daily Note Review is treated as recommended-not-required (it's a redundant janitor).
 _REQUIRED_CRONS="Project Advancer|Project Improver (Component 2)|Verified Note Deleter (Component 1)|Project Cron Gate"
 _MISSING_REQUIRED=""
-if command -v openclaw >/dev/null 2>&1; then
+if [ "$DO_CRON" != 1 ]; then
+  # --no-cron: cron installation was intentionally skipped, so the required-cron
+  # gate MUST NOT fire (it would fail a run that never wanted crons — e.g. the
+  # benchmark harness / sandboxed lab installs). Report informational only.
+  sc_pass "cron gate skipped (--no-cron): note-lifecycle crons intentionally not installed"
+elif command -v openclaw >/dev/null 2>&1; then
   _CRON_LIST="$(openclaw cron list --all --json 2>/dev/null || echo '[]')"
   # required lanes
   _IFS_SAVE="$IFS"; IFS='|'
