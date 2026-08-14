@@ -446,6 +446,19 @@ python3 procedures/lifecycle_state.py
 
 - **Explainable, not asserted.** `explain_memory.py` makes every promoted memory *auditable*: why it's here, when it was used, how confident (and calibrated) that confidence is. Deterministic, read-only.
 - **Prove recall quality (citable).** For a hard number on the same benchmark the papers use, run the neuron LongMemEval harness (neuron repo) — it measures the *full* neuron stack (hybrid_recall: memory + graph + session legs) on LongMemEval-S with the official scorer, in an isolated throwaway workspace (your real memory is never touched). Same protocol as base's harness, richer legs.
+- **Prove the neuron mechanisms actually earn their keep — one command.** LongMemEval measures recall; it does *not* show that neuron's L2/L3/L4 machinery (graph, synthesis, contradiction, confidence, promotion) is what creates the advantage. The full evaluation program does, and it runs from a single front door in base's [`benchmark/`](https://github.com/02-dino/dinomem/tree/main/benchmark):
+
+```bash
+# Whole plan, free, nothing touched:
+python3 benchmark/run_all.py --source . --dry-run
+
+# Full 3-arm comparison (rag floor vs base vs neuron) with the neuron overlay:
+python3 benchmark/run_all.py --source . \
+    --answer-model gpt-4o-mini --judge-model gpt-4o \
+    --overlay-cmd 'bash <neuron>/scripts/install.sh --workspace {ws} --agent-id lab --agree --no-cron --no-auto-base'
+```
+
+  It runs every phase in order and ends with **Phase 5b — feature ablation**: it re-runs each targeted phase with one neuron stage *removed at a time* (`drive_neuron.py --skip-stage`) and reports the metric delta, so you get a causal table — *this* mechanism is worth *this many* points on *that* axis. That's the honest "how I know the neuron layer works, not just that it's present" proof. The unified scorecard puts every number next to its cost/latency/storage; `--dry-run`/`--estimate-only` never spend.
 
 > Base ships the transparent+reversible layer (`_memory_diff.py` audit log with byte-exact `restore_ref` undo, `weekly_stats.py` counts). Neuron adds the *explainable* layer on top.
 
