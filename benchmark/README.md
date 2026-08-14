@@ -5,6 +5,22 @@ Purpose (per the Best-in-Class proposal): **build a benchmark BEFORE claiming
 superiority.** Turns "I think it's better" into measured numbers:
 false-promotion rate, multi-hop accuracy, stale-recall rate, latency/cost.
 
+> **Two harnesses live here — pick by what you need:**
+> - **`run_benchmark.py` (this one)** — fast, **free, no-LLM, retrieval-only** A/B
+>   sanity check across 12 axes. Deterministic subprocess calls to the on-disk
+>   tools (`hybrid_recall`/`graph_search`/`valid_time`). Answers *"did the right
+>   memory surface and the wrong one stay buried?"* Run it for a cheap health check:
+>   `python3 run_benchmark.py --all`.
+> - **`run_all.py` (from base's full program)** — the **full multi-phase, LLM-in-
+>   the-loop** evaluation (standard benchmarks + longitudinal/supersession/dedup/
+>   pattern/promotion/behavior/poison/ablation → unified scorecard). Costs money
+>   for the base/neuron arms; `--dry-run`/`--estimate-only` are free. Run it to
+>   *prove* quality with citable numbers + a causal ablation table:
+>   `python3 run_all.py --source . --dry-run`.
+>
+> Rule of thumb: **`run_benchmark.py` = cheap retrieval sanity; `run_all.py` = the
+> full paid proof.** They're complementary, not duplicates.
+
 ## Layout
 ```
 benchmark/
