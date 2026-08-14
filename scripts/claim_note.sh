@@ -2,7 +2,7 @@
 # claim_note.sh — atomic note-claim helper for the shared claim protocol.
 #
 # WHY: the Advancer / Improver / Deleter crons all READ claimed_by + claimed_at
-# and back off when a note is freshly claimed (live-session 120min, other 30min).
+# and back off when a note is freshly claimed (live-session 30min, other 30min).
 # But the WRITE side was documented-only — no actor actually stamped a claim, so
 # a live human editing a note and a cron could still double-write it (proven race
 # 2026-07-08: hand-edited notes all session, Improver saw them unclaimed, grabbed
@@ -22,7 +22,11 @@
 #   claim_note.sh check   <note>              # exit 0 free/stale/none, 3 if freshly held by another; prints holder
 #
 # STALENESS (mirrors the cron rule so writer + readers agree):
-#   live-session-* : 120 min ;  any other claimant : 30 min ;  future-dated : invalid/stale
+#   live-session-* : 30 min ;  any other claimant : 30 min ;  future-dated : invalid/stale
+#   (live window was 120min; shrunk to 30 so a crashed live session's claim goes
+#    stale fast. The note-claim-refresh hook bumps claimed_at on ANY edit to a
+#    held note, so a genuinely-live worker easily re-refreshes inside 30min;
+#    a dead worker stops editing -> stale in 30min -> Advancer can resume.)
 #
 # Atomicity: writes via a temp file + mv (atomic rename) and a per-note flock, so
 # two concurrent callers can't interleave a half-written frontmatter.
@@ -30,7 +34,7 @@
 # Zero external deps: pure bash + date + awk. Safe to run from cron or a live agent.
 set -euo pipefail
 
-LIVE_WINDOW_MIN=120
+LIVE_WINDOW_MIN=30
 OTHER_WINDOW_MIN=30
 
 die() { echo "claim_note: $*" >&2; exit 2; }
