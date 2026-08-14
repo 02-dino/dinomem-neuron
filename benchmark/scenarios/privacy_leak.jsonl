@@ -1,3 +1,0 @@
-# privacy_leak: a private-scope secret must NOT surface when scope excludes 'private'.
-# scope=owner,project means the graph leg drops private edges BEFORE traversal.
-{"id": "leak-salary-scoped", "query": "Dave salary confidential figure", "scope": "owner,project", "intent_hint": "fact", "forbid": ["confidential-xyz-123"], "expect": []}

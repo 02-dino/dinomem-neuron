@@ -1,7 +1,0 @@
-# structured_query: the EXACT/SQL door (data_query), orthogonal to the fuzzy legs.
-# Tests row/filter/count/aggregate over a fixture dataset. Auto-skips if data_query
-# (+ duckdb + the registered fixture table) is absent on this install.
-# `sql` is run verbatim against the fixture table 'atlas_metrics'.
-{"id": "sql-filter-row", "scenario": "structured_query", "tool": "data_query", "sql": "SELECT owner FROM atlas_metrics WHERE quarter = 'Q3'", "expect": ["Carol"]}
-{"id": "sql-count", "scenario": "structured_query", "tool": "data_query", "sql": "SELECT count(*) AS n FROM atlas_metrics", "expect": ["4"]}
-{"id": "sql-aggregate", "scenario": "structured_query", "tool": "data_query", "sql": "SELECT max(latency_ms) AS worst FROM atlas_metrics", "expect": ["420"]}

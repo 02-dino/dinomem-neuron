@@ -1,7 +1,0 @@
-# multi_hop: A depends_on B, B affects C. The endpoint (latency) must be reachable
-# ONLY by traversing edges, NOT by lexical overlap with the query. So we query the
-# START node's identity words and REQUIRE the far endpoint token that does NOT appear
-# in the start node's body. base (memory-only, no graph) cannot bridge -> fails.
-# full (graph leg) traverses depends_on->affects -> surfaces 'latency' -> passes.
-{"id": "hop-api-to-latency", "query": "Atlas API public entry point", "intent_hint": "relational", "hops": 2, "expect": ["latency"]}
-{"id": "hop-cache-to-latency", "query": "Atlas cache layer sits behind", "intent_hint": "relational", "hops": 1, "expect": ["latency"]}

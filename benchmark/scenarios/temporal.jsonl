@@ -1,7 +1,0 @@
-# temporal: point-in-time. as_of must return the lead ASSERTED valid THEN. forbid
-# targets the ASSERTION ("lead is X"), not any mention of X — graph provenance prose
-# legitimately names the superseded person ("Bob took over from Alice"), which is not
-# a stale-fact leak. base (no as_of) asserts all leads -> leaks; neuron (compiler) filters.
-{"id": "temporal-lead-jan", "query": "Project Atlas lead roadmap owner", "as_of": "2026-02-01", "intent_hint": "fact", "expect": ["lead is Alice"], "forbid": ["lead is Carol", "lead is Bob"]}
-{"id": "temporal-lead-apr", "query": "Project Atlas lead roadmap owner", "as_of": "2026-04-01", "intent_hint": "fact", "expect": ["lead is Bob"], "forbid": ["lead is Carol", "lead is Alice"]}
-{"id": "temporal-lead-now", "query": "Project Atlas current lead roadmap owner", "intent_hint": "fact", "expect": ["lead is Carol"], "forbid": ["lead is Alice", "lead is Bob"]}

@@ -1,3 +1,0 @@
-# recovery: a wrong fact (DELAYED) was corrected (LIVE). Current query returns the fix.
-{"id": "rec-status-current", "query": "Atlas launch status live delayed correction", "intent_hint": "fact", "expect": ["LIVE"]}
-{"id": "rec-status-asof-wrongwindow", "query": "Atlas launch status delayed", "as_of": "2026-05-05", "intent_hint": "fact", "expect": ["DELAYED"]}

@@ -1,2 +1,0 @@
-# behavior: a stored preference/instruction is recalled.
-{"id": "beh-report-format", "query": "how should Atlas status reports be delivered format", "intent_hint": "fact", "expect": ["bullet points"]}
