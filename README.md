@@ -451,14 +451,6 @@ python3 procedures/lifecycle_state.py
 
 ---
 
-### Why multi-signal evaluation?
-
-A single observation can be noise. Neuron evaluates each insight across multiple dimensions before promotion: how confident the synthesis is, how often it recurs across synthesis runs, whether it contradicts existing knowledge, and how it behaves across its full lifecycle — including decay, recovery, and exceptions.
-
-All signals must align. One-off or low-confidence insights stay in synthesis — never promoted.
-
----
-
 ## Cron schedule
 
 | Time | Script | What runs |
