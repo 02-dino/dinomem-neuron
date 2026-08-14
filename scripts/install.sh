@@ -1106,7 +1106,6 @@ job = {
 # create a duplicate, never leave an old enabled copy behind.
 upsert_cron_job(job, "advancer", "project_advancer", "$WS/.cron_ids")
 PYEOF
-fi
 
 # ── project_improver (Component 2) — OpenClaw agentTurn cron ──────────────────
 # Self-improving closer, half 1 of 2: LLM improves COMPLETED-but-unverified
@@ -2164,6 +2163,7 @@ job = {
 }
 upsert_gated(job, "daily_note_review", "daily_note_review", "$WS/.cron_ids", "GATE_DAILY_NOTE_REVIEW_ID")
 PYEOF
+fi  # end DO_CRON guard (hoisted from after project_advancer; --no-cron now skips ALL cron installs, INVESTIGATE_FIRST stays in scope)
 
 # ── Wire AGENTS.md ───────────────────────────────────────────────────────────
 hr "AGENTS.md"
