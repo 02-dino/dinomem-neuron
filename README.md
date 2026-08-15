@@ -466,7 +466,7 @@ python3 procedures/lifecycle_state.py
 ```
 
 - **Explainable, not asserted.** `explain_memory.py` makes every promoted memory *auditable*: why it's here, when it was used, how confident (and calibrated) that confidence is. Deterministic, read-only.
-- **Prove recall quality (citable).** For a hard number on the same benchmark the papers use, run the neuron LongMemEval harness (neuron repo) — it measures the *full* neuron stack (hybrid_recall: memory + graph + session legs) on LongMemEval-S with the official scorer, in an isolated throwaway workspace (your real memory is never touched). Same protocol as base's harness, richer legs.
+- **Prove recall quality (citable).** For a hard number on the same benchmarks the papers use, run the neuron harness — it measures the *full* neuron stack (hybrid_recall: memory + graph + session legs) with the official scorer, in an isolated throwaway workspace (your real memory is never touched). Same two public datasets as base via `--dataset`: **LongMemEval-S** (default, ~500 long-haystack Q) and **LoCoMo** (`--dataset locomo`, ~1,986 Q over long multi-session conversations). Same protocol as base's harness, richer recall legs.
 - **Prove the neuron mechanisms actually earn their keep — one command.** LongMemEval measures recall; it does *not* show that neuron's L2/L3/L4 machinery (graph, synthesis, contradiction, confidence, promotion) is what creates the advantage. The full evaluation program does, and it runs from a single front door in base's [`benchmark/`](https://github.com/02-dino/dinomem/tree/main/benchmark):
 
 ```bash
