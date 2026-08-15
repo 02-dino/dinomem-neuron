@@ -197,11 +197,32 @@ _Grounding: extract ~26k tok / 3 sessions · review ~4k/day · synthesis `nodes/
 
 ---
 
+## Long sessions, user facts, and the graph bonus
+
+Two base-tier extraction properties matter extra in neuron, plus one free win:
+
+- **Windowing.** Extraction splits any oversized archive into ≤80k-char passes so
+  a long session's deep content never truncates or vanishes. Full mechanics:
+  [dinomem → Windowing](https://github.com/02-dino/dinomem#windowing-long-sessions-dont-lose-their-tail).
+- **`user_fact` lane.** Durable first-person life/identity facts (education, job,
+  location, family, health, possessions) captured on first mention, routed keyed→
+  peer rep / keyless→`memory/*.md`:
+  [dinomem → user_facts](https://github.com/02-dino/dinomem#user_facts-durable-facts-about-you).
+- **Graph bonus (neuron-only, zero extra code).** Because neuron already turns
+  first-person statements into typed graph relations, a captured user-fact like
+  *"I graduated in Business Administration"* lands **twice** — as a `user_fact`
+  item *and* as a graph edge `User → graduated with degree in → Business
+  Administration`. Windowing simply feeds the deep content to the LLM; the
+  existing relations lane makes it a node. Personal facts become part of the
+  knowledge graph for free, so relational recall ("what do we know about the
+  user's background") traverses them.
+
 ## How it all works
 
 ```
 [dinomem base — every 15 min]
 Session → Archive → extract_memory.py → memory/*.md + MEMORY.md + vector DB
+  (large archives WINDOWED into ≤80k passes; durable user_facts captured — see below)
         │
         │  daily
         ▼
