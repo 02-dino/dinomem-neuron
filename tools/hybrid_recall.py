@@ -572,6 +572,13 @@ def compile_block(cands: list[dict], k: int) -> dict:
                 "norm_sim": round(c.get("norm_sim", 0.0), 4),
                 "evidence_count": c.get("evidence_count", 1),
                 "recency_fit": round(c.get("recency_fit", 0.5), 3),
+                # THE terminal hop: answer.py parses answer_candidates and reads
+                # session_ids off each entry for recall_at_k. This output whitelist
+                # (not fuse()'s intermediate dict) is what the benchmark consumes —
+                # omitting it here re-drops attribution after every upstream hop
+                # carried it. Absent on non-session legs -> [] / '' by construction.
+                "session_ids": c.get("session_ids", []),
+                "session_id": c.get("session_id", ""),
             }
             for c in top
         ],
