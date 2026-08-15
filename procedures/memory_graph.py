@@ -867,6 +867,51 @@ def main():
     )
     args = ap.parse_args()
 
+    # Absent-source guard: the L2 graph reads the OpenClaw NATIVE memory index
+    # (sqlite, built by the gateway's memorySearch pipeline). That DB can be
+    # absent in two VERY different situations, which must NOT be conflated:
+    #
+    #   (a) LEGIT-EMPTY (day-0 real user): no memory has been recorded/indexed
+    #       yet. There is genuinely nothing to graph. Degrade gracefully: write
+    #       an empty-but-valid graph and exit 0.
+    #
+    #   (b) REAL FAILURE (e.g. a benchmark lab, or a broken indexer): memory
+    #       ITEMS EXIST on disk (memory/*_insight_*.md etc.) but the native index
+    #       was never built, so the graph would be spuriously empty. Silently
+    #       emitting an empty graph here would UNDER-REPORT the graph leg (in an
+    #       eval, it makes the neuron arm look like base). That is a lie in the
+    #       wrong direction — so FAIL LOUD instead, forcing the caller to build
+    #       the index (or ablate the stage explicitly).
+    #
+    # Distinguish by whether indexable memory items exist on disk.
+    if not DB_PATH.exists():
+        _mem_dir = _WS / "memory"
+        _item_globs = ("*_insight_*.md", "*_entity_*.md", "*_relation_*.md",
+                       "*_preference_*.md", "*_correction_*.md", "*_decision_*.md",
+                       "*_operational_*.md", "_pin_*.md", "_note_*.md")
+        _has_items = any(
+            next(_mem_dir.glob(g), None) is not None for g in _item_globs
+        ) if _mem_dir.exists() else False
+        if _has_items:
+            # (b) real failure — do not mask it.
+            sys.exit(
+                f"memory_graph: native index absent ({DB_PATH}) but memory items "
+                f"exist under {_mem_dir} — the index was never built. Refusing to "
+                f"emit a spuriously-empty graph (would under-report the graph leg). "
+                f"Build the native memory index first, or ablate this stage.")
+        # (a) legit-empty day-0 — degrade gracefully.
+        OUT_DIR.mkdir(parents=True, exist_ok=True)
+        out_json = OUT_DIR / "memory_graph.json"
+        if not out_json.exists():
+            out_json.write_text(
+                json.dumps({"nodes": {}, "edges": [],
+                            "generated": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                            "note": "native memory index absent, no memory items — empty graph"},
+                           indent=2),
+                encoding="utf-8")
+        print(f"⏭️  native memory index absent ({DB_PATH}) and no memory items — empty graph, skipping build")
+        return
+
     # Skip rebuild when the indexed memory content hasn't changed (avoids
     # wasteful runs every 15-min orchestrator cycle).
     sig = compute_signature(DB_PATH)
