@@ -120,17 +120,29 @@ def parse_turns(jsonl_path: Path) -> list[dict]:
                 if len(content) < MIN_TURN_CHARS:
                     continue
 
-                turns.append({'role': role, 'content': content})
+                # Carry session attribution through when the archive provides it
+                # (dinomem session archives + the LongMemEval adapter both stamp
+                # session_id/session_idx per record). Absent -> None, and the whole
+                # session-id plumbing degrades gracefully to the old behaviour.
+                sid = (msg.get('session_id') if isinstance(msg, dict) else None)
+                if sid is None and isinstance(entry, dict):
+                    sid = entry.get('session_id')
+                turns.append({'role': role, 'content': content,
+                              'session_id': (str(sid) if sid is not None else None)})
     except Exception as e:
         log(f"  WARN: failed to parse {jsonl_path.name}: {e}")
 
     return turns
 
-def sliding_window_chunks(turns: list[dict]) -> list[str]:
+def sliding_window_chunks(turns: list[dict]) -> list[tuple[str, str]]:
     """
     Sliding window over turns.
     window=5, step=3, overlap=2.
     Each chunk = consecutive turns formatted as role: content.
+
+    Returns (chunk_text, session_ids_csv) pairs. session_ids_csv = comma-separated,
+    de-duplicated, order-preserving distinct session_ids the chunk spans ('' when
+    no attribution). CSV because Chroma metadata values must be scalars.
     """
     if not turns:
         return []
@@ -142,7 +154,12 @@ def sliding_window_chunks(turns: list[dict]) -> list[str]:
         chunk_lines = [f"{t['role']}: {t['content']}" for t in window]
         chunk_text = '\n\n'.join(chunk_lines)
         if chunk_text.strip():
-            chunks.append(chunk_text)
+            seen = []
+            for t in window:
+                s = t.get('session_id')
+                if s and s not in seen:
+                    seen.append(s)
+            chunks.append((chunk_text, ','.join(seen)))
         i += STEP
 
     return chunks
@@ -218,7 +235,7 @@ def ingest_session(jsonl_path: Path, db: Chroma,
                 jsonl_path.stat().st_mtime, tz=timezone.utc
             ).strftime('%Y-%m-%d')
 
-            for i, chunk_text in enumerate(chunks):
+            for i, (chunk_text, session_ids_csv) in enumerate(chunks):
                 meta = {
                     'source_file': src_key,
                     'file_hash': current_hash,
@@ -226,6 +243,10 @@ def ingest_session(jsonl_path: Path, db: Chroma,
                     'archived_date': archived_date,
                     'chunk_index': i,
                     'turn_count': len(turns),
+                    # per-chunk session attribution (CSV of distinct session_ids
+                    # the chunk spans; '' when the archive carried none). Powers
+                    # recall_at_k in the benchmark's retrieval-quality axis.
+                    'session_ids': session_ids_csv,
                 }
                 # Enrich with metadata prefix for better retrieval
                 prefix = f"Session: {jsonl_path.stem} | Date: {archived_date}"

@@ -129,8 +129,14 @@ def leg_docs_search(query: str, k: int) -> list[dict]:
 
 def leg_session_search(query: str, k: int) -> list[dict]:
     d = _run_json([PY, str(TOOLS / "session_search.py"), query, "--k", str(k), "--json"]) or []
+    # Carry session-id attribution through fusion. session_search now emits
+    # session_ids (list) + session_id (scalar) per chunk; without forwarding them
+    # here the benchmark's recall_at_k axis stays dark (answer.py reads them off
+    # the fused candidate). Only this leg is session-attributable by construction.
     return [{"leg": "session_search", "content": h.get("content", ""), "score": h.get("score", 0.0),
-             "uri": h.get("session_name", "?")} for h in (d if isinstance(d, list) else [])]
+             "uri": h.get("session_name", "?"),
+             "session_ids": h.get("session_ids", []),
+             "session_id": h.get("session_id", "")} for h in (d if isinstance(d, list) else [])]
 
 
 def leg_graph_search(query: str, k: int, as_of: str | None = None,

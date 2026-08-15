@@ -42,18 +42,39 @@ except ImportError:
     from cache_utils import cached
 
 from langchain_chroma import Chroma
-
-# Shared embedding resolver + e5 query:/passage: prefixing (single source of
-# truth: tools/_embed.py). Migrated 2026-07-09 (L1) off the per-file _PrefixedHFE
-# + local snapshot-resolution dupes.
-try:
-    from tools._embed import get_embeddings, warn_on_mismatch
-except ImportError:
-    from _embed import get_embeddings, warn_on_mismatch
+from langchain_huggingface import HuggingFaceEmbeddings
 
 # ── Config ────────────────────────────────────────────────────────────────────
 WORKSPACE = Path(__file__).parent.parent
 DB_PATH = str(WORKSPACE / "kb/vector_db_sessions")
+
+import pathlib
+# Resolve the local model snapshot dynamically instead of hardcoding a snapshot
+# hash (hardcoded hashes break silently when the HF cache pins a different
+# revision on another machine). Glob the snapshots dir; fall back to the model
+# id so HF can resolve it normally if no local snapshot exists.
+# Single source of truth via env (fallback const). Multilingual e5 (EN/ID + majors, 384-dim, 512 ctx).
+_MODEL_ID = os.environ.get("DINOMEM_EMBED_MODEL", "intfloat/multilingual-e5-small")
+_cache_dir = pathlib.Path(os.environ.get("HF_HOME") or (pathlib.Path.home() / ".cache/huggingface")) / "hub"
+_model_root = _cache_dir / ("models--" + _MODEL_ID.replace("/", "--")) / "snapshots"
+try:
+    _snaps = sorted(p for p in _model_root.iterdir() if p.is_dir()) if _model_root.exists() else []
+    LOCAL_MODEL_PATH = str(_snaps[-1]) if _snaps else _MODEL_ID
+except Exception:
+    LOCAL_MODEL_PATH = _MODEL_ID
+_LOCAL_MODEL_RESOLVED = LOCAL_MODEL_PATH != _MODEL_ID
+
+# e5 asymmetric prefixing (query:/passage:). Disable via DINOMEM_EMBED_PREFIX=0 for symmetric models.
+_PREFIX_ENABLED = os.environ.get("DINOMEM_EMBED_PREFIX", "1") != "0"
+class _PrefixedHFE(HuggingFaceEmbeddings):
+    def embed_documents(self, texts):
+        if _PREFIX_ENABLED:
+            texts = ["passage: " + t for t in texts]
+        return super().embed_documents(texts)
+    def embed_query(self, text):
+        if _PREFIX_ENABLED:
+            text = "query: " + text
+        return super().embed_query(text)
 
 # ── Lazy init ─────────────────────────────────────────────────────────────────
 _embeddings = None
@@ -62,9 +83,11 @@ _vectorstore = None
 def _get_vectorstore():
     global _embeddings, _vectorstore
     if _embeddings is None:
-        # Shared resolver: model id, local-snapshot resolution, and asymmetric
-        # query:/passage: prefixing all handled centrally in tools/_embed.py.
-        _embeddings = get_embeddings()
+        _embeddings = _PrefixedHFE(
+            model_name=LOCAL_MODEL_PATH,
+            model_kwargs={'device': 'cpu', 'local_files_only': _LOCAL_MODEL_RESOLVED},
+            encode_kwargs={'normalize_embeddings': True}
+        )
     if _vectorstore is None:
         if not Path(DB_PATH).exists():
             raise FileNotFoundError(
@@ -75,9 +98,6 @@ def _get_vectorstore():
             persist_directory=DB_PATH,
             embedding_function=_embeddings
         )
-        # Fail loud if this store was built with a different embedding model than
-        # the one now configured (else query vectors silently misalign -> garbage).
-        warn_on_mismatch(_vectorstore, where="session_search:vector_db_sessions")
     return _vectorstore
 
 # ── Search ────────────────────────────────────────────────────────────────────
@@ -116,6 +136,12 @@ def session_search(
         content = doc.page_content
         if max_chars and len(content) > max_chars:
             content = content[:max_chars] + '...'
+        # session_ids: CSV of distinct session_ids this chunk spans (ingest fills
+        # it from the archive turns; '' when the archive carried no attribution).
+        # Surface it so downstream (answer.py -> retrieval.jsonl -> score.py
+        # recall_at_k) can attribute a retrieved chunk to gold answer_session_ids.
+        _sids_csv = doc.metadata.get('session_ids', '') or ''
+        _sids = [s for s in _sids_csv.split(',') if s]
         items.append({
             'content': content,
             'score': round(score, 4),
@@ -123,6 +149,10 @@ def session_search(
             'archived_date': doc.metadata.get('archived_date', ''),
             'chunk_index': doc.metadata.get('chunk_index', 0),
             'source_file': doc.metadata.get('source_file', ''),
+            'session_ids': _sids,
+            # convenience scalar: first attributed session_id (or '' ) for
+            # consumers that read a single id via c.get('session_id').
+            'session_id': (_sids[0] if _sids else ''),
         })
 
     return _recency_rerank(items, k)
