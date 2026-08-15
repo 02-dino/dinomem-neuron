@@ -12,6 +12,7 @@ Examples:
 
 import sys
 import json
+import re
 import argparse
 import difflib
 from pathlib import Path
@@ -83,8 +84,56 @@ def load_graph(graph_path: Path) -> dict:
     return _GraphView(store)
 
 
+# WHY: dinomem memory-note nodes carry a YAML frontmatter header in title/snippet
+# ("--- type: decision date: 2026-08-16 expires: ... ctx: X topics: Y ---"). ~94% of
+# live-graph node titles ARE that header, so the old title-weighted difflib match
+# scored against boilerplate and near-always missed on CONTENT queries. This strips
+# the header down to its semantic payload (ctx/topics values + the body after the
+# closing ---) so matching keys on meaning, not metadata.
+_HEADER_RE = re.compile(r"^---.*?---", re.DOTALL)
+_HEADER_KV_RE = re.compile(r"\b(?:ctx|topics|title|subject|entity|about)\s*:\s*([^\n]+)")
+_TOKEN_RE = re.compile(r"[a-z0-9]+")
+
+
+def _content_text(title: str, snippet: str) -> str:
+    """Return the semantic payload of a node: keep ctx/topics VALUES from the
+    frontmatter (they are content), drop the type/date/expires boilerplate, and
+    keep everything after the closing '---'. Falls back to the raw text when there
+    is no recognizable header."""
+    raw = f"{title}\n{snippet}".strip()
+    kv_vals = " ".join(_HEADER_KV_RE.findall(raw))
+    body = _HEADER_RE.sub(" ", raw, count=1)  # text after the frontmatter block
+    out = f"{kv_vals} {body}".strip()
+    return (out or raw).lower()
+
+
+def _tokens(s: str) -> set:
+    return set(_TOKEN_RE.findall(s.lower()))
+
+
+def _match_score(query_lower: str, content_lower: str) -> float:
+    """Best of: exact substring (1.0), token-CONTAINMENT (frac of query tokens
+    present in content — order/length robust, the axis difflib whole-string ratio
+    fails), and a difflib fallback for typo tolerance. Token-containment is the
+    fix: a short query vs a long note no longer self-penalizes on length."""
+    if not content_lower or not query_lower:
+        return 0.0
+    if query_lower in content_lower:
+        return 1.0
+    q_toks = _tokens(query_lower)
+    if q_toks:
+        c_toks = _tokens(content_lower)
+        containment = len(q_toks & c_toks) / len(q_toks)
+    else:
+        containment = 0.0
+    fuzzy = difflib.SequenceMatcher(None, query_lower, content_lower).ratio()
+    return max(containment, fuzzy)
+
+
 def find_start_node(graph: dict, query: str, threshold: float = 0.60) -> tuple[int, dict] | tuple[None, None]:
-    """Fuzzy match query against node title and snippet fields. Returns (idx, node) or (None, None)."""
+    """Fuzzy match query against a node's SEMANTIC content (frontmatter header
+    stripped to ctx/topics + body). Token-containment scored so length/word-order
+    mismatch no longer buries a real hit. Returns (idx, node) or (None, None)."""
     nodes = graph.get("nodes", [])
     query_lower = query.lower()
     best_score = 0.0
@@ -92,19 +141,8 @@ def find_start_node(graph: dict, query: str, threshold: float = 0.60) -> tuple[i
     best_node = None
 
     for i, node in enumerate(nodes):
-        title = node.get("title", "")
-        snippet = node.get("snippet", "")
-        combined = f"{title} {snippet}".lower()
-
-        # Direct substring match gets priority
-        if query_lower in combined:
-            score = 1.0 if query_lower in title.lower() else 0.85
-        else:
-            # difflib ratio against title (weighted higher) and snippet
-            title_score = difflib.SequenceMatcher(None, query_lower, title.lower()).ratio()
-            snippet_score = difflib.SequenceMatcher(None, query_lower, combined).ratio()
-            score = max(title_score, snippet_score * 0.9)
-
+        content = _content_text(node.get("title", ""), node.get("snippet", ""))
+        score = _match_score(query_lower, content)
         if score > best_score and score >= threshold:
             best_score = score
             best_idx = i
