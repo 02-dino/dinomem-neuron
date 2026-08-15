@@ -873,6 +873,7 @@ Each object in the array must have this structure:
   "corrections": ["[correction] exact mistake + correct behavior"],
   "operational": ["[operational] exact names/paths/values + behavioral default"],
   "user_preferences": ["permanent user trait or boundary"],
+  "user_facts": ["[user_fact] durable first-person fact the user stated about THEMSELVES"],
   "topics": ["#hashtag"],
   "relations": ["Subject → verb → Object"],
   "entities": ["Name | type: person|project|tool|concept|org"]
@@ -880,6 +881,7 @@ Each object in the array must have this structure:
 
 Rules:
 - EVERY insight MUST start with [factual], [pattern], [lesson], [uncertain], or [preference]
+- [user_fact] = a DURABLE fact the user stated about THEMSELVES (their own life/identity), NOT a preference and NOT a world-fact. Capture education, occupation/employer, location, relationships/family, health/allergies, possessions, personal history/biography. Extract on FIRST mention (do not wait for repetition). First-person cues: "I graduated...", "I work at...", "I live in...", "my wife/sister/son...", "I'm allergic to...", "I switched jobs to...". This is distinct from [preference] (a behavioral trait/boundary like 'wants terse replies') and from [factual] (a universal truth like a GDPR rule). Err on the side of extracting — a person's biographical facts are high-value recall. End with [ctx:max 5 words][conf:X.X].
 - [relation] = explicit relationship between two named concepts: "Subject → verb → Object" format. Only extract when relationship is clear and non-trivial. Examples: "Project Advancer → depends on → sessions_spawn", "Komunitech pricing → affects → workshop conversion rate", "memory_graph.py → reads from → memory/*.md". Max 3 per archive. Skip obvious/trivial ones.
 - [entity] = named concept worth tracking as a node: "Name | type: person|project|tool|concept|org". Only extract proper nouns, named tools, projects, people, orgs. Skip generic terms. Max 5 per archive.
 - [factual] = structural truths, NOT transient events
@@ -891,7 +893,8 @@ Rules:
 - Return empty arrays if nothing worth remembering for that archive
 - JSON array only, no explanation outside JSON"""
     log(f"   🔄 Batch analyzing {len(included)} archives: {archive_list}...")
-    success, response = call_llm(prompt, max_tokens=2000 * len(included), reasoning=False)
+    _batch_budget = max(2000 * len(included), LLM_MAX_TOKENS)
+    success, response = call_llm(prompt, max_tokens=_batch_budget, reasoning=False)
     if not success:
         log(f"   ⚠️  Batch LLM failed: {response}")
         return []
@@ -911,7 +914,7 @@ Rules:
                 item.get('context', '').strip() or
                 item.get('insights') or item.get('decisions') or
                 item.get('corrections') or item.get('operational') or
-                item.get('user_preferences')
+                item.get('user_preferences') or item.get('user_facts')
             )
             summary = {
                 'archive': item.get('archive', ''),
@@ -925,6 +928,7 @@ Rules:
                 'corrections': item.get('corrections', []),
                 'operational': item.get('operational', []),
                 'user_preferences': item.get('user_preferences', []),
+                'user_facts': item.get('user_facts', []),
                 'topics': item.get('topics', []),
                 'relations': item.get('relations', []),
                 'entities': item.get('entities', [])
@@ -942,14 +946,95 @@ Rules:
         log(f"   ⚠️  Batch processing error: {e}")
         return []
 
+# Per-call INPUT window for a single archive. A huge archive (e.g. a LongMemEval
+# haystack of ~500k chars, or just a very long session) MUST NOT be sent in one
+# LLM call: (a) the response gets cut by the request timeout mid-JSON -> parse
+# fail -> "empty" -> SILENT loss of everything incl facts deep in the haystack,
+# and (b) model extraction quality degrades badly on a 500k-char prompt. Instead
+# we window the archive's chunks into <=WINDOW_MAX_CHARS passes, extract each
+# window separately, and MERGE. Every part of the haystack reaches the LLM.
+WINDOW_MAX_CHARS = 80000
+
+def _merge_summaries(summaries, archive_filename):
+    """Merge N per-window summary dicts into one archive summary (union of list
+    fields, first non-empty context). De-dupes exact-duplicate lines."""
+    if not summaries:
+        return None
+    today = datetime.now().strftime("%Y-%m-%d")
+    merged = {
+        'type': 'agent_memory', 'date': today,
+        'source_id': _source_id_from_archive(archive_filename),
+        'context': '', 'insights': [], 'source_scores': [], 'decisions': [],
+        'corrections': [], 'operational': [], 'user_preferences': [],
+        'user_facts': [], 'topics': [], 'relations': [], 'entities': [],
+    }
+    list_keys = ('insights', 'source_scores', 'decisions', 'corrections',
+                 'operational', 'user_preferences', 'user_facts', 'topics',
+                 'relations', 'entities')
+    seen = {k: set() for k in list_keys}
+    for s in summaries:
+        if s in (None, "LLM_FAILED"):
+            continue
+        if not merged['context'] and s.get('context', '').strip():
+            merged['context'] = s['context']
+        for k in list_keys:
+            for item in s.get(k, []) or []:
+                key = item.strip().lower()
+                if key and key not in seen[k]:
+                    seen[k].add(key)
+                    merged[k].append(item)
+    return merged
+
 def process_single_archive(archive_filename):
-    """Process one archive file through LLM. Returns summary dict or None."""
+    """Process one archive file through LLM. Returns summary dict or None.
+
+    Large archives are WINDOWED (multiple sequential LLM calls, merged) so a
+    haystack that exceeds a single-call safe size never truncates or drops its
+    deep content."""
     if not LLM_ENABLED:
         return None
-    content = extract_archive_content([archive_filename])
+    # WINDOWING: if this archive's chunks exceed one safe window, split into
+    # multiple passes so nothing (incl facts deep in the haystack) is lost.
+    _chunks = extract_single_archive_content(archive_filename)
+    if _chunks and sum(len(c) for c in _chunks) > WINDOW_MAX_CHARS:
+        windows, cur, cur_len = [], [], 0
+        for ch in _chunks:
+            if cur and cur_len + len(ch) > WINDOW_MAX_CHARS:
+                windows.append(cur); cur, cur_len = [], 0
+            cur.append(ch); cur_len += len(ch)
+        if cur:
+            windows.append(cur)
+        log(f"   🪟  {archive_filename}: {sum(len(c) for c in _chunks)} chars > {WINDOW_MAX_CHARS} — windowing into {len(windows)} pass(es)")
+        win_summaries, any_fail = [], False
+        for wi, win in enumerate(windows):
+            sub = _process_archive_text("".join(win), archive_filename,
+                                        window_label=f"{wi+1}/{len(windows)}")
+            if sub == "LLM_FAILED":
+                any_fail = True  # retry whole archive next run rather than store partial
+                break
+            if sub:
+                win_summaries.append(sub)
+        if any_fail:
+            return "LLM_FAILED"
+        merged = _merge_summaries(win_summaries, archive_filename)
+        if not merged or not any(merged.get(k) for k in (
+                'context', 'insights', 'source_scores', 'decisions', 'corrections',
+                'operational', 'user_preferences', 'user_facts')):
+            log(f"   ℹ️  Nothing memorable across {len(windows)} window(s) of {archive_filename}")
+            return None
+        log(f"   ✅ Windowed extract {archive_filename}: {len(merged['insights'])} insights, {len(merged['user_facts'])} user_facts, {len(merged['decisions'])} decisions across {len(windows)} pass(es)")
+        return merged
+    # small archive -> single pass (original path)
+    content = "".join(_chunks) if _chunks else extract_archive_content([archive_filename])
     if not content.strip():
         log(f"   ℹ️  No content in {archive_filename}, skipping")
         return None
+    return _process_archive_text(content, archive_filename)
+
+def _process_archive_text(content, archive_filename, window_label=None):
+    """Extract memory items from one block of archive text (a whole small archive,
+    or one window of a large one). Returns summary dict | None | 'LLM_FAILED'."""
+    _wl = f" [window {window_label}]" if window_label else ""
     prompt = f"""You are an AI agent writing your own memory notes.
 Read this SINGLE conversation session and extract ONLY knowledge worth recalling later.
 
@@ -983,6 +1068,9 @@ Required JSON structure:
   "user_preferences": [
     "What you learned about the user's style, preferences, or boundaries — permanent traits only"
   ],
+  "user_facts": [
+    "[user_fact] A DURABLE first-person fact the user stated about THEIR OWN life/identity — education, occupation/employer, location, family/relationships, health/allergies, possessions, personal history. NOT a preference, NOT a universal truth."
+  ],
   "topics": ["#hashtag topics covered, lowercase, no spaces"],
   "relations": ["Subject → verb → Object"],
   "entities": ["Name | type: person|project|tool|concept|org"]
@@ -1002,12 +1090,16 @@ Rules:
 - EVERY [operational], [decision], [correction] item MUST end with a [ctx:...] tag: one short phrase (max 5 words) describing the session context. Example: [ctx:github push session], [ctx:cron restore fix], [ctx:user correction]. Keep it minimal.
 - [relation] = explicit relationship between two named concepts: "Subject → verb → Object" format. Only extract when relationship is clear and non-trivial. Max 3 per archive.
 - [entity] = named concept worth tracking as a node: "Name | type: person|project|tool|concept|org". Only extract proper nouns, named tools, projects, people, orgs. Skip generic terms. Max 5 per archive.
+- [user_fact] = a DURABLE fact the user stated about THEMSELVES (their own life/identity), NOT a preference and NOT a world-fact. Capture education, occupation/employer, location, relationships/family, health/allergies, possessions, personal history/biography. Extract on FIRST mention (do not wait for repetition). First-person cues: "I graduated...", "I work at...", "I live in...", "my wife/sister/son...", "I'm allergic to...", "I switched jobs to...". This is distinct from [preference] (a behavioral trait/boundary) and from [factual] (a universal truth). Err on the side of extracting — a person's biographical facts are high-value recall. End with [ctx:max 5 words][conf:X.X].
 - Return empty arrays if nothing is worth remembering
 - No markdown inside JSON values, plain text only
 - Focus on RECALLABLE knowledge, not operational logs
 - JSON only, no explanation outside the JSON"""
-    log(f"   🔄 Analyzing {archive_filename}...")
-    success, response = call_llm(prompt, max_tokens=1500, reasoning=False, model=NO_REASONING_MODEL)
+    log(f"   🔄 Analyzing {archive_filename}{_wl}...")
+    # Output budget must fit the JSON for a full window; honor the env floor
+    # (was hardcoded 1500 -> truncated on big windows -> Unterminated string).
+    _single_budget = max(4000, LLM_MAX_TOKENS)
+    success, response = call_llm(prompt, max_tokens=_single_budget, reasoning=False, model=NO_REASONING_MODEL)
     if not success:
         log(f"   ⚠️  LLM failed for {archive_filename}: {response}")
         # Sentinel: transient LLM failure (retry next run) vs genuinely-empty
@@ -1035,6 +1127,7 @@ Rules:
             'corrections': llm_output.get('corrections', []),
             'operational': llm_output.get('operational', []),
             'user_preferences': llm_output.get('user_preferences', []),
+            'user_facts': llm_output.get('user_facts', []),
             'topics': llm_output.get('topics', []),
             'relations': llm_output.get('relations', []),
             'entities': llm_output.get('entities', [])
@@ -1046,7 +1139,8 @@ Rules:
             summary['decisions'] or
             summary['corrections'] or
             summary['operational'] or
-            summary['user_preferences']
+            summary['user_preferences'] or
+            summary['user_facts']
         )
         if not has_content:
             log(f"   ℹ️  Nothing memorable in {archive_filename}, skipping")
@@ -1574,6 +1668,13 @@ def write_memory_file(summary, dedup=True, seed_verdict=None):
     corrections = summary.get('corrections', [])
     operational = summary.get('operational', [])
     prefs = summary.get('user_preferences', [])
+    user_facts = summary.get('user_facts', [])
+    # Prefix user_facts with [user_fact] tag if not already present
+    user_facts = [
+        uf if uf.startswith('[user_fact]') else f'[user_fact] {uf}'
+        for uf in user_facts
+        if uf.strip()
+    ]
     topics = summary.get('topics', [])
     relations = summary.get('relations', [])
     # Prefix relations with [relation] tag if not already present
@@ -1640,6 +1741,7 @@ def write_memory_file(summary, dedup=True, seed_verdict=None):
         ('correction', corrections),
         ('operational', operational),
         ('preference', prefs),
+        ('user_fact', user_facts),
         ('relation', relations),
         ('entity', entities),
     ]
