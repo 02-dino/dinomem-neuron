@@ -2460,8 +2460,25 @@ fi
 
 # ── Patch openclaw.json bootstrap caps ───────────────────────────────────────
 hr "OpenClaw config"
-OPENCLAW_JSON="${OPENCLAW_CONFIG:-$HOME/.openclaw/openclaw.json}"
-[ -f "$OPENCLAW_JSON" ] || OPENCLAW_JSON="$OPENCLAW_DIR/openclaw.json"
+# CONFIG-ISOLATION SAFETY: when OPENCLAW_CONFIG is set (sandbox/bench harness
+# points it at a lab-local config so plugin writes stay in the lab), HONOR IT
+# ABSOLUTELY. NEVER silently fall through to $OPENCLAW_DIR/openclaw.json — that
+# fallback is what leaked dead lab-temp paths into a caller's REAL openclaw.json
+# (plugins.load.paths / entries.*.config.workspaceDir dangling -> gateway
+# crash-loop, exit 78). Only the unset case may probe the default locations.
+if [ -n "${OPENCLAW_CONFIG:-}" ]; then
+  OPENCLAW_JSON="$OPENCLAW_CONFIG"
+  if [ ! -f "$OPENCLAW_JSON" ]; then
+    # honor the redirect even if the file is absent: seed an empty stub so all
+    # subsequent patches land here, NOT in the real config. A sandbox caller
+    # that wants base config seeded should create it before invoking us.
+    mkdir -p "$(dirname "$OPENCLAW_JSON")" 2>/dev/null || true
+    [ -e "$OPENCLAW_JSON" ] || printf '{}\n' > "$OPENCLAW_JSON" 2>/dev/null || true
+  fi
+else
+  OPENCLAW_JSON="$HOME/.openclaw/openclaw.json"
+  [ -f "$OPENCLAW_JSON" ] || OPENCLAW_JSON="$OPENCLAW_DIR/openclaw.json"
+fi
 if [ ! -f "$OPENCLAW_JSON" ]; then
   warn "openclaw.json not found — skipping bootstrap cap patch"
 else
