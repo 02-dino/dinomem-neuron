@@ -3037,10 +3037,15 @@ fi
 #    loads. Assert eligibility via `hooks check --json` (grep on the table is
 #    unreliable — emoji wrap splits names). Self-heal into global ~/.openclaw/hooks/.
 if openclaw_running; then
+  # `|| true`: this probe is DIAGNOSTIC ONLY. Under `set -euo pipefail` a
+  # non-zero from the `openclaw hooks check | python` pipeline (e.g. a headless
+  # sandbox / benchmark lab with no real gateway or hooks config) would become
+  # the SCRIPT'S final exit status and make a fully-successful install report
+  # failure (silent, since the diagnostics go to stdout). Never let it.
   _elig="$(openclaw hooks check --json 2>/dev/null | "$PY" -c "import json,sys;
 try:
   d=json.load(sys.stdin); print('yes' if 'dinomem-open-notes' in d.get('hooks',{}).get('eligible',[]) else 'no')
-except Exception: print('unknown')" 2>/dev/null)"
+except Exception: print('unknown')" 2>/dev/null)" || true
   if [ "$_elig" = "yes" ]; then
     sc_pass "dinomem-open-notes hook is eligible (gateway can load it)"
   else
@@ -3148,3 +3153,11 @@ echo "  depending on how many memory files exist. This is normal."
 echo ""
 echo "  License: Proprietary — unauthorized redistribution prohibited. https://t.me/dinotlgrm"
 echo "  Undo: bash $SKILL_DIR/scripts/uninstall.sh --workspace $WS --agent-id $AGENT_ID"
+
+# Reaching the done-banner == a successful install. All GENUINE hard-fail paths
+# above exit 1 explicitly BEFORE here (required-cron gap, base-not-found, license,
+# etc). Past this point only cosmetic status echoes / diagnostic probes run, and
+# under `set -euo pipefail` any of their non-zero statuses would otherwise fall
+# off the end as the script's exit code — silently failing a good install in a
+# headless sandbox. Pin success explicitly.
+exit 0
