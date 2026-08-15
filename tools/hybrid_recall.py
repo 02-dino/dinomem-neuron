@@ -307,6 +307,12 @@ def fuse(cands: list[dict]) -> list[dict]:
             if c.get("norm_sim", 0.0) > m.get("norm_sim", 0.0):
                 m["norm_sim"] = c["norm_sim"]
             m["provenance"].append({"leg": c["leg"], "uri": c["uri"], "score": c.get("score", 0.0)})
+            # Corroboration branch: if THIS leg carries session attribution and the
+            # kept candidate lacked it (e.g. session_search corroborates a passage
+            # first surfaced by the memory shim), adopt it so recall_at_k can score.
+            if not m.get("session_ids") and c.get("session_ids"):
+                m["session_ids"] = c.get("session_ids")
+                m["session_id"] = c.get("session_id", "")
         else:
             merged[key] = {
                 "content": c.get("content", ""),
@@ -316,6 +322,11 @@ def fuse(cands: list[dict]) -> list[dict]:
                 "score": c.get("score", 0.0),
                 "norm_sim": c.get("norm_sim", 0.0),
                 "evidence_count": 1,
+                # Carry session attribution through fusion -> answer.py reads it off
+                # the fused candidate -> recall_at_k lights up. Absent on non-session
+                # legs (memory shim/graph/docs) by construction; '' / [] there.
+                "session_ids": c.get("session_ids", []),
+                "session_id": c.get("session_id", ""),
                 "provenance": [{"leg": c["leg"], "uri": c["uri"], "score": c.get("score", 0.0)}],
             }
     return list(merged.values())
