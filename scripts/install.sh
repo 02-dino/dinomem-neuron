@@ -837,6 +837,19 @@ if [ -d "$SKILL_DIR/skills" ]; then
   done
 fi
 
+# ── Wire copied neuron skills into agent allowlist ───────────────────────────
+# Skills in <workspace>/skills are auto-discovered, but agents with an explicit
+# skills allowlist will EXCLUDE them unless listed. Add the IDs we just shipped.
+if command -v python3 >/dev/null 2>&1; then
+  python3 "$SKILL_DIR/scripts/wire_skills.py" \
+    --workspace "$WS" \
+    --agent-id "$AGENT_ID" \
+    --skills-dir "$SKILL_DIR/skills" \
+    || warn "skill allowlist wiring failed; skills may be excluded"
+else
+  warn "python3 not found; skill allowlist wiring skipped"
+fi
+
 # NOTE: neuron no longer ships its own benchmark/ harness. The old retrieval-only
 # A/B (run_benchmark.py + Atlas scenarios) was low-quality and outside the real
 # pipeline. The full evaluation program lives in BASE (benchmark/run_all.py,
