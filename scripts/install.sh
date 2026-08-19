@@ -666,6 +666,61 @@ if [ -n "$KB_DEPS_MISSING" ]; then
   echo ""
 fi
 
+# ── Prewarm the embedding model (host HF-cache e5) ─ idempotent, mirror-fallback ──
+# WHY: neuron's local semantic tools (docs_search / session_search) load the e5
+# snapshot via sentence-transformers from the HOST HF cache. This is SEPARATE from
+# base's TEI container (base runs e5 INSIDE the :8080 Docker container for
+# memory_search; it never puts a snapshot in the host cache). Left lazy, the model
+# downloads on FIRST QUERY — and if the host can't reach Hugging Face (blocked region,
+# datacenter IP, flaky mirror) the download fails SILENTLY at query time, so the
+# install reports success but semantic search is dead. We prewarm here so any HF
+# reachability problem surfaces AT INSTALL, visibly and fixably — not weeks later.
+# Idempotent: skips if the snapshot is already cached (no double-download on re-run).
+# Mirror fallback: retries via HF_ENDPOINT=hf-mirror.com, which fixes most
+# blocked-region hosts. Warn-not-block: a failure never aborts the install.
+if [ -n "$KB_DEPS_MISSING" ]; then
+  skip "embedding-model prewarm (langchain/sentence-transformers not installed — fix KB deps above first)"
+else
+  _EMBED_MODEL="${DINOMEM_EMBED_MODEL:-intfloat/multilingual-e5-small}"
+  # snapshot-present check: a non-empty snapshots/ dir means the model is cached.
+  # (Cache-dir name derivation lives in Python below — the single source of truth
+  # for HF's models--<org>--<repo> convention; no fragile shell string-munging.)
+  _embed_cached() {
+    "$PY" - "$_EMBED_MODEL" <<'PYEOF' 2>/dev/null
+import os, pathlib, sys
+mid = sys.argv[1]
+root = pathlib.Path(os.environ.get("HF_HOME") or (pathlib.Path.home()/".cache"/"huggingface"))
+snaps = root/"hub"/("models--"+mid.replace("/","--"))/"snapshots"
+ok = snaps.exists() and any(p.is_dir() and any(p.iterdir()) for p in snaps.iterdir())
+sys.exit(0 if ok else 1)
+PYEOF
+  }
+  # download via sentence-transformers; honors HF_ENDPOINT env if the caller set one.
+  _embed_fetch() {
+    "$PY" - "$_EMBED_MODEL" <<'PYEOF' >/dev/null 2>&1
+import sys
+from sentence_transformers import SentenceTransformer
+SentenceTransformer(sys.argv[1], device="cpu")
+PYEOF
+  }
+  if _embed_cached; then
+    skip "embedding model $_EMBED_MODEL (already cached — no download)"
+  elif _embed_fetch; then
+    ok "embedding model $_EMBED_MODEL prewarmed (host HF cache)"
+  elif HF_ENDPOINT="https://hf-mirror.com" _embed_fetch; then
+    ok "embedding model $_EMBED_MODEL prewarmed via hf-mirror.com (primary HF unreachable)"
+  else
+    echo ""
+    printf '  \033[1;33m⚠ Embedding model did not download — local semantic search (docs_search / session_search) will be OFFLINE.\033[0m\n'
+    echo "     Cause: host cannot reach Hugging Face (and the hf-mirror.com fallback also failed)."
+    echo "     Core memory_search (TEI container on :8080) is UNAFFECTED — only the LOCAL semantic tools need this."
+    printf '     \033[1mFix A (mirror, copy-paste):\033[0m HF_ENDPOINT=https://hf-mirror.com %s -c "from sentence_transformers import SentenceTransformer as S; S(%s)"\n' "$PY" "'$_EMBED_MODEL'"
+    printf '     \033[1mFix B (own mirror):\033[0m set HF_ENDPOINT to a reachable HF mirror, then re-run this installer (idempotent).\n'
+    echo "     The tools also honor HF_ENDPOINT at query time, so setting it in the agent env self-heals without a re-run."
+    echo ""
+  fi
+fi
+
 # ── HARD post-install assertion: duckdb GATES data_query (structured-data SQL) ──
 # Same principle as the KB trio: a feature that legit can't run without its dep
 # must not fail SILENTLY. duckdb was Tier-B (buried one-line warn); promote it to

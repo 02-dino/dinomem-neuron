@@ -57,7 +57,16 @@ def _cache_folder_name(model_id: str) -> str:
 
 
 def _resolve_local_model():
-    """Return (model_path, is_local). Mirrors docs_search.py's resolution exactly."""
+    """Return (model_path, is_local). Mirrors docs_search.py's resolution exactly.
+
+    is_local=True only when a snapshot is already in the HF cache; otherwise the
+    model is fetched from Hugging Face on first use. That first-use fetch is the
+    smooth-install risk: on a host that can't reach HF it fails at QUERY time, not
+    install time. Two mitigations exist: (1) install.sh prewarms the snapshot with
+    an hf-mirror.com fallback, and (2) this fetch honors HF_ENDPOINT natively (via
+    huggingface_hub), so setting HF_ENDPOINT=https://hf-mirror.com in the agent env
+    self-heals a missing snapshot on the next query WITHOUT re-running the installer.
+    """
     hf_cache = pathlib.Path(
         os.environ.get("HF_HOME") or (pathlib.Path.home() / ".cache" / "huggingface")
     )
