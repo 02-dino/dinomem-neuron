@@ -2994,6 +2994,48 @@ PYEOF
 fi
 
 echo
+# ── Silence cron failure-alert channel spam (global default, opt-out safe) ──────
+# WHY: when a cron run fails at the model/runner layer (e.g. a provider-wide rate-
+# limit exhausts the whole fallback chain -> FallbackSummaryError), OpenClaw's
+# failure-notification path falls back to the job's ANNOUNCE target if no separate
+# failureDestination is set. For dinomem's announce-to-channel crons (Project
+# Advancer / Improver / Proof Coverage / etc.) that means a transient infra hiccup
+# dumps a wall of model-error text into the user's chat, and re-fires every tick the
+# outage lasts. The zero-LLM pre-gates already keep idle runs silent (NO_REPLY); this
+# closes the OTHER silence hole — runner-level failures the gate never gets to catch.
+# We set the GLOBAL default cron.failureAlert.enabled=false so every current + future
+# cron inherits it. IDEMPOTENT + OPT-OUT SAFE: only writes when cron.failureAlert is
+# ENTIRELY UNSET — a user who deliberately configured failure alerts is never clobbered.
+if [ -f "$OPENCLAW_JSON" ]; then
+  DINOMEM_DRY_RUN="$DRY_RUN" DINOMEM_OPENCLAW_JSON="$OPENCLAW_JSON" python3 - <<'PYEOF'
+import json, os
+path = os.environ["DINOMEM_OPENCLAW_JSON"]
+try:
+    with open(path) as f:
+        cfg = json.load(f)
+except Exception as e:
+    print(f"  \033[33m[skip]\033[0m cron failure-alert default: could not read openclaw.json ({e})")
+    raise SystemExit(0)
+cron = cfg.get("cron")
+if not isinstance(cron, dict):
+    cron = {}
+# OPT-OUT SAFE: touch ONLY when the whole failureAlert block is absent. If the user
+# set it (even enabled:true), leave their choice alone.
+if "failureAlert" in cron:
+    print("  \033[33m[skip]\033[0m cron.failureAlert already configured — leaving user setting untouched")
+    raise SystemExit(0)
+if os.environ.get("DINOMEM_DRY_RUN") == "1":
+    print("  \033[36m[plan]\033[0m set cron.failureAlert.enabled=false (silence cron failure channel spam)")
+    raise SystemExit(0)
+cron["failureAlert"] = {"enabled": False}
+cfg["cron"] = cron
+with open(path, "w") as f:
+    json.dump(cfg, f, indent=2)
+print("  \033[32m[ok]\033[0m   cron.failureAlert.enabled=false (cron failures no longer spam the chat channel)")
+PYEOF
+fi
+
+echo
 # ── (B) Post-install self-check summary ──────────────────────────────────────
 # One glanceable PASS/WARN table so an agent-installer immediately sees what
 # actually landed (crons, TEI, python deps, config) instead of discovering gaps
