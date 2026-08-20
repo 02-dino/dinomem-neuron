@@ -1685,7 +1685,8 @@ PYEOF
 # LEGACY CLEANUP: older neuron installs created "Project Cron Gate". If that job
 # still exists we REMOVE it here so it can't keep firing alongside the new gate.
 LEGACY_GATE_ID=$(python3 -c "
-import subprocess, json
+import subprocess, json, os as _os
+_DINO_AID = (_os.environ.get('DINOMEM_AGENT_ID','') or '').strip().lower()
 try:
     r = subprocess.run(['openclaw','cron','list','--json'], capture_output=True, text=True, timeout=10)
     jobs = json.loads(r.stdout) if r.returncode == 0 else []
@@ -3071,7 +3072,7 @@ fi
 # cron-only). If we can't auto-repair, surface ONE copy-paste fix command and, on a
 # normal install (not already inside a repair run), exit NONZERO so the gap is loud.
 # Daily Note Review is treated as recommended-not-required (it's a redundant janitor).
-_REQUIRED_CRONS="Project Advancer|Project Improver (Component 2)|Verified Note Deleter (Component 1)|Project Cron Gate"
+_REQUIRED_CRONS="Project Advancer|Project Improver (Component 2)|Verified Note Deleter (Component 1)|Note Cron Gate"
 _MISSING_REQUIRED=""
 if [ "$DO_CRON" != 1 ]; then
   # --no-cron: cron installation was intentionally skipped, so the required-cron
