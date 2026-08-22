@@ -73,6 +73,7 @@ This insight is now injected every turn. Future investing discussions automatica
 | 🗺️ | **Enriched navigation index** | `MEMORY.md` serves dual roles: search navigation aid (like dinomem base) + always-present behavior layer. Promoted insights live here — active every turn without recall. |
 | 📚 | **RAG for long docs & media** | Semantic search over contracts, books, legal text — plus images, scanned pages, and PDFs OCR'd by the agent's own vision model (no GPU, no setup). Stored separately, never pollutes memory, searchable via `docs_search` |
 | 📊 | **Structured data** | Exact SQL retrieval over CSV/JSON/Parquet — filter, range (`<`,`>`,`=`), sort, `COUNT`/`SUM`/`GROUP BY` — the precise questions embeddings can't answer. Plus optional **fuzzy value routing** (`--suggest`, resolves typo/synonym filter values, no embeddings) and optional **per-prose-column semantic rank** (`--semantic`, "find rows about X" over free-text columns like survey feedback). Read-only; never pollutes memory |
+| 🕸️ | **Code-structure graph** | A **ZERO-LLM** AST index of your own codebase (`code_graph.py`, tree-sitter) — nodes = files/functions/classes/methods with `file:line`, edges = `calls`/`imports`/`inherits`/`contains`. `code_query` answers *what calls X*, *what X calls*, *class hierarchy*, *where a symbol is defined*, or the *edge path A→B* — a scoped subgraph instead of grepping whole files into context (~20× fewer tokens on big repos). Path-derived **project tags** + cross-project `depends_on` rollup. Auto-refreshed daily (git-incremental) — on par with `docs_ingest`, no manual build. `hybrid_recall` fuses "what X does" (code) with "why X exists" (memory) in one block |
 | 🤖 | **Automatic notes** | The agent writes `_note_` files from its own commitments ("next step", "TODO") and task follow-ups — not just when you ask |
 | 🏗️ | **Project executor** | Large builds become `type: project` notes: the agent estimates token cost upfront and splits the work if it won't fit the remaining budget, then executes one step per turn (with a reactive context checkpoint as a safety net) so nothing is lost across sessions. A Project Advancer cron auto-advances unfinished projects unattended and announces progress, pausing for approval on anything destructive. |
 | ♻️ | **Self-improving project closer** | When a project finishes, a Project Improver cron reviews the completed work and — if it makes sense for *that* project — makes a behavior-preserving improvement (cheaper/faster/clearer/more reliable; "nothing needed" is a valid outcome), validates it, then stamps the note `verified`. A Verified Note Deleter then retires verified notes (snapshotting first). External/destructive improvements stay gated for owner approval. |
@@ -308,7 +309,7 @@ your base is too old, run `dinomem/scripts/update.sh` before using neuron.
 
 ## Beyond the pipeline
 
-The L2/L3/L4 flow above is neuron's core: turning raw memory into validated, behavior-changing knowledge. Riding on that same base are five capabilities that aren't part of the synthesis engine but extend what the agent can do day to day.
+The L2/L3/L4 flow above is neuron's core: turning raw memory into validated, behavior-changing knowledge. Riding on that same base are several capabilities that aren't part of the synthesis engine but extend what the agent can do day to day.
 
 ### RAG for long documents
 
@@ -345,6 +346,35 @@ python3 tools/data_query.py --sql "SELECT region, SUM(price*qty) FROM sales WHER
 **Read-only by construction — two layers.** Queries are SELECT-only: a keyword guard rejects any `INSERT`/`UPDATE`/`DELETE`/`DROP`/`ALTER`/`ATTACH`/`COPY`/`PRAGMA`/etc. and multi-statement injection (`SELECT 1; DROP TABLE …`) before execution, and the DuckDB connection itself is opened `read_only=True` so a write is rejected at the engine level even if the guard were bypassed. The store is a retrieval surface, never a mutation path.
 
 **Routing.** `catalog.json` doubles as the intent router — `--list` shows every table's columns + keywords so the agent picks the right one. The behavior policy (`## structured_data` / `## retrieval_router`) draws the line: *row · count · range · filter · sort · aggregate → `data_query`*, while *meaning · "like this" · passage → `docs_search`* and *fact · decision · preference → `memory_search`*. Rows are never saved to memory. `--refresh` re-scans sources (hash-skips unchanged, updates changed, prunes vanished). Requires `duckdb`; if it's not installed the feature is simply unavailable and the semantic tools are unaffected.
+
+### Code-structure graph
+
+RAG answers *"what does this document say?"* and structured data answers *"how many rows?"* — the code graph answers *"how does this codebase fit together?"* When the agent works on your own source, *"what calls this function?"*, *"what does it call?"*, *"where is this class defined?"*, *"what's the path from A to B?"* are structural questions grep can't answer without reading whole files into context. This is the **structural** counterweight to the semantic pipeline — and it's **ZERO-LLM** end to end.
+
+`code_graph.py` walks your code with a tree-sitter AST parser and builds a **separate** graph (`kb/code_graph/`, never mixed with memory): nodes are files, functions, classes, and methods — each with a real `file:line` — and edges are `calls` / `imports` / `inherits` / `contains`, tagged **EXTRACTED** (proven from the AST) or **INFERRED**. `code_query.py` then serves a *scoped subgraph* instead of dumping files:
+
+```bash
+# build/refresh the graph (full first time, git-incremental after — re-parses only changed files)
+python3 procedures/code_graph.py --path ~/.openclaw/workspace-myagent
+
+# what does a symbol touch? (contains / calls / called-by / imports / inherits — each with file:line)
+python3 tools/code_query.py explain memory_promote
+
+# how does one symbol reach another?
+python3 tools/code_query.py path extract_memory memory_graph
+
+# fuzzy-find the best-matching symbol, then explain it
+python3 tools/code_query.py query "where do we build the similarity graph"
+
+# project inventory + cross-project depends_on rollup
+python3 tools/code_query.py projects
+```
+
+**Why it's cheaper.** Asking "what calls `X`" over grep means reading every candidate file into the model's context — often ~20× the tokens of the answer. The graph returns just the neighborhood (edges + `file:line`), so the agent navigates a large repo without context-stuffing.
+
+**Project-aware.** Every node carries a ZERO-LLM, path-derived `project` tag (`github/<name>/ → <name>`; else the workspace basename). Boundary-crossing edges roll up into weighted `depends_on` (e.g. *dinomem-neuron depends_on dinomem*), surfaced by the `projects` verb and `--project` scope — so on a multi-repo box you can see which project's code actually reaches into another's.
+
+**On par with docs.** Just like `docs_ingest` refreshes long docs daily, a daily git-incremental cron (`code_graph_refresh`) keeps the graph current — no manual rebuild. And `hybrid_recall` gains a **CODE leg**: ask *"what does `memory_promote` do **and** why does it exist?"* and it fuses the code hits (structure, `file:line`) with the memory/graph "why" (the design decision behind it) in one answer — something neither plain code-search nor plain memory can do alone. Optional dependency: if tree-sitter isn't installed the code graph simply goes offline (fail-soft) and the rest of neuron is unaffected.
 
 ### Automatic note creation
 
@@ -493,6 +523,7 @@ python3 benchmark/run_all.py --source . \
 | Daily 3:00 UTC | `memory_graph.py` | L2 — Relationship Discovery (graph rebuild) |
 | Daily 3:30 UTC | `memory_synthesis.py` + `contradiction_check.py` | L3 — Pattern Synthesis + contradiction check |
 | Daily 4:00 UTC | `docs_ingest.py` | Re-ingest new/changed docs |
+| Daily 4:15 UTC | `code_graph.py` (`code_graph_refresh`) | Re-index code structure (git-incremental, ZERO-LLM) so `code_query` stays current |
 | Every 15 min | **Project Cron Gate** (OpenClaw **command** cron) | Zero-LLM dispatcher: runs the three bash pre-gates and force-runs Advancer/Improver/Deleter **only** when there's real work — $0 LLM on idle ticks |
 | gate-driven | Project Advancer (OpenClaw cron, self-schedule disabled) | Auto-advance `type: project` notes one step/run, unattended; only fires when the gate finds an `in_progress` note; state-change-only announcements |
 | gate-driven | Project Improver (OpenClaw cron, self-schedule disabled) | Self-improving closer: review a completed-but-unverified project, make a behavior-preserving improvement (or confirm none needed), validate, stamp `verified`; only fires when the gate finds a done-unverified project; external steps gated |
@@ -539,11 +570,13 @@ python3 benchmark/run_all.py --source . \
 │   ├── contradiction_check.py  # L3 — contradiction detection
 │   ├── generate_topic_index.py # L4 — topic index + MEMORY.md enrichment
 │   ├── docs_ingest.py          # RAG — ingest long docs
+│   ├── code_graph.py           # Code-structure graph — ZERO-LLM AST indexer (tree-sitter, git-incremental)
 │   ├── data_register.py        # Structured data — register csv/json/parquet into the DuckDB store + catalog
 │   ├── skill_extract.py        # Behavior Promotion — distill patterns from projects/L3/PERSISTENT.md; route to skill (auto) / hook / cron (staged)
 │   └── run_log.py              # Per-run audit trail — append-only JSONL log for all cron scripts
 ├── tools/
 │   ├── docs_search.py          # RAG — semantic search over long docs (HyDE query expansion enabled by default)
+│   ├── code_query.py           # Code-structure graph — explain / path / query over the code graph (file:line, ZERO-LLM)
 │   ├── data_query.py           # Structured data — read-only exact SQL over the DuckDB store (SELECT-only)
 │   └── cache_utils.py          # Shared cache utility
 ├── scripts/
@@ -565,6 +598,7 @@ python3 benchmark/run_all.py --source . \
     │   ├── l3_synthesis/
     │   └── l4_promoted/
     ├── vector_db_docs/         # long-docs store — RAG embeddings (separate from memory)
+    ├── code_graph/             # code-structure store — AST graph (separate from memory)
     └── data_store/             # structured-data store — data.duckdb + catalog.json (separate from memory)
 ```
 
