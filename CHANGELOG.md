@@ -4,6 +4,16 @@ All notable changes to dinomem-neuron are documented here.
 
 ---
 
+## 1.11.1 — 2026-08-22
+
+**Gate convergence — the Advancer's ingest seatbelt and a more-robust frontmatter parse now ship in the repo (previously live-only), so a fresh install gets them and `install.sh` can't clobber them.**
+### Added
+- **Ingest seatbelt in `check_projects.sh`.** Before waking the Project Advancer, the gate now skips the run entirely if a known ingest/rebuild process is active (`session_ingest.py`, `docs_ingest.py`, reindex/migrate, `memory index --force`, …). Prevents the Advancer from verifying/advancing a note against a HALF-BUILT store mid-rebuild. Ships the new read-only `check_running_ingest.sh` helper (pgrep patterns only, no host-specific paths — host-agnostic). Wiring is **fail-open + portable**: the call is guarded by `[ -x ]`, so an install lacking the helper simply no-ops and gate behaviour is unchanged. No env var or placeholder needed.
+### Fixed
+- **Frontmatter parse robustness in `check_projects.sh`.** Replaced the `head -10` frontmatter scan with an `awk` block that reads everything before the first blank line and drops comment lines. Correct regardless of frontmatter length, and prose/comments below the frontmatter can never false-match a `status:` line. (Both hardenings were previously analyst-live-only; this closes the drift so the next `install.sh` upgrade preserves rather than clobbers them.)
+
+---
+
 ## 1.11.0 — 2026-08-22
 
 **A whole new retrieval axis: a ZERO-LLM code-structure graph — plus a bi-temporal fact graph, and everything in dinomem base v1.5.0 rides through.**

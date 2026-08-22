@@ -16,6 +16,17 @@
 # and are intentionally invisible to this gate — the Advancer cannot do them.
 WS="${OPENCLAW_WORKSPACE:-$HOME/.openclaw/workspace}"
 
+# INGEST SEATBELT (portable, fail-open): if a known ingest/rebuild process is
+# actively running, skip this run entirely rather than risk the Advancer
+# verifying/advancing a note against a HALF-BUILT store. check_running_ingest.sh
+# is read-only (pgrep patterns only, no host-specific paths) so it ships as-is.
+# GUARD is [ -x ]: an install that lacks the helper simply no-ops -> gate
+# behaviour unchanged (fail-open). No env/placeholder needed.
+INGEST_GATE="$(dirname "$0")/check_running_ingest.sh"
+if [ -x "$INGEST_GATE" ] && "$INGEST_GATE"; then
+  exit 1
+fi
+
 # Re-fire guard: an ACTIVELY advancing project rewrites resume_state/current_step
 # every step, so its content hash changes and this still fires immediately (zero
 # added latency). But a project PAUSED at a safety gate (awaiting approval) or
@@ -37,8 +48,12 @@ MIN_INTERVAL_SECS=$(( 24 * 3600 ))  # daily floor for frozen/stuck notes
 qualifying=()
 for f in "$WS"/memory/_note_*.md; do
   [ -f "$f" ] || continue
-  head -10 "$f" | grep -q "^type: project" || continue
-  head -10 "$f" | grep -qE "^status: (in_progress|pending)" && qualifying+=("$f")
+  # Read frontmatter = everything before the first empty line; drop comment lines.
+  # More correct than head -N: matches the ACTUAL frontmatter block regardless of
+  # its length, and prose/comments below it can never false-match a status line.
+  fm="$(awk 'NF==0{exit} /^[[:space:]]*#/{next} {print}' "$f")"
+  printf '%s\n' "$fm" | grep -q "^type: project" || continue
+  printf '%s\n' "$fm" | grep -qE "^status: (in_progress|pending)" && qualifying+=("$f")
 done
 
 [ "${#qualifying[@]}" -gt 0 ] || exit 1
