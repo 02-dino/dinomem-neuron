@@ -22,6 +22,24 @@ Decide **at request time, before starting**:
   `type: project`. Never skip enumeration. Physical/non-verifiable tasks →
   `type: task_bound` (see the memory-pinning skill), not project.
 
+## Pre-flight clarity check (run BEFORE writing the note)
+
+The estimate gate decides IF a project note; this decides you're building the
+RIGHT one. The verify/done_when chain proves you built what you decided — it
+cannot catch that you decided wrong. So before enumerating steps:
+
+- **Enumerate load-bearing assumptions.** List the interpretations your plan
+  silently depends on (which file/API/scope/target, what "done" means).
+- **Fork test:** if `>1` material interpretation exists OR a load-bearing
+  assumption is unverified → STOP. Surface the fork + your default pick + the
+  cost-if-wrong, and get ONE confirmation before writing steps. Do NOT pick
+  silently and execute.
+- **Record it as ruling #0:** the confirmed interpretation goes into `rulings:`
+  as the first entry (`"chose X over Y — user confirmed — cost if wrong: rebuild"`),
+  so a blind resume inherits the decision, not just the steps.
+- **Cheap-fix carve-out:** a single unambiguous reading, or a trivial/reversible
+  task → skip; don't manufacture questions. This gate is for genuine forks only.
+
 ## Format
 
 ```
