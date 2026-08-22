@@ -1,6 +1,6 @@
 ---
 name: retrieval-routing
-description: Pick the right retrieval route for a query and ingest long documents / structured data correctly in dinomem-neuron. Read this when deciding between hybrid_recall (the fuzzy-recall fusion door) vs the exact/ingest/meta forks (data_query / grep / docs_ingest / data_register / memory.diffs / retrieval_log), when a long document is shared or uploaded, or when a query is a row/count/range/filter/aggregate over structured data (csv/json/parquet).
+description: Pick the right retrieval route for a query and ingest long documents / structured data / code structure correctly in dinomem-neuron. Read this when deciding between hybrid_recall (the fuzzy-recall fusion door) vs the exact/ingest/meta forks (data_query / grep / docs_ingest / data_register / code_graph / code_query / memory.diffs / retrieval_log), when a long document is shared or uploaded, when a query is a row/count/range/filter/aggregate over structured data (csv/json/parquet), or when navigating THIS repo's own source (what calls X / X calls what / class hierarchy / where a function is defined / build or refresh the code graph).
 ---
 
 # Retrieval routing (dinomem-neuron)
@@ -21,7 +21,8 @@ fires the right legs, fuses, dedups, reranks, and compiles with provenance.
 | ------------ | ---- |
 | **EXACT** row · count · range · filter · sort · aggregate · field lookup (csv/json/parquet) | `data_query` (exact SQL) — **NEVER** fused |
 | **EXACT** pattern · regex · grep · exact-string over raw text/logs | `exec` (ripgrep/grep) — **NEVER** fused |
-| **INGEST** long doc / file shared / "remember this doc" | `docs_ingest` ; csv/json/parquet dataset → `data_register` |
+| **INGEST** long doc / file shared / "remember this doc" | `docs_ingest` ; csv/json/parquet dataset → `data_register` ; **code tree to navigate** (this repo's own source, calls/callers/hierarchy/where-defined) → `code_graph` (build/refresh the AST index) |
+| **EXACT** code structure · what calls X · X calls what · class hierarchy · where a function/method is defined · edge path A→B (file:line) | `code_query` (over the code graph) — **NEVER** fused |
 | **META** what changed in memory (adds/merges/deletes) | read `memory/.diffs/` (newest JSON) |
 | **META** which retrieval tool ran · routing quality | `kb/retrieval_log/` (`_retrieval_log.py --list`/`--health`) |
 | **FUZZY** fact · decision · preference · todo · meaning · passage · recent convo (<7d) · relational (why/led-to/affects/trace) | **`hybrid_recall`** (the one door) |
@@ -99,6 +100,46 @@ epub/md/txt) · "save/remember this doc" · content `>2000 chars`.
 re-ingested daily 04:00 UTC; ready for `docs_search` after. **Never** save long
 docs to `memory/`. Row/count/range/aggregate over structured data → `data_query`,
 not `docs_search`.
+
+## Code structure → `code_query` (graph)
+
+**What this is:** a ZERO-LLM structural index of THIS repo's own source (nodes =
+file/function/class/method w/ `file:line`; edges = calls/imports/inherits/contains).
+Spending LLM tokens to "understand" imports/calls/inheritance is waste — the AST
+knows it exactly. Query a scoped subgraph (~few hundred tokens) instead of
+`grep -r` + reading whole files into context (~20× the tokens, lower coverage).
+
+**When to INGEST (build/refresh the graph):** before the FIRST code-navigation
+query in a workspace · after you've edited source and want callers/callee edges
+current · whenever `code_query` prints a `[stale]` flag (built_at_sha ≠ HEAD) or
+returns empty. It's cheap + git-incremental (re-parses only changed files), so
+refreshing is near-free.
+- `python3 DINOMEM_WORKSPACE_PLACEHOLDER/procedures/code_graph.py --path <root>`
+  (AST, no LLM; `--full` forces a from-scratch rebuild). Default root ladder:
+  `--path` arg > `DINOMEM_CODE_ROOTS` env > agent workspace > `~/.openclaw`.
+
+**When to SEARCH (query the graph):** any "what calls X / X calls what / class
+hierarchy / where is <fn> defined / how does A reach B" over source — INSTEAD of
+grep+read. Reflex: a code-structure question about this repo's own code → `code_query`
+FIRST, grep only as fallback.
+- `python3 DINOMEM_WORKSPACE_PLACEHOLDER/tools/code_query.py explain <symbol>`
+  (neighborhood: contains/calls/called-by/imports/inherits, each `file:line` +
+  EXTRACTED/INFERRED provenance).
+- `... code_query.py path <A> <B>` (shortest edge path A→B).
+- `... code_query.py query "<nl>"` (fuzzy-find the symbol, then explain).
+
+**`code_query` vs `hybrid_recall` (the discriminator):**
+- Pure structure ("what calls `fuse`", "where is `apply_as_of` defined") → **`code_query`** directly.
+- Structure **+ the WHY** ("what does `apply_as_of` do AND why does it exist") →
+  **`hybrid_recall`** — its CODE leg auto-fires on function/class/calls/imports/inherits
+  wording and fuses the `code_query` `file:line` hits WITH the memory/graph design
+  decision in one block. Neither plain code-search (no *why*) nor plain memory (no
+  *file:line*) answers that alone — that fusion is the killer feature.
+
+**Notes:** graph store = `kb/code_graph/` (a SEPARATE DB file from the memory
+graph — no collision); OPTIONAL tree-sitter dep (missing → code_graph offline,
+fail-soft, rest of retrieval unaffected). **Never** grep+read whole files for a
+structure question when the graph can answer it scoped.
 
 ## Structured data → `data_query` (exact SQL)
 
