@@ -266,6 +266,17 @@ PARSERS = {"python": parse_python}
 def _node_id(kind, name, rel, line):
     return f"{rel}::{kind}::{name}::L{line}"
 
+def _derive_project(rel, root):
+    """Zero-LLM, deterministic project tag from a node's path (NOT LLM-inferred).
+    `github/<name>/...` -> `<name>` (each vendored repo is its own project);
+    everything else (root-level tooling: procedures/ tools/ scripts/ ...) ->
+    the workspace basename. This is the 'which project does this code belong to'
+    axis the flat graph buried in the file path. Free: rel is already on hand."""
+    parts = rel.replace(os.sep, "/").split("/")
+    if len(parts) >= 2 and parts[0] == "github":
+        return parts[1]
+    return os.path.basename(root.rstrip("/")) or "root"
+
 
 def assemble_graph(parsed, root, built_at_sha):
     """parsed = [(rel, defs, refs), ...] -> graph_store payload dict.
@@ -287,6 +298,7 @@ def assemble_graph(parsed, root, built_at_sha):
             "idx": idx, "id": nid, "kind": kind, "name": name,
             "file": rel, "line": line, "title": name,
             "snippet": f"{kind} {name} ({rel}:{line})", "degree": 0,
+            "project": _derive_project(rel, root),
         })
         idx_of[nid] = idx
         name_to_idx[name] = idx
@@ -310,6 +322,24 @@ def assemble_graph(parsed, root, built_at_sha):
         if 0 <= b < len(nodes):
             nodes[b]["degree"] += 1
 
+    # cross-project dependency rollup: when a resolved edge crosses a project
+    # boundary (a.project != b.project), record it as a project-level depends_on.
+    # STRUCTURAL rollup of the imports/calls that already cross boundaries (e.g.
+    # dinomem-neuron importing from dinomem) -> surfaces 'neuron depends_on base'
+    # at the project axis. Zero-LLM; dedup on (from_proj, to_proj); weight = count.
+    proj_dep = {}  # (from_proj, to_proj) -> {count, labels:set}
+
+    def _note_cross_project(a_idx, b_idx, label):
+        if not (0 <= a_idx < len(nodes) and 0 <= b_idx < len(nodes)):
+            return
+        fp, tp = nodes[a_idx].get("project"), nodes[b_idx].get("project")
+        if not fp or not tp or fp == tp:
+            return
+        key = (fp, tp)
+        d = proj_dep.setdefault(key, {"count": 0, "labels": set()})
+        d["count"] += 1
+        d["labels"].add(label)
+
     # pass 2: contains (file -> defs) + resolve refs
     for rel, defs, refs in parsed:
         fi = file_idx[rel]
@@ -322,6 +352,7 @@ def assemble_graph(parsed, root, built_at_sha):
             tgt = name_to_idx.get(r["to_name"])
             if tgt is not None:
                 add_edge(a, tgt, r["label"], src_name, r["to_name"], "extracted")
+                _note_cross_project(a, tgt, r["label"])
             else:
                 add_edge(a, -1, r["label"], src_name, r["to_name"], "inferred")
 
@@ -335,6 +366,14 @@ def assemble_graph(parsed, root, built_at_sha):
     else:
         for n in nodes:
             n["churn"] = 0
+
+    # materialize project-level depends_on edges (sorted, dedup'd, weighted)
+    project_edges = [
+        {"from": fp, "to": tp, "relation": "depends_on",
+         "weight": d["count"], "via": sorted(d["labels"])}
+        for (fp, tp), d in sorted(proj_dep.items(), key=lambda kv: -kv[1]["count"])
+    ]
+    projects = sorted({n.get("project") for n in nodes if n.get("project")})
 
     lang_counts = {}
     for rel, defs, _ in parsed:
@@ -350,6 +389,8 @@ def assemble_graph(parsed, root, built_at_sha):
         "root": root,
         "node_count": len(nodes),
         "edge_count": len(rel_edges),
+        "projects": projects,
+        "project_edges": project_edges,
         "lang_counts": lang_counts,
     }
     return payload

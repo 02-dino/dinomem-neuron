@@ -100,31 +100,34 @@ def _nodes(graph):
     return graph.get("nodes", [])  # _GraphView + dict both support .get()
 
 
-def _in_scope(node, path_prefix):
+def _in_scope(node, path_prefix, project=None):
+    if project is not None and node.get("project") != project:
+        return False
     return path_prefix is None or node.get("file", "").startswith(path_prefix)
 
 
 def _fmt_node(n):
-    prov = ""  # nodes have no provenance; edges do
-    return f"{n.get('kind','?')} {n.get('name','?')}  ({n.get('file','?')}:{n.get('line','?')})"
+    proj = n.get("project")
+    ptag = f" «{proj}»" if proj else ""
+    return f"{n.get('kind','?')} {n.get('name','?')}{ptag}  ({n.get('file','?')}:{n.get('line','?')})"
 
 
-def _find_all(graph, symbol, path_prefix):
+def _find_all(graph, symbol, path_prefix, project=None):
     """ALL nodes exactly named `symbol` (scope-filtered), defs before file nodes.
     Same-named symbols across files are AMBIGUOUS under name-only edge resolution
     (a call to `_run` resolves to one canonical idx); returning every candidate
     lets path/explain try each. Empty -> caller falls back to fuzzy."""
     nodes = _nodes(graph)
     exact = [(i, n) for i, n in enumerate(nodes)
-             if n.get("name") == symbol and _in_scope(n, path_prefix)]
+             if n.get("name") == symbol and _in_scope(n, path_prefix, project)]
     exact.sort(key=lambda t: 0 if t[1].get("kind") != "file" else 1)
     return exact
 
 
-def _find(graph, symbol, path_prefix):
+def _find(graph, symbol, path_prefix, project=None):
     """Best single node: first exact (def-preferred), else fuzzy via
     graph_search.find_start_node. Returns (idx, node) or (None, None)."""
-    exact = _find_all(graph, symbol, path_prefix)
+    exact = _find_all(graph, symbol, path_prefix, project)
     if exact:
         return exact[0]
     return _gs.find_start_node(graph, symbol)
@@ -153,10 +156,11 @@ def _edge_provenance(graph, a_idx, b_idx, label):
 
 
 # ── verb: explain ───────────────────────────────────────────
-def explain(graph, symbol, hops, path_prefix):
+def explain(graph, symbol, hops, path_prefix, project=None):
     """Neighborhood of a symbol grouped by relation, each with file:line + tag.
-    Also computes called-by (incoming calls) by scanning edges targeting idx."""
-    idx, node = _find(graph, symbol, path_prefix)
+    Also computes called-by (incoming calls) by scanning edges targeting idx.
+    `project` scopes symbol resolution + neighbor filtering to one project."""
+    idx, node = _find(graph, symbol, path_prefix, project)
     if idx is None:
         return {"ok": False, "symbol": symbol, "reason": "symbol not found"}
     nodes = _nodes(graph)
@@ -176,19 +180,35 @@ def explain(graph, symbol, hops, path_prefix):
     for e in edges:
         if e.get("b") == idx and e.get("label") == "calls":
             src = nodes[e["a"]] if 0 <= e.get("a", -1) < len(nodes) else None
-            if src and _in_scope(src, path_prefix):
+            if src and _in_scope(src, path_prefix, project):
                 called_by.append({"source": _fmt_node(src),
                                   "provenance": e.get("provenance", "?").upper()})
     return {"ok": True, "symbol": symbol, "node": _fmt_node(node),
             "outgoing": dict(groups), "called_by": called_by}
 
 
+# ── verb: projects (project inventory + cross-project depends_on rollup) ──────
+def projects(graph):
+    """List the projects in the graph + the project-level depends_on rollup
+    (which project's code calls/imports another's). Read straight from the
+    payload meta computed at build time (zero extra work)."""
+    meta = _meta(graph)
+    projs = meta.get("projects") or sorted(
+        {n.get("project") for n in _nodes(graph) if n.get("project")})
+    pedges = meta.get("project_edges") or []
+    from collections import Counter
+    counts = Counter(n.get("project") for n in _nodes(graph) if n.get("project"))
+    return {"ok": True,
+            "projects": [{"name": p, "nodes": counts.get(p, 0)} for p in projs],
+            "depends_on": pedges}
+
 # ── verb: path (shortest edge path A -> B) ───────────────────────────
-def find_path(graph, a_sym, b_sym, path_prefix, max_hops=6):
+def find_path(graph, a_sym, b_sym, path_prefix, max_hops=6, project=None):
     """Shortest directed edge path a_sym -> b_sym over relation edges. BFS on the
-    same adjacency graph_search builds (reused). Returns the labeled hop chain."""
-    a_cands = _find_all(graph, a_sym, path_prefix) or ([_gs.find_start_node(graph, a_sym)] if _gs.find_start_node(graph, a_sym)[0] is not None else [])
-    b_cands = _find_all(graph, b_sym, path_prefix) or ([_gs.find_start_node(graph, b_sym)] if _gs.find_start_node(graph, b_sym)[0] is not None else [])
+    same adjacency graph_search builds (reused). Returns the labeled hop chain.
+    `project` scopes the endpoint symbol resolution to one project."""
+    a_cands = _find_all(graph, a_sym, path_prefix, project) or ([_gs.find_start_node(graph, a_sym)] if _gs.find_start_node(graph, a_sym)[0] is not None else [])
+    b_cands = _find_all(graph, b_sym, path_prefix, project) or ([_gs.find_start_node(graph, b_sym)] if _gs.find_start_node(graph, b_sym)[0] is not None else [])
     if not a_cands or not b_cands:
         miss = a_sym if not a_cands else b_sym
         return {"ok": False, "reason": f"symbol not found: {miss}"}
@@ -246,6 +266,16 @@ def _render_explain(res):
     return "\n".join(out)
 
 
+def _render_projects(res):
+    out = ["◉ projects"]
+    for p in res["projects"]:
+        out.append(f"  • {p['name']}  ({p['nodes']} nodes)")
+    if res["depends_on"]:
+        out.append("  cross-project depends_on (weight = boundary-crossing edges):")
+        for e in res["depends_on"]:
+            out.append(f"    {e['from']} ─{'/'.join(e.get('via',[]))}→ {e['to']}  (w={e['weight']})")
+    return "\n".join(out)
+
 def _render_path(res):
     if not res["ok"]:
         return f"✗ {res['reason']}"
@@ -268,30 +298,37 @@ def main():
     pq = sub.add_parser("query", help="fuzzy-find a symbol then explain it")
     pq.add_argument("text")
     pq.add_argument("--hops", type=int, default=1)
-    for p in (pe, pp, pq):
-        p.add_argument("--path", dest="path_prefix", default=None,
-                       help="scope to a file-path prefix (e.g. procedures/)")
+    ppr = sub.add_parser("projects", help="list projects + cross-project depends_on rollup")
+    for p in (pe, pp, pq, ppr):
         p.add_argument("--db", dest="db", default=str(CODE_JSON),
                        help="code graph json path (default: kb/code_graph/code_graph.json)")
         p.add_argument("--json", action="store_true")
+    for p in (pe, pp, pq):
+        p.add_argument("--path", dest="path_prefix", default=None,
+                       help="scope to a file-path prefix (e.g. procedures/)")
+        p.add_argument("--project", dest="project", default=None,
+                       help="scope to one project (e.g. dinomem-neuron); see `projects` verb")
     args = ap.parse_args()
 
     graph = _open(Path(args.db))
     stale = _staleness(graph)
 
-    if args.verb == "explain":
-        res = explain(graph, args.symbol, args.hops, args.path_prefix)
+    if args.verb == "projects":
+        res = projects(graph)
+        rendered = _render_projects(res)
+    elif args.verb == "explain":
+        res = explain(graph, args.symbol, args.hops, args.path_prefix, args.project)
         rendered = _render_explain(res)
     elif args.verb == "path":
-        res = find_path(graph, args.a, args.b, args.path_prefix)
+        res = find_path(graph, args.a, args.b, args.path_prefix, project=args.project)
         rendered = _render_path(res)
     else:  # query
-        idx, node = _find(graph, args.text, args.path_prefix)
+        idx, node = _find(graph, args.text, args.path_prefix, args.project)
         if idx is None:
             res = {"ok": False, "symbol": args.text, "reason": "no fuzzy match"}
             rendered = f"✗ no symbol matched '{args.text}'"
         else:
-            res = explain(graph, node.get("name"), args.hops, args.path_prefix)
+            res = explain(graph, node.get("name"), args.hops, args.path_prefix, args.project)
             rendered = f"(matched '{node.get('name')}')\n" + _render_explain(res)
 
     if args.json:
