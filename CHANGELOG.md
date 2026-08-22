@@ -4,6 +4,16 @@ All notable changes to dinomem-neuron are documented here.
 
 ---
 
+## 1.11.2 — 2026-08-23
+
+**Per-note gate keying kills Advancer starvation — a quiet project can no longer be starved of its wake by a busier sibling.**
+### Fixed
+- **Aggregate-hash starvation flaw in the project gate.** `check_projects.sh` gated the Advancer on ONE hash over the WHOLE qualifying set: a note that kept changing perpetually refreshed the shared stamp, so a co-qualifying but quiet note (e.g. one parked between advances) could be starved of fires until the 24h floor. New base primitive `guard_composite_pernote` (in `scripts/lib/gate_lib.sh`) keeps ONE state line PER note (`basename<TAB>epoch<TAB>hash`), so each note fires on ITS OWN terms — never-seen | body-changed | own-floor | crash — independent of sibling churn. Fired notes are stamped fresh; quiet notes keep their prior timer so their floor still elapses independently; vanished-note keys are GC'd. Reuses `gate__body_hash` + `gate__crash_signature` (identical claim-line exclusion + crash semantics), single-input behaviour is regression-locked to `guard_composite`. `check_projects.sh` opts in via `refire_should_fire_pernote` (thin shim alias; **fail-open** to the aggregate guard if an older base lib lacks the primitive).
+- **Advancer fairness ordering (belt to the gate's suspenders).** The Project Advancer's Step 1 now processes qualifying notes **stalest-advanced first** when more than one qualifies and a heaviness turn-boundary means it can't reach them all in one run — so a note that keeps losing selection to a busier sibling still gets its turn. Combined with the per-note gate, the starvation gap is closed end to end (gate level + selection level).
+- **Test:** new `gate_lib_test.sh` T8 proves the anti-starvation invariant deterministically — 5 ticks of note-A churn never move note-B's stamp, B fires on its own floor independent of A, single-input parity with `guard_composite`, and vanished-key GC. Full suite 11/11 green.
+
+---
+
 ## 1.11.1 — 2026-08-22
 
 **Gate convergence — the Advancer's ingest seatbelt and a more-robust frontmatter parse now ship in the repo (previously live-only), so a fresh install gets them and `install.sh` can't clobber them.**

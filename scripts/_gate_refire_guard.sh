@@ -38,6 +38,18 @@ unset _gl_dir _gl_src _gl_cand
 # If guard_composite is available from base's lib, alias it. Otherwise fall back
 # to an inline-equivalent definition so the 5 gates never break (defensive only —
 # per spec base's lib is ALWAYS present on a neuron box).
+# Per-note guard alias (anti-starvation). If base's lib exposes
+# guard_composite_pernote, surface it under a stable name for the gates; else
+# FAIL-OPEN to the aggregate guard so an old base lib never breaks a gate (just
+# reverts to the pre-fix behaviour).
+if command -v guard_composite_pernote >/dev/null 2>&1 \
+   || declare -F guard_composite_pernote >/dev/null 2>&1; then
+  refire_should_fire_pernote() { guard_composite_pernote "$@"; }
+else
+  # fallback: no per-note primitive available -> behave like the set guard.
+  refire_should_fire_pernote() { refire_should_fire "$@"; }
+fi
+
 if ! command -v guard_composite >/dev/null 2>&1 \
    && ! declare -F guard_composite >/dev/null 2>&1; then
   refire_should_fire() {

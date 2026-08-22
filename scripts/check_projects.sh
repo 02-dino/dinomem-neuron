@@ -33,8 +33,13 @@ fi
 # stalled/malformed sits with a FROZEN body -- without this guard that wakes the
 # Advancer LLM every */15 tick forever just to re-read the note and emit NO_REPLY
 # (the worker already throttles its own MESSAGE to 1/24h, but still burns an LLM
-# turn every 15 min to decide that). Guard suppresses the wake unless the
-# aggregate body changed (hash excludes claim lines) or a daily floor elapsed.
+# turn every 15 min to decide that). Guard suppresses the wake unless a note's
+# body changed (hash excludes claim lines) or its own daily floor elapsed.
+# PER-NOTE (anti-starvation): each qualifying note is tracked INDEPENDENTLY, so a
+# busy note that keeps changing can no longer consume a co-qualifying quiet
+# note's fire (the aggregate-hash starvation flaw). Fires if ANY note qualifies
+# on its own terms; each note's floor elapses independently. Falls back to the
+# aggregate guard if the per-note primitive is absent (old base lib).
 # Same v2 pattern as check_daily_notes.sh / check_ideator.sh.
 SCRIPTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=_gate_refire_guard.sh
