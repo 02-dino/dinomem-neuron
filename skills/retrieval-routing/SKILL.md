@@ -136,10 +136,31 @@ FIRST, grep only as fallback.
   decision in one block. Neither plain code-search (no *why*) nor plain memory (no
   *file:line*) answers that alone — that fusion is the killer feature.
 
+**Carve-outs — when grep/read is correct and `code_query` is ceremony (don't force it):**
+- **Files already open in context.** If the target file(s) are already in your
+  transcript (you read them this session, or they're in the read-files list), just
+  `read`/`grep`/`edit` them directly. `code_query` earns its keep when you DON'T
+  know where a symbol lives or who touches it — not when you're editing 3 files you
+  already have open. Re-graphing a known file is ceremony, not signal.
+- **Prose / config-string lookups (no AST edge to traverse).** A match inside a
+  string, comment, heredoc, JSON/YAML config value, or a cron/prompt payload has NO
+  call-graph edge — grep is the right tool. (e.g. finding a phrase inside an
+  `install.sh` heredoc prompt: grep, not code_query.)
+- **Shell / non-AST-modelled code.** The graph is AST-based and strongest on
+  Python (+ other tree-sitter langs). Bash function call-graphs are weak-to-absent;
+  for a small, known set of shell scripts, grep the anchor + read is leaner and
+  more reliable than a shell "call graph." Use code_query for shell ONLY to locate
+  a function definition across many unknown files, never as a call-path oracle.
+
+**Still reflex-first for the real case:** an UNKNOWN code tree + a genuine
+structure question (what calls X / X calls what / where is Y defined / A→B path)
+over AST-modelled source → `code_query` FIRST. The carve-outs narrow the rule,
+they don't repeal it.
+
 **Notes:** graph store = `kb/code_graph/` (a SEPARATE DB file from the memory
 graph — no collision); OPTIONAL tree-sitter dep (missing → code_graph offline,
 fail-soft, rest of retrieval unaffected). **Never** grep+read whole files for a
-structure question when the graph can answer it scoped.
+structure question over unknown AST-modelled source when the graph can answer it scoped.
 
 ## Structured data → `data_query` (exact SQL)
 
