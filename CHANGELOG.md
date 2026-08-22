@@ -4,6 +4,24 @@ All notable changes to dinomem-neuron are documented here.
 
 ---
 
+## 1.11.0 — 2026-08-22
+
+**A whole new retrieval axis: a ZERO-LLM code-structure graph — plus a bi-temporal fact graph, and everything in dinomem base v1.5.0 rides through.**
+### Added
+- **ZERO-LLM code-structure layer (code-graph).** New `code_graph.py` AST indexer (tree-sitter, full + git-incremental, EXTRACTED/INFERRED provenance, churn weight) builds a *separate* `kb/code_graph/` reusing the graph store. New `code_query.py` answers `explain` / `path` / `query` with `file:line` — ask what a symbol calls, what calls it, its class hierarchy, or the edge path A→B, instead of grepping and reading whole files into context (~20× fewer tokens on big repos). Also wired: `graph_search --kind code` and a `hybrid_recall` CODE leg that fuses "what X does" (code hits) with "why X exists" (memory/graph) in one block. `install.sh` gets a fail-soft tree-sitter dep gate (missing → code-graph offline, rest of neuron unaffected).
+- **code-graph auto-ingest + project tagging.** Every node carries a ZERO-LLM path-derived `project` tag; boundary-crossing edges roll up into weighted `depends_on` (e.g. `dinomem-neuron depends_on dinomem`). `code_query` gains a `projects` verb + `--project` scope. Auto-refreshed daily via a git-incremental cron — code-graph is now on par with `docs_ingest` (no manual build). The `retrieval-routing` skill + router table + install heredocs all learn the code INGEST/SEARCH fork.
+- **Bi-temporal fact graph.** `memory_graph.py` enriches typed relation edges with `valid_at`/`invalid_at`/`status`/`scope`/`source_memory_ids`; `graph_search` gains `--as-of` + `--scope` (privacy-before-traversal); new `fact_query.py` exposes `current` / `as_of` / `history` / `why` / `what_changed`. `hybrid_recall` honors `as_of(date)` so past-time queries return retired facts and current queries return current.
+- **valid-time contradiction synergy** — same-subject + disjoint-intervals is treated as supersession (not contradiction), short-circuiting the T3 LLM check ($0); dedup gate gains a supersession branch.
+- **Retrieval fusion + exact-vs-fuzzy router inversion** — `hybrid_recall` fusion layer with the router inverted to an exact-vs-fuzzy fork.
+- **project-notes pre-flight clarity gate** — surfaces interpretation forks before writing steps (absorbed into the rulings ledger as ruling #0).
+### Fixed
+- **memory_graph OOM on large corpora** — `build_graph` streamed row-batching (peak O(B·n), auto-scaled to `MemAvailable`) replaces the old full n×n cosine + path-mask matrices (~1.2GB each at 12k chunks) that OOM'd small hosts as the corpus grew. Edges verified byte-identical vs the old full-matrix path.
+- **Gate hardening** — Advancer + Improver CPU-backpressure via `defer_if_busy`; daily-note-review separation of concerns (project lane is report-only, no mid-flight artifact delete); ship missing `_gate_git_ctx.sh` + `_gate_refire_guard.sh` in the install copy loop.
+- **Install reliability** — same hardening as base: timeout-guarded `openclaw status` probes, auto-sudo package step, Python-3.14 heredoc `$(git …)` + `os→_os` fixes, multi-agent cron/hook identity scoped by `agentId`, cron read-back on OpenClaw 2026.7.x, e5 embedding-model prewarm (hf-mirror fallback), `cron.failureAlert.enabled=false` default so runner-level failures no longer spam the announce channel.
+- **Base v1.5.0 rides through** — because neuron hard-syncs the base to its latest tip on every install, this release automatically pulls config-guard, semantic commit subjects, the memory-warm hook, the git-autosnapshot LFS leak fix, and the route.py/build-quality floor. See the dinomem base v1.5.0 changelog.
+
+---
+
 ## 1.10.3 — 2026-08-11
 
 **Base cron-registration fix rides through — buyers auto-get dinomem base v1.4.2.**
