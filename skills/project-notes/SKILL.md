@@ -38,6 +38,9 @@ steps:
   - [ ] 1. <step> -- done_when: <check>
   - [ ] 2. ...
 resume_state: <paths/decisions/assumptions the next turn needs to resume blind>
+rulings:
+  # append entries here when the Advancer makes an in-flight decision:
+  # - "<decision> — <why> — <cost if wrong>"
 ```
 
 - **`claimed_by`** — set by Project Advancer / Improver on claim; cleared on step
@@ -97,6 +100,27 @@ resumes from the wrong step, or a done note never closes).
   - On rollback: re-read the note FRESH (anchors may reflect a partial earlier
     success), rebuild `oldText` from current content, retry.
 
+## Plan self-review (after writing, before executing)
+
+After writing a project note's steps and before executing step 1, run this
+checklist inline. Fix issues now — a weak plan is the #1 source of Advancer
+stalls. Self-review takes one pass; no subagent needed.
+
+1. **Placeholder scan** — no step may contain "TBD", "TODO", "similar to step
+   N", "add appropriate X", or any vague action without a concrete method.
+   Every step must state HOW, not just WHAT.
+2. **Step completeness** — each step has a concrete action and a locally
+   verifiable `done_when` (a command, a grep, a file-exists check). Narrative
+   done_when (`"when it works"`) fails here.
+3. **Interface consistency** — if step N produces a file/value consumed by
+   step N+1, the path/name must match exactly in both steps.
+4. **done_when verifiability** — the top-level `done_when:` must be runnable
+   as a shell command (exit 0 = done). If it can't be checked by a script,
+   rewrite it until it can.
+
+Fix any issue inline before writing `current_step: 1`. A plan that fails
+self-review is not ready to execute — fix it first.
+
 ## Self-check (before stopping at any checkpoint)
 
 When `status: in_progress`, before stopping verify: `type: project`,
@@ -109,6 +133,13 @@ stopping — a malformed note is a silent death (the Advancer skips it).
 - **driver:** hybrid — the user may say "continue"; otherwise the **Project
   Advancer** cron auto-advances `in_progress` notes unattended (announces progress,
   pauses on destructive/external steps).
+- **rulings ledger:** on resume, the Advancer reads `rulings:` BEFORE `resume_state`.
+  When making any in-flight decision (ambiguity, blocker workaround, scope call),
+  append a ruling entry BEFORE continuing: `"<decision> — <why> — <cost if wrong>"`.
+  After compaction or crash, trust `rulings:` + git log over recollection.
+- **evidence gate (done_when):** the Advancer satisfies `done_when` only by running
+  the verification command and reading its actual output. Self-report ("I implemented
+  it") does NOT satisfy the gate. No `verified: true` stamp without fresh evidence.
 - **awaiting_approval_reverify:** for a safety-gated final step (push / external),
   at cold start re-verify the artifact exists (`git -C <repo> rev-parse HEAD == @{u}`);
   if already done, close the note instead of re-asking.
@@ -117,3 +148,8 @@ stopping — a malformed note is a silent death (the Advancer skips it).
 - **done_when verifiability:** every `done_when` must be locally checkable (file
   exists / grep / exit 0 / `git rev-parse HEAD == @{u}`). Narrative `done_when`
   never auto-closes.
+- **fix_rounds escalation (Improver):** notes carry an optional `fix_rounds: N`
+  field (default 0). The Improver increments it each retry cycle. At `N >= 3`:
+  flag for owner review instead of silently retrying (add a comment to the note
+  explaining what's stuck). At `N >= 5`: set `status: stalled` with a reason line
+  — the Advancer and Improver both skip stalled notes until the owner intervenes.
