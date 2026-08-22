@@ -366,9 +366,24 @@ python3 tools/code_query.py path extract_memory memory_graph
 # fuzzy-find the best-matching symbol, then explain it
 python3 tools/code_query.py query "where do we build the similarity graph"
 
+# "what IS this script about, and what does it work with?" — one-screen card
+python3 tools/code_query.py card memory_promote.py
+
 # project inventory + cross-project depends_on rollup
 python3 tools/code_query.py projects
 ```
+
+That `card` verb is the fastest way to orient in an unfamiliar file — still **ZERO-LLM**, assembled purely from structural signals already in the graph:
+
+```
+◉ memory_promote.py «dinomem-neuron»  (procedures/memory_promote.py)
+  about   : Layer 4 "promotion" for analyst memory (zero-human pipeline).
+  defines : now_iso, today_str, key_for, load_state, save_state, retire_insight, …
+  works with: graph_search.py, contradiction_check.py, _schema_adapter.py,
+              confidence_engine.py, git_history.py, valid_time.py, run_log.py, …
+```
+
+**about** is the module docstring's first line (author-written, never LLM-generated — no hallucination risk). **defines** is the file's public API surface (top-level functions/classes). **works with** is the distinct set of *other* files this one's code actually calls into or imports — its real collaborators, resolved from cross-file edges. So instead of the repo-level rollup (*neuron depends_on base*), you get the **per-script** truth: which exact files a given script leans on.
 
 **Why it's cheaper.** Asking "what calls `X`" over grep means reading every candidate file into the model's context — often ~20× the tokens of the answer. The graph returns just the neighborhood (edges + `file:line`), so the agent navigates a large repo without context-stuffing.
 

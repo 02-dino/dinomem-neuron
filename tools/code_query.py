@@ -202,6 +202,64 @@ def projects(graph):
             "projects": [{"name": p, "nodes": counts.get(p, 0)} for p in projs],
             "depends_on": pedges}
 
+# ── verb: card (ZERO-LLM "what is this script about") ────────────────
+def card(graph, target, path_prefix=None, project=None):
+    """One-screen ZERO-LLM summary of a SCRIPT (file), assembled purely from
+    structural signals already in the graph — no LLM, no hallucination:
+      • doc      : the module docstring first line (author-written)
+      • defines  : the public functions/classes the file contains (top-level,
+                   non-underscore), the file's own API surface
+      • works_with: distinct OTHER files this file's code calls/imports into
+                    (cross-file resolved edges), i.e. its real collaborators
+    `target` is matched as a file first (basename or path), then falls back to
+    the file that contains a matching symbol."""
+    nodes = _nodes(graph)
+    # resolve to a FILE node: exact basename, else path endswith, else the file
+    # owning a matched symbol.
+    fi = None
+    t = target
+    for i, n in enumerate(nodes):
+        if n.get("kind") != "file" or not _in_scope(n, path_prefix, project):
+            continue
+        if n.get("name") == t or n.get("file", "").endswith(t) or n.get("file") == t:
+            fi = i; break
+    if fi is None:
+        idx, node = _find(graph, target, path_prefix, project)
+        if idx is not None:
+            fpath = node.get("file")
+            for i, n in enumerate(nodes):
+                if n.get("kind") == "file" and n.get("file") == fpath:
+                    fi = i; break
+    if fi is None:
+        return {"ok": False, "target": target, "reason": "file not found"}
+    fnode = nodes[fi]
+    fpath = fnode.get("file")
+    # defines: top-level functions/classes in THIS file, public first
+    defines = [n.get("name") for n in nodes
+               if n.get("file") == fpath and n.get("kind") in ("function", "class")
+               and not n.get("name", "").startswith("_")]
+    # works_with: distinct OTHER files reached by resolved calls/imports whose
+    # source node lives in THIS file. Dedup by file, keep project tag.
+    edges = graph.get("relation_edges", [])
+    own_idx = {i for i, n in enumerate(nodes) if n.get("file") == fpath}
+    seen, works = set(), []
+    for e in edges:
+        if e.get("label") not in ("calls", "imports"):
+            continue
+        a, b = e.get("a", -1), e.get("b", -1)
+        if a not in own_idx or not (0 <= b < len(nodes)):
+            continue
+        tgt = nodes[b]
+        tf = tgt.get("file")
+        if not tf or tf == fpath or tf in seen:
+            continue
+        seen.add(tf)
+        works.append({"file": tf, "project": tgt.get("project"),
+                      "basename": os.path.basename(tf)})
+    return {"ok": True, "target": target, "file": fpath,
+            "project": fnode.get("project"), "doc": fnode.get("doc", ""),
+            "defines": defines, "works_with": works}
+
 # ── verb: path (shortest edge path A -> B) ───────────────────────────
 def find_path(graph, a_sym, b_sym, path_prefix, max_hops=6, project=None):
     """Shortest directed edge path a_sym -> b_sym over relation edges. BFS on the
@@ -276,6 +334,27 @@ def _render_projects(res):
             out.append(f"    {e['from']} ─{'/'.join(e.get('via',[]))}→ {e['to']}  (w={e['weight']})")
     return "\n".join(out)
 
+def _render_card(res):
+    if not res["ok"]:
+        return f"✗ {res['target']}: {res['reason']}"
+    proj = res.get("project")
+    ptag = f" «{proj}»" if proj else ""
+    out = [f"◉ {os.path.basename(res['file'])}{ptag}  ({res['file']})"]
+    out.append(f"  about   : {res['doc'] or '(no module docstring)'}")
+    if res["defines"]:
+        shown = res["defines"][:12]
+        more = f"  (+{len(res['defines']) - len(shown)} more)" if len(res["defines"]) > len(shown) else ""
+        out.append(f"  defines : {', '.join(shown)}{more}")
+    else:
+        out.append("  defines : (no public functions/classes)")
+    if res["works_with"]:
+        ww = [f"{w['basename']}" + (f" «{w['project']}»" if w.get('project') else "")
+              for w in res["works_with"][:15]]
+        out.append(f"  works with: {', '.join(ww)}")
+    else:
+        out.append("  works with: (no resolved cross-file collaborators)")
+    return "\n".join(out)
+
 def _render_path(res):
     if not res["ok"]:
         return f"✗ {res['reason']}"
@@ -299,11 +378,13 @@ def main():
     pq.add_argument("text")
     pq.add_argument("--hops", type=int, default=1)
     ppr = sub.add_parser("projects", help="list projects + cross-project depends_on rollup")
-    for p in (pe, pp, pq, ppr):
+    pc = sub.add_parser("card", help="ZERO-LLM 'what is this script about' (doc + defines + works-with)")
+    pc.add_argument("target", help="script/file (basename or path) or a symbol it defines")
+    for p in (pe, pp, pq, ppr, pc):
         p.add_argument("--db", dest="db", default=str(CODE_JSON),
                        help="code graph json path (default: kb/code_graph/code_graph.json)")
         p.add_argument("--json", action="store_true")
-    for p in (pe, pp, pq):
+    for p in (pe, pp, pq, pc):
         p.add_argument("--path", dest="path_prefix", default=None,
                        help="scope to a file-path prefix (e.g. procedures/)")
         p.add_argument("--project", dest="project", default=None,
@@ -316,6 +397,9 @@ def main():
     if args.verb == "projects":
         res = projects(graph)
         rendered = _render_projects(res)
+    elif args.verb == "card":
+        res = card(graph, args.target, args.path_prefix, args.project)
+        rendered = _render_card(res)
     elif args.verb == "explain":
         res = explain(graph, args.symbol, args.hops, args.path_prefix, args.project)
         rendered = _render_explain(res)

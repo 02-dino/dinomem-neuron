@@ -193,8 +193,41 @@ def _line(node) -> int:
     return node.start_point[0] + 1  # tree-sitter rows are 0-based
 
 
+def _module_doc(root, src: bytes) -> str:
+    """First-line module docstring, ZERO-LLM. The top-of-file string literal
+    (`expression_statement > string`) if present, else ''. First non-empty line
+    only, bounded to 200 chars — a factual author-written purpose line, never
+    LLM-generated. Fail-open: any shape we don't recognize -> ''."""
+    try:
+        for child in root.children:
+            # module docstring is either a bare `string` node (py grammar emits
+            # this at module top) OR an `expression_statement` wrapping one.
+            s = None
+            if child.type == "string":
+                s = child
+            elif child.type == "expression_statement" and child.children \
+                    and child.children[0].type == "string":
+                s = child.children[0]
+            if s is not None:
+                    raw = _txt(s, src).strip().lstrip("rRbBuUfF")
+                    # strip triple (\"\"\" / ''') then single quote delimiters
+                    for q in ('"""', "'''", '"', "'"):
+                        if raw.startswith(q) and raw.endswith(q) and len(raw) >= 2 * len(q):
+                            raw = raw[len(q):-len(q)]
+                            break
+                    for ln in raw.splitlines():
+                        ln = ln.strip()
+                        if ln:
+                            return ln[:200]
+                    return ""
+            if child.type not in ("comment",):
+                break  # only the FIRST statement can be the module docstring
+    except Exception:
+        pass
+    return ""
+
 def parse_python(src: bytes, rel: str, parser):
-    """Return (defs, refs) for one python file.
+    """Return (defs, refs, doc) for one python file.
       defs: [{kind, name, file, line, qualname}]  (qualname = Class.method / func)
       refs: [{label calls|imports|inherits, from_qual, to_name, line, provenance}]
     from_qual is the enclosing def's qualname (or '<module>'). Resolution to idx
@@ -203,6 +236,7 @@ def parse_python(src: bytes, rel: str, parser):
     tree = parser.parse(src)
     root = tree.root_node
     defs, refs = [], []
+    doc = _module_doc(root, src)
 
     def enclosing_qual(stack):
         return ".".join(stack) if stack else "<module>"
@@ -256,7 +290,7 @@ def parse_python(src: bytes, rel: str, parser):
                 walk(child, stack)
 
     walk(root, [])
-    return defs, refs
+    return defs, refs, doc
 
 
 PARSERS = {"python": parse_python}
@@ -289,7 +323,7 @@ def assemble_graph(parsed, root, built_at_sha):
     name_to_idx = {}     # bare name -> idx (for ref resolution; last wins)
     file_idx = {}        # rel -> file node idx
 
-    def add_node(kind, name, rel, line):
+    def add_node(kind, name, rel, line, doc=""):
         nid = _node_id(kind, name, rel, line)
         if nid in idx_of:
             return idx_of[nid]
@@ -299,14 +333,15 @@ def assemble_graph(parsed, root, built_at_sha):
             "file": rel, "line": line, "title": name,
             "snippet": f"{kind} {name} ({rel}:{line})", "degree": 0,
             "project": _derive_project(rel, root),
+            "doc": doc,  # module docstring first line (file nodes only; ZERO-LLM)
         })
         idx_of[nid] = idx
         name_to_idx[name] = idx
         return idx
 
     # pass 1: all def + file nodes (so cross-file refs can resolve)
-    for rel, defs, _refs in parsed:
-        file_idx[rel] = add_node("file", os.path.basename(rel), rel, 1)
+    for rel, defs, _refs, doc in parsed:
+        file_idx[rel] = add_node("file", os.path.basename(rel), rel, 1, doc=doc)
         for d in defs:
             add_node(d["kind"], d["name"], d["file"], d["line"])
 
@@ -341,7 +376,7 @@ def assemble_graph(parsed, root, built_at_sha):
         d["labels"].add(label)
 
     # pass 2: contains (file -> defs) + resolve refs
-    for rel, defs, refs in parsed:
+    for rel, defs, refs, _doc in parsed:
         fi = file_idx[rel]
         for d in defs:
             di = idx_of[_node_id(d["kind"], d["name"], d["file"], d["line"])]
@@ -376,7 +411,7 @@ def assemble_graph(parsed, root, built_at_sha):
     projects = sorted({n.get("project") for n in nodes if n.get("project")})
 
     lang_counts = {}
-    for rel, defs, _ in parsed:
+    for _row in parsed:
         lang_counts["files"] = lang_counts.get("files", 0) + 1
 
     payload = {
@@ -407,7 +442,7 @@ def _head_sha(root):
 
 
 def _parse_one(ap, rel, lang, errors):
-    """Parse a single file -> (rel, defs, refs) or None on error (recorded)."""
+    """Parse a single file -> (rel, defs, refs, doc) or None on error (recorded)."""
     parser_fn = PARSERS.get(lang)
     if parser_fn is None:
         return None
@@ -415,8 +450,8 @@ def _parse_one(ap, rel, lang, errors):
         parser = _ts_get_parser(lang)
         with open(ap, "rb") as fh:
             src = fh.read()
-        defs, refs = parser_fn(src, rel, parser)
-        return (rel, defs, refs)
+        defs, refs, doc = parser_fn(src, rel, parser)
+        return (rel, defs, refs, doc)
     except Exception as e:
         errors.append({"file": rel, "error": str(e)})
         return None
@@ -465,7 +500,7 @@ def build_full(root, exts, code_json_path, code_db_path):
         r = _parse_one(ap, rel, lang, errors)
         if r is not None:
             parsed.append(r)
-            cache[rel] = {"defs": r[1], "refs": r[2], "lang": lang}
+            cache[rel] = {"defs": r[1], "refs": r[2], "doc": r[3], "lang": lang}
     return _persist(parsed, cache, root, code_json_path, code_db_path, errors)
 
 
@@ -513,9 +548,9 @@ def build_incremental(root, exts, code_json_path, code_db_path):
             continue
         r = _parse_one(ap, rel, lang, errors)
         if r is not None:
-            cache[rel] = {"defs": r[1], "refs": r[2], "lang": lang}
+            cache[rel] = {"defs": r[1], "refs": r[2], "doc": r[3], "lang": lang}
             changed_reparsed += 1
-    parsed = [(rel, v["defs"], v["refs"]) for rel, v in cache.items()]
+    parsed = [(rel, v["defs"], v["refs"], v.get("doc", "")) for rel, v in cache.items()]
     payload = _persist(parsed, cache, root, code_json_path, code_db_path, errors)
     return payload, f"incremental(reparsed={changed_reparsed} dropped={dropped})"
 
