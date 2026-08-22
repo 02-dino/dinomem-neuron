@@ -66,6 +66,15 @@ if _WS_DEFAULT.startswith("DINOMEM_"):  # sed did not run (ZIP/manual/dev)
 BASE = Path(os.environ.get("DINOMEM_WORKSPACE", _WS_DEFAULT))
 MEM_DIR = BASE / "memory"
 HISTORY_DIR = MEM_DIR / "_history"
+
+# Two-tier semantic git-commit subjects (shared base helper). Hand the WHY of a
+# supersession to the one git-autosnapshot writer. FAIL-OPEN: absent -> no-op.
+try:
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from commit_reason import drop as _drop_commit_reason  # base procedures/
+except Exception:
+    def _drop_commit_reason(_reason):
+        return False
 CACHE_DIR = MEM_DIR / ".cache"
 INDEX_CACHE = CACHE_DIR / "subject_index.json"
 
@@ -296,6 +305,11 @@ def supersede(old_path: Path, new_path: Path, valid_from=None) -> dict:
     except Exception:
         pass
     retired = retire(old_path)
+    # SEMANTIC commit subject (two-tier): the WHY (which fact retired which) is in
+    # hand -> hand it to the one git writer so git-log reads as a why-changelog.
+    _drop_commit_reason(
+        f"supersede: {read_fields(new_path).get('subject') or old_rel} "
+        f"{old_rel} -> {new_rel} (retired to _history)")
     return {
         "superseded": old_rel,
         "by": new_rel,

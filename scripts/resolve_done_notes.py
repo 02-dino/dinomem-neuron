@@ -36,6 +36,14 @@ try:
 except Exception:
     _gh = None
 
+# Two-tier semantic git-commit subjects (shared base helper). Hand the WHY of a
+# note resolution to the one git-autosnapshot writer. FAIL-OPEN: absent -> no-op.
+try:
+    from commit_reason import drop as _drop_commit_reason  # base procedures/
+except Exception:
+    def _drop_commit_reason(_reason):
+        return False
+
 # Workspace resolution (priority): DINOMEM_WORKSPACE env > install-time sed of
 # DINOMEM_WORKSPACE_PLACEHOLDER > self-locate from this file (scripts/ -> parent).
 # Self-locate is the safety net if sed was skipped (manual copy / partial install).
@@ -259,6 +267,13 @@ def main() -> int:
             if os.environ.get("DINOMEM_DISTILL_DONE_NOTES", "1") != "0":
                 _run_distiller(f, base)
             os.remove(f)
+            # SEMANTIC commit subject (two-tier): the WHY (which done-note closed,
+            # at which HEAD) is in hand -> hand it to the one git writer. Fail-open.
+            _slug = base[:-3] if base.endswith(".md") else base
+            _sha = git_anchor.split(":")[0].replace(" git-anchor: ", "").strip() if git_anchor else ""
+            _drop_commit_reason(
+                f"resolve: note {_slug} done_when met"
+                + (f" @{_sha}" if _sha else ""))
             # Clean up the sibling flock lockfile claim_note.sh leaves behind
             # (<note>.claimlock). It's never removed by claim_note.sh itself, so
             # deleting the note without this orphans an empty lock that can make

@@ -55,6 +55,15 @@ try:
 except ImportError:
     HAS_LLM = False
 
+# Two-tier semantic git-commit subjects (shared base helper). Hand the WHY of a
+# meaningful write to the one git-autosnapshot writer so git-log reads as a
+# why-changelog. FAIL-OPEN: absent helper -> no-op, promotion logic untouched.
+try:
+    from commit_reason import drop as _drop_commit_reason  # base procedures/
+except Exception:
+    def _drop_commit_reason(_reason):  # noqa: E704 - cosmetic no-op fallback
+        return False
+
 # Optional git-backing (support-only). Promotion decision logic (PROBATION/
 # REINFORCE/DECAY/RATE-LIMIT) below is fully unchanged; git only ATTACHES a
 # commit-anchor to the audit log entry -- which workspace commit was HEAD when
@@ -403,6 +412,9 @@ def run(dry_run=False):
                     log_action("demoted", me, {"reason": "outweighed_by_reinforced_challenger"})
                     retire_insight(mk, me, "outweighed_by_reinforced_challenger")
                     del state[mk]
+                    _drop_commit_reason(
+                        f'demote: "{me.get("pattern", "")}" '
+                        f'(outweighed by reinforced challenger)')
         if not dry_run:
             # Queue consumed; clear it so incumbents aren't re-demoted next run.
             DEMOTION_QUEUE.write_text("", encoding="utf-8")
@@ -505,6 +517,13 @@ def run(dry_run=False):
                     actions["graduated"] += 1
                     if not dry_run:
                         log_action("graduated", me)
+                        # SEMANTIC commit subject (two-tier): the WHY this write
+                        # happened is already in hand -> hand it to the one git
+                        # writer so git-log reads as a why-changelog. Fail-open.
+                        _drop_commit_reason(
+                            f'promote: graduate "{me.get("pattern", "")}" '
+                            f'({me.get("reinforce_count", 0)} reinforce, '
+                            f'conf {me.get("confidence", "?")})')
         else:
             entry = {
                 "pattern": pat,

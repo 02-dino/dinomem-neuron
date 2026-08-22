@@ -630,6 +630,8 @@ def compile_block(cands: list[dict], k: int) -> dict:
                 # carried it. Absent on non-session legs -> [] / '' by construction.
                 "session_ids": c.get("session_ids", []),
                 "session_id": c.get("session_id", ""),
+                # compiler trace (why kept/dropped in apply_as_of scope+temporal).
+                "_compiler": c.get("_compiler"),
             }
             for c in top
         ],

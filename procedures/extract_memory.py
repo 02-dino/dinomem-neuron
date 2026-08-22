@@ -1409,6 +1409,10 @@ def _contradiction_check_items(new_items, memory_dir, threshold=0.85):
         if any(c[4] for c in candidates):
             _pf = next((c[0].name for c in candidates if c[4]), '?')
             log(f"   🧬 Cross-head dedup: dropped world-fact (already a peer fact in {_pf})")
+            # SEMANTIC commit subject (two-tier): the WHY (cross-head dedup, which
+            # peer file won) is in hand -> hand it to the one git writer. Fail-open.
+            _drop_commit_reason(
+                f"dedup-merge: {_pf} <- world-fact (cross-head, peer lane wins)")
             continue
 
         candidate_texts = '\n'.join(f'- {_strip_meta_tags(c[3])}' for c in candidates)
