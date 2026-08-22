@@ -51,6 +51,11 @@ INTENTS = {
     "recent":     ["session_search"],
     "semantic":   ["docs_search"],
     "relational": ["graph_search", "memory_external"],
+    # KILLER FEATURE: "what does X do AND why does it exist" = code STRUCTURE leg
+    # (what calls X / X calls / inherits, file:line) FUSED with the memory legs
+    # (the design decision that created X). Neither Graphify (no memory) nor plain
+    # dinomem (no code) can answer this alone.
+    "code":       ["code_query", "memory_external", "graph_search"],
 }
 DEFAULT_LEGS = ["memory_external", "docs_search", "session_search", "graph_search"]
 
@@ -61,6 +66,12 @@ def classify(query: str, hint: str | None) -> list[str]:
     if hint and hint in INTENTS:
         return INTENTS[hint]
     q = query.lower()
+    # code triggers checked FIRST: the 'code' intent already bundles graph+memory
+    # for the 'why' half, so a query mixing code terms + 'why' (the killer
+    # 'what does X do AND why does it exist') routes here, not to bare relational.
+    if any(w in q for w in ("function", "method", "class ", " calls", "called by",
+                            "imports", "inherits", "defined in", "code", "what calls")):
+        return INTENTS["code"]
     if any(w in q for w in ("why", "caused", "led to", "depends", "affects", "downstream", "trace", "chain")):
         return INTENTS["relational"]
     if any(w in q for w in ("yesterday", "earlier", "we said", "we decided", "last session", "just now")):
@@ -166,6 +177,45 @@ def leg_graph_search(query: str, k: int, as_of: str | None = None,
              "uri": f"node:{r.get('idx','?')}"} for r in res][:k]
 
 
+def leg_code_query(query: str, k: int) -> list[dict]:
+    """CODE-STRUCTURE leg: fuzzy-find a symbol in the code graph, return its
+    neighborhood (calls / called-by / imports / inherits) with file:line +
+    provenance. FAIL-SOFT: no code graph / no match -> [] (the fusion just has
+    one fewer leg). This is the structural half of the 'what does X do AND why'
+    fusion; the memory legs supply the 'why'."""
+    # Try the full query, then fall back to identifier-like tokens (snake_case,
+    # camelCase, dotted, or >=4-char words) — a NL sentence rarely fuzzy-matches a
+    # symbol name, but the symbol is usually a token INSIDE it ("what calls
+    # diff_since" -> diff_since).
+    d = _run_json([PY, str(TOOLS / "code_query.py"), "query", query, "--hops", "1", "--json"])
+    if not (isinstance(d, dict) and d.get("ok")):
+        import re as _re2
+        toks = _re2.findall(r"[A-Za-z_][A-Za-z0-9_.]{3,}", query)
+        # prefer identifier-shaped tokens (contain _ or . or camelCase) first
+        toks.sort(key=lambda t: 0 if ("_" in t or "." in t or _re2.search(r"[a-z][A-Z]", t)) else 1)
+        for t in toks[:6]:
+            d = _run_json([PY, str(TOOLS / "code_query.py"), "explain", t, "--hops", "1", "--json"])
+            if isinstance(d, dict) and d.get("ok"):
+                break
+    if not isinstance(d, dict) or not d.get("ok"):
+        return []
+    out = []
+    node = d.get("node", "?")
+    # the matched symbol itself is the primary hit (carries file:line)
+    out.append({"leg": "code_query", "content": node, "score": 1.0, "uri": node})
+    for label, items in (d.get("outgoing", {}) or {}).items():
+        for it in items[:k]:
+            tag = it.get("provenance", "")
+            out.append({"leg": "code_query",
+                        "content": f"{node} {label} {it.get('target','?')}"
+                                   + (f" [{tag}]" if tag not in ("‑", "?", "") else ""),
+                        "score": 0.9, "uri": it.get("target", "?")})
+    for cb in (d.get("called_by", []) or [])[:k]:
+        out.append({"leg": "code_query",
+                    "content": f"{cb.get('source','?')} calls {node}",
+                    "score": 0.9, "uri": cb.get("source", "?")})
+    return out[: max(k, 1) * 3]
+
 def leg_memory_external(external_hits: list[dict], k: int) -> list[dict]:
     """memory_search results the AGENT ran natively and passed in. Normalize."""
     out = []
@@ -179,6 +229,7 @@ LEG_FN = {
     "docs_search": leg_docs_search,
     "session_search": leg_session_search,
     "graph_search": leg_graph_search,
+    "code_query": leg_code_query,
     "memory_external": leg_memory_external,
 }
 

@@ -580,6 +580,18 @@ py_can_import duckdb && skip "duckdb (installed)" || (
 py_can_import yaml && skip "pyyaml (installed)" || (
   pip_install pyyaml && ok "pyyaml" || warn "pyyaml install failed"
 )
+# ── tree-sitter (code-graph layer) — fail-soft, mirrors duckdb ────────────────
+# procedures/code_graph.py builds a ZERO-LLM code-structure graph (AST via
+# tree-sitter) that tools/code_query.py + the hybrid_recall CODE leg query.
+# OPTIONAL: if the binding is absent, code_graph goes OFFLINE and the rest of
+# neuron is unaffected (code_graph.py's import guard fails soft, exactly like the
+# langchain trio -> docs_search offline). pip_install carries the PEP-668
+# --break-system-packages fallback. Preferred single pkg bundles all grammars.
+(py_can_import tree_sitter_language_pack || py_can_import tree_sitter_languages) \
+  && skip "tree-sitter (installed) — code-graph layer ON" || (
+  pip_install tree-sitter-language-pack && ok "tree-sitter-language-pack — code-graph layer ON" \
+    || warn "tree-sitter install failed — code_graph / code_query OFFLINE (rest of neuron unaffected). Fix: $PY -m pip install tree-sitter-language-pack  (add --break-system-packages if PEP-668)"
+)
 py_can_import googleapiclient && skip "google-api-python-client (installed)" || (
   pip_install google-api-python-client google-auth google-auth-oauthlib google-auth-httplib2 && ok "google-api-python-client" || warn "google-api-python-client install failed"
 )
@@ -2264,11 +2276,13 @@ DINOMEM_BODY=$(cat <<'DINOMEM_NEURON_AGENTS_BODY'
   # --- EXACT / ingest / meta (explicit, NEVER fused) ---
   row | count | range | filter | sort | aggregate | field lookup (csv|json|parquet) → data_query (exact SQL, NOT memory_search)
   exact pattern | regex | grep | exact-string over raw text/logs → exec (ripgrep/grep)
+  CODE STRUCTURE: what calls X | X calls what | class hierarchy | where a function/method is defined | edge path A→B (file:line) → tools/code_query.py (explain|path|query) over the ZERO-LLM code graph — NOT grep+read whole files (context-stuffs ~20x tokens). Build/refresh: procedures/code_graph.py --path <root> (AST, no LLM; git-incremental).
   long doc / file shared / "remember this doc" → docs_ingest ; csv|json|parquet dataset → data_register
   what CHANGED in memory (adds/merges/deletes) → read memory/.diffs/ ; which retrieval tool ran / routing quality → kb/retrieval_log/
   # --- FUZZY recall (the one door) ---
   fact | decision | preference | todo | meaning | passage | recent convo (<7d) | relational (why/led-to/affects/trace) → hybrid_recall
-    # hybrid_recall fuses docs_search + session_search + graph_search legs; run memory_search natively and pass its hits via --external-hits to fold them in.
+  "what does CODE-SYMBOL X do AND why does it exist" (code structure + the design decision behind it, one block) → hybrid_recall (CODE leg auto-fires on function/class/calls/imports/inherits queries; fuses code_query file:line hits WITH the memory/graph 'why'). Killer feature: neither plain code-search nor plain memory alone answers it.
+    # hybrid_recall fuses docs_search + session_search + graph_search + code_query legs; run memory_search natively and pass its hits via --external-hits to fold them in.
     # M3 natural-language query rule applies (avoid code identifiers/exact strings).
 DINOMEM_NEURON_AGENTS_BODY
 )
@@ -2513,6 +2527,65 @@ TOOLS_BODY=$(cat <<'DINOMEM_NEURON_TOOLS_BODY'
       mode: read_write
     libraries:
       - duckdb
+
+  code_graph:
+    path: procedures/code_graph.py
+    type: exec
+    db: kb/code_graph/
+    purpose: "ZERO-LLM code-structure indexer. tree-sitter AST -> nodes(file|function|class|method w/ file:line) + edges(calls|imports|inherits|contains, provenance extracted|inferred) into a SEPARATE code graph (reuses the graph_store SQLite backend, not the memory DB file). Build the structural index ONCE at $0, then code_query serves scoped subgraphs instead of grep+read whole files into context (~20x fewer tokens on big repos)."
+    capabilities:
+      - ast_extract_no_llm
+      - path_and_line_nodes
+      - extracted_inferred_provenance
+      - git_incremental_rebuild
+      - churn_node_weight
+    inputs:
+      path:
+        type: string
+        required: false
+        note: "Root to index (--path). Ladder: --path > DINOMEM_CODE_ROOTS env > agent workspace > ~/.openclaw."
+      lang:
+        type: string
+        required: false
+        note: "Restrict to one lang key, e.g. python (--lang). Default: all allowlisted extensions."
+      full:
+        type: boolean
+        required: false
+        note: "Force full rebuild (--full). Default: git-incremental when a prior DB+sha+cache exist (re-parses ONLY changed files; fail-open to full)."
+    output:
+      note: "Summary: mode (full|incremental|noop), node/edge counts, built_at_sha, parse_errors."
+    constraints:
+      mode: read_write
+    libraries:
+      - tree-sitter-language-pack (or tree-sitter + tree-sitter-languages)
+    caveat: "OPTIONAL dep. Missing tree-sitter -> code_graph OFFLINE (fail-soft, rest of neuron unaffected). ZERO LLM in the build path by design."
+
+  code_query:
+    path: tools/code_query.py
+    type: exec
+    db: kb/code_graph/code_graph.json
+    purpose: "Query the code-structure graph. Ask for a SCOPED subgraph (what a symbol calls / is called by / inherits / lives in, or the edge path A->B) with file:line + EXTRACTED/INFERRED tags, instead of grep+read whole files. Reuses graph_search traversal (no fork)."
+    subcommands:
+      - "explain <symbol>   # neighborhood: contains/calls/called-by/imports/inherits, each file:line + provenance"
+      - "path <A> <B>       # shortest edge path A -> B (how one symbol reaches another)"
+      - "query \"<nl>\"       # fuzzy-find best-matching symbol then explain it"
+    inputs:
+      hops:
+        type: integer
+        required: false
+        note: "Traversal depth for explain/query (--hops, default 1)."
+      path_prefix:
+        type: string
+        required: false
+        note: "Scope to a file-path prefix, e.g. procedures/ (--path)."
+      db:
+        type: string
+        required: false
+        note: "Code graph json path (--db, default kb/code_graph/code_graph.json)."
+    output:
+      note: "Grouped edges w/ file:line + EXTRACTED/INFERRED tags. Prints a [stale] warning when built_at_sha != repo HEAD (refresh via code_graph.py). Also served fused via the hybrid_recall CODE leg for 'what does X do AND why'."
+    constraints:
+      mode: read_only
 DINOMEM_NEURON_TOOLS_BODY
 )
 TOOLS_BLOCK="$BEGIN

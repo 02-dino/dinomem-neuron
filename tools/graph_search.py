@@ -663,8 +663,12 @@ def main():
                         help="Minimum edge confidence to follow (default: 0.6)")
     parser.add_argument("--output-format", choices=["text", "json"], default="text", dest="output_format",
                         help="Output format: text (default) or json")
-    parser.add_argument("--graph", type=Path, default=GRAPH_PATH,
-                        help=f"Path to memory_graph.json (default: {GRAPH_PATH})")
+    parser.add_argument("--graph", type=Path, default=None,
+                        help=f"Path to a graph JSON (default: memory graph {GRAPH_PATH})")
+    parser.add_argument("--kind", choices=["memory", "code"], default="memory",
+                        help="Which graph to traverse: memory (default) or code "
+                             "(kb/code_graph/code_graph.json). --graph overrides. The store "
+                             "backend is graph-agnostic, so BFS serves either with no fork.")
     parser.add_argument("--cluster-drill", action="store_true", dest="cluster_drill",
                         help="Use cluster-drill (hierarchical) retrieval instead of edge-BFS from a "
                              "single start node. Ported concept from OpenViking's directory-recursive "
@@ -689,6 +693,13 @@ def main():
                         help=f"Path to peers_graph.json (default: {PEERS_GRAPH_PATH})")
 
     args = parser.parse_args()
+
+    # --kind picks the DEFAULT graph path; explicit --graph always wins. The
+    # code graph is built by procedures/code_graph.py and uses the SAME store
+    # class, so every traversal primitive below serves it unchanged.
+    if args.graph is None:
+        args.graph = (_REPO_ROOT / "kb" / "code_graph" / "code_graph.json") \
+            if args.kind == "code" else GRAPH_PATH
 
     # ---- NEURON peer-scoped branch (isolated from the global-graph path) ----
     if args.peer or args.all_peers:
