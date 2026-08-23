@@ -977,7 +977,9 @@ if [ "$DO_CRON" = 1 ]; then
   fi
 
   # memory_graph — daily at 3:00 UTC (L2, no LLM — pure graph linking)
-  GRAPH_CRON="0 3 * * * cd $WS && python3 procedures/memory_graph.py >> logs/memory_graph.log 2>&1"
+  # MULTI-AGENT SERIALIZATION: heavy-embed class (embedding/CPU-heavy, no LLM)
+  # acquires a host-wide flock so at most one agent's embed job runs at a time.
+  GRAPH_CRON="0 3 * * * DINOMEM_AGENT_ID=$AGENT_ID bash $WS/scripts/dinomem_run.sh heavy-embed $WS python3 procedures/memory_graph.py >> logs/memory_graph.log 2>&1"
   upsert_cron "memory_graph.py" "dinomem-neuron: L2 graph linking" "$GRAPH_CRON" "memory_graph cron (daily 3:00 UTC)"
 
   # memory_synthesis + contradiction_check — daily at 3:30 UTC (L3, reasoning=True)
@@ -985,15 +987,23 @@ if [ "$DO_CRON" = 1 ]; then
   # current_insights.json and AFTER contradiction_check, BEFORE the weekly promote
   # reads it — so the gate inherits calibrated confidence with zero downstream
   # change. Chained into the same daily L3 run; pure bookkeeping, cannot OOM.
-  SYNTH_CRON="30 3 * * * cd $WS && ${REASON_ENV}python3 procedures/memory_synthesis.py >> logs/memory_synthesis.log 2>&1 && ${REASON_ENV}python3 procedures/contradiction_check.py >> logs/contradiction_check.log 2>&1 && python3 procedures/confidence_engine.py >> logs/confidence_engine.log 2>&1"
+  # MULTI-AGENT SERIALIZATION: heavy-llm class — at most one LLM job runs at a time.
+  # Chained pipeline runs inside the lock: synthesis -> contradiction_check -> confidence_engine.
+  # dinomem_run.sh wraps all three; they share one lock acquisition (flock is held for the
+  # duration of the subshell, not re-acquired per-script — safe for a chained pipeline).
+  SYNTH_CHAIN="${REASON_ENV}python3 procedures/memory_synthesis.py >> logs/memory_synthesis.log 2>&1 && ${REASON_ENV}python3 procedures/contradiction_check.py >> logs/contradiction_check.log 2>&1 && python3 procedures/confidence_engine.py >> logs/confidence_engine.log 2>&1"
+  SYNTH_CRON="30 3 * * * DINOMEM_AGENT_ID=$AGENT_ID bash $WS/scripts/dinomem_run.sh heavy-llm $WS bash -c \"$SYNTH_CHAIN\""
   upsert_cron "memory_synthesis.py" "dinomem-neuron: L3 synthesis + contradiction check + calibration" "$SYNTH_CRON" "memory_synthesis + contradiction_check + confidence_engine cron (daily 3:30 UTC)"
 
-  # memory_promote (no LLM) + generate_topic_index (no-reasoning) — weekly Sun 4:00 UTC (L4)
-  PROMOTE_CRON="0 4 * * 0 cd $WS && python3 procedures/memory_promote.py >> logs/memory_promote.log 2>&1 && ${CHEAP_ENV}python3 procedures/generate_topic_index.py >> logs/topic_index.log 2>&1"
+  # memory_promote (no LLM) + generate_topic_index (cheap LLM) — weekly Sun 4:00 UTC (L4)
+  # MULTI-AGENT SERIALIZATION: heavy-llm class (generate_topic_index calls LLM).
+  PROMOTE_CHAIN="python3 procedures/memory_promote.py >> logs/memory_promote.log 2>&1 && ${CHEAP_ENV}python3 procedures/generate_topic_index.py >> logs/topic_index.log 2>&1"
+  PROMOTE_CRON="0 4 * * 0 DINOMEM_AGENT_ID=$AGENT_ID bash $WS/scripts/dinomem_run.sh heavy-llm $WS bash -c \"$PROMOTE_CHAIN\""
   upsert_cron "memory_promote.py" "dinomem-neuron: L4 promotion + topic index (weekly)" "$PROMOTE_CRON" "memory_promote + generate_topic_index cron (weekly Sunday 4:00 UTC)"
 
   # docs_ingest — daily at 4:00 UTC (RAG long docs, no-reasoning)
-  DOCS_CRON="0 4 * * * cd $WS && ${CHEAP_ENV}python3 procedures/docs_ingest.py >> logs/docs_ingest.log 2>&1"
+  # MULTI-AGENT SERIALIZATION: heavy-embed class (embedding-heavy, no LLM).
+  DOCS_CRON="0 4 * * * DINOMEM_AGENT_ID=$AGENT_ID bash $WS/scripts/dinomem_run.sh heavy-embed $WS ${CHEAP_ENV}python3 procedures/docs_ingest.py >> logs/docs_ingest.log 2>&1"
   upsert_cron "docs_ingest.py" "dinomem-neuron: RAG docs re-ingest (daily)" "$DOCS_CRON" "docs_ingest cron (daily 4:00 UTC)"
   # session_ingest is triggered automatically by auto_session_reset.py (every 15 min)
   # No separate cron needed.
