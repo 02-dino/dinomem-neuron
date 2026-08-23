@@ -726,6 +726,155 @@ def _js_module_basename(spec: str):
             break
     return base or None
 
+def _strip_jsonc(text: str) -> str:
+    """tsconfig.json is JSONC (comments + trailing commas). Tolerant strip:
+    remove // line comments, /* */ block comments, and trailing commas, so a
+    plain json.loads succeeds. Best-effort — not a full JSON5 parser."""
+    out = []
+    i, n = 0, len(text)
+    in_str = False
+    esc = False
+    while i < n:
+        c = text[i]
+        if in_str:
+            out.append(c)
+            if esc:
+                esc = False
+            elif c == "\\":
+                esc = True
+            elif c == '"':
+                in_str = False
+            i += 1
+            continue
+        if c == '"':
+            in_str = True
+            out.append(c)
+            i += 1
+            continue
+        if c == "/" and i + 1 < n and text[i + 1] == "/":
+            while i < n and text[i] != "\n":
+                i += 1
+            continue
+        if c == "/" and i + 1 < n and text[i + 1] == "*":
+            i += 2
+            while i + 1 < n and not (text[i] == "*" and text[i + 1] == "/"):
+                i += 1
+            i += 2
+            continue
+        out.append(c)
+        i += 1
+    s = "".join(out)
+    # drop trailing commas: ,] and ,}
+    s = _re.sub(r",(\s*[\]}])", r"\1", s)
+    return s
+
+def _load_ts_alias_map(root: str):
+    """Build-time (once per root) tsconfig `paths`/`baseUrl` + package.json
+    `workspaces` -> an ALIAS_MAP: {alias_prefix: [resolved_dir_rel_to_root,...]}.
+    Powers #1 aliased-import resolution (`@/lib/x` -> the real file). FAIL-OPEN:
+    a missing/malformed config contributes nothing, never raises. Env override
+    DINOMEM_TS_PATHS (colon list of `alias=dir`) adds/overrides entries.
+    Alias keys are stored WITHOUT the trailing `/*` (e.g. `@` for `@/*`, `@lib`
+    for `@lib/*`); an EXACT (no-star) alias is stored as-is. Values are dirs
+    rel-to-root with any trailing `/*` stripped."""
+    amap = {}
+
+    def _add(alias, target):
+        alias = alias.strip()
+        target = target.strip().replace("\\", "/")
+        star_a = alias.endswith("/*")
+        key = alias[:-2] if star_a else alias
+        val = target[:-2] if target.endswith("/*") else target
+        val = val.lstrip("./").rstrip("/")
+        if key:
+            amap.setdefault(key, [])
+            if val not in amap[key]:
+                amap[key].append(val)
+
+    for cfg in ("tsconfig.json", "tsconfig.base.json"):
+        p = os.path.join(root, cfg)
+        if not os.path.isfile(p):
+            continue
+        try:
+            with open(p, "r", encoding="utf-8") as fh:
+                data = json.loads(_strip_jsonc(fh.read()))
+            co = data.get("compilerOptions", {}) or {}
+            base_url = (co.get("baseUrl") or "").strip().replace("\\", "/")
+            base_url = base_url.lstrip("./").rstrip("/")
+            paths = co.get("paths", {}) or {}
+            for alias, targets in paths.items():
+                if not isinstance(targets, list):
+                    continue
+                for tgt in targets:
+                    if not isinstance(tgt, str):
+                        continue
+                    # prepend baseUrl if the target is relative to it
+                    joined = tgt
+                    if base_url and not tgt.startswith((".", "/")):
+                        joined = base_url.rstrip("/") + "/" + tgt.lstrip("/")
+                    _add(alias, joined)
+        except Exception:
+            continue  # fail-open
+
+    # package.json workspaces globs -> pkg roots (basename alias -> dir), so a
+    # monorepo import by pkg name has a chance to resolve. Best-effort: a glob
+    # like `packages/*` maps a later bare-ish import to that dir tree; we only
+    # record the glob PREFIX dirs (the '*' is expanded at match time by prefix).
+    pj = os.path.join(root, "package.json")
+    if os.path.isfile(pj):
+        try:
+            with open(pj, "r", encoding="utf-8") as fh:
+                data = json.loads(fh.read())
+            ws = data.get("workspaces")
+            globs = []
+            if isinstance(ws, list):
+                globs = ws
+            elif isinstance(ws, dict) and isinstance(ws.get("packages"), list):
+                globs = ws["packages"]
+            for g in globs:
+                if isinstance(g, str) and g:
+                    d = g.replace("\\", "/").rstrip("/")
+                    d = d[:-2] if d.endswith("/*") else d
+                    amap.setdefault("__workspace_roots__", [])
+                    if d not in amap["__workspace_roots__"]:
+                        amap["__workspace_roots__"].append(d)
+        except Exception:
+            pass  # fail-open
+
+    env = os.environ.get("DINOMEM_TS_PATHS", "")
+    if env:
+        for pair in env.split(os.pathsep):
+            if "=" in pair:
+                a, d = pair.split("=", 1)
+                _add(a, d)
+
+    return amap
+
+def _resolve_ts_alias(spec: str, alias_map: dict):
+    """An aliased import spec (`@/lib/x`, `@lib/util`) -> a candidate (stem,
+    rel_dir_prefix) for matching a file node, or None if no alias matches.
+    Returns (stem, [dir_prefixes]) where stem is the final path component and
+    dir_prefixes are rel-to-root dirs the file should live under (for precise
+    full-path match; assembly falls back to stem match)."""
+    if not spec or not alias_map:
+        return None
+    # try the longest matching alias prefix first (so `@lib` beats `@`)
+    for key in sorted((k for k in alias_map if not k.startswith("__")),
+                      key=len, reverse=True):
+        if spec == key or spec.startswith(key + "/"):
+            rest = spec[len(key):].lstrip("/")
+            stem = rest.replace("\\", "/").rstrip("/").split("/")[-1] if rest else ""
+            for ext in _JS_EXTS:
+                if stem.endswith(ext):
+                    stem = stem[: -len(ext)]
+                    break
+            dirs = []
+            for base_dir in alias_map[key]:
+                sub = "/".join(rest.split("/")[:-1]) if "/" in rest else ""
+                dirs.append((base_dir + "/" + sub).strip("/") if sub else base_dir)
+            return (stem or None, dirs)
+    return None
+
 def parse_javascript(src: bytes, rel: str, parser):
     """Return (defs, refs) for one JS/TS/JSX/TSX file. See module-header comment
     for the node-type map. from_qual = enclosing def qualname (or '<module>');
@@ -735,6 +884,10 @@ def parse_javascript(src: bytes, rel: str, parser):
     tree = parser.parse(src)
     root = tree.root_node
     defs, refs = [], []
+    # local-name -> {stem, spec, imported, ns} for every import binding in this
+    # file. Powers #3 member-call scoping (a `l.helper()` where `l` is a bound
+    # import namespace resolves to THAT module's file, not any same-named def).
+    js_local_binding = {}
 
     def enclosing_qual(stack):
         return ".".join(stack) if stack else "<module>"
@@ -745,19 +898,29 @@ def parse_javascript(src: bytes, rel: str, parser):
                      "line": _line(node), "qualname": qual})
         return qual
 
-    def callee_name(call_node):
-        """call_expression -> callee bare name (plain ident, or member_expression
-        last property), or None for computed/complex callees."""
+    def callee_info(call_node):
+        """call_expression -> (callee_name, obj_root, is_member).
+          plain-identifier call `helper()`     -> ('helper', None, False)
+          member call `l.helper()`             -> ('helper', 'l',  True)
+          member call `this.foo()` / `a.b.c()` -> ('foo'/'c', None, True)
+          computed/complex callee              -> (None, None, False)
+        is_member distinguishes a member call whose obj is NOT a plain binding
+        identifier (this./arr./chained) from a true plain-identifier call, so #3
+        can DROP the former as noise instead of mis-emitting it as a plain call."""
         fn = call_node.child_by_field_name("function")
         if fn is None:
-            return None
+            return (None, None, False)
         if fn.type == "identifier":
-            return _txt(fn, src)
+            return (_txt(fn, src), None, False)
         if fn.type == "member_expression":
             prop = fn.child_by_field_name("property")
+            obj = fn.child_by_field_name("object")
+            name = None
             if prop is not None and prop.type in ("property_identifier", "identifier"):
-                return _txt(prop, src)
-        return None
+                name = _txt(prop, src)
+            obj_root = _txt(obj, src) if (obj is not None and obj.type == "identifier") else None
+            return (name, obj_root, True)
+        return (None, None, False)
 
     def module_str(imp_node):
         """import_statement / import_clause-bearing node -> the module specifier
@@ -775,6 +938,51 @@ def parse_javascript(src: bytes, rel: str, parser):
             if c.type == "string_fragment":
                 return _txt(c, src)
         return _txt(target, src)
+
+    def import_bindings(imp_node):
+        """Parse an import_statement's import_clause -> a list of local bindings:
+          import def from 'm'          -> [{imported:'default', local:'def'}]
+          import * as ns from 'm'      -> [{imported:'*', local:'ns', ns:True}]
+          import {a, b as c} from 'm'  -> [{imported:'a',local:'a'},
+                                          {imported:'b',local:'c'}]
+          import def, {a} from 'm'     -> default + named combined
+        Side-effect imports (`import 'm'`) -> []. Powers #3 member-scoping
+        (a namespace/default binding maps a local name to the module's file) and
+        #1 barrel hops (named bindings tell us WHICH symbols to trace)."""
+        out = []
+        clause = None
+        for c in imp_node.children:
+            if c.type == "import_clause":
+                clause = c
+                break
+        if clause is None:
+            return out
+        for c in clause.children:
+            if c.type == "identifier":
+                # default import: import def from 'm'
+                out.append({"imported": "default", "local": _txt(c, src),
+                            "ns": False})
+            elif c.type == "namespace_import":
+                # import * as ns from 'm'
+                nm = None
+                for gc in c.children:
+                    if gc.type == "identifier":
+                        nm = _txt(gc, src)
+                if nm:
+                    out.append({"imported": "*", "local": nm, "ns": True})
+            elif c.type == "named_imports":
+                for spec in c.children:
+                    if spec.type != "import_specifier":
+                        continue
+                    nm = spec.child_by_field_name("name")
+                    alias = spec.child_by_field_name("alias")
+                    imported = _txt(nm, src) if nm else None
+                    if imported is None:
+                        continue
+                    local = _txt(alias, src) if alias else imported
+                    out.append({"imported": imported, "local": local,
+                                "ns": False})
+        return out
 
     def walk(node, stack):
         for child in node.children:
@@ -828,12 +1036,33 @@ def parse_javascript(src: bytes, rel: str, parser):
             elif t == "import_statement":
                 mod = module_str(child)
                 stem = _js_module_basename(mod) if mod else None
-                if stem:
+                binds = import_bindings(child)
+                # Emit the import ref for ANY path-ish / alias spec (relative OR
+                # an @-alias like `@/util`). _js_module_basename returns None for
+                # aliases (they look bare), so we can't gate on `stem` here — that
+                # would drop aliased imports before the assembly alias-resolver
+                # ever runs (#1). Gate on: has a spec AND is not a plain external
+                # bare package. An alias/relative spec is kept; a true bare pkg
+                # (`react`, `node:fs`, `@scope/pkg`) is dropped.
+                is_relative = bool(mod and (mod.startswith("./")
+                                            or mod.startswith("../")
+                                            or mod.startswith("/")))
+                is_aliasish = bool(mod and mod.startswith("@") and "/" in mod)
+                keep = bool(stem) or is_relative or is_aliasish
+                if keep:
                     refs.append({"label": "imports",
                                  "from_qual": enclosing_qual(stack),
                                  "to_name": stem, "line": _line(child),
-                                 "provenance": "inferred", "_js_import": True})
-                # external (stem None) -> DROP, no edge.
+                                 "provenance": "inferred", "_js_import": True,
+                                 "_js_spec": mod, "_js_bindings": binds})
+                    # Record the local->module binding map for member-call
+                    # scoping (#3), keyed by local name. Carry the raw spec so
+                    # #3 can alias-resolve the bound module's file too.
+                    for b in binds:
+                        js_local_binding[b["local"]] = {
+                            "stem": stem, "spec": mod,
+                            "imported": b["imported"], "ns": b.get("ns", False)}
+                # true external bare pkg (stem None, not relative/alias) -> DROP.
             elif t == "call_expression":
                 fn = child.child_by_field_name("function")
                 # CommonJS require('./x') -> imports edge
@@ -849,24 +1078,80 @@ def parse_javascript(src: bytes, rel: str, parser):
                                         break
                                 break
                     stem = _js_module_basename(modstr) if modstr else None
+                    # CommonJS `const l = require('./m')` binds local `l` to the
+                    # module namespace -> capture for #3 member-scoping. The
+                    # enclosing variable_declarator (if any) names the local.
+                    local = None
+                    par = child.parent
+                    if par is not None and par.type == "variable_declarator":
+                        lnm = par.child_by_field_name("name")
+                        if lnm is not None and lnm.type == "identifier":
+                            local = _txt(lnm, src)
                     if stem:
                         refs.append({"label": "imports",
                                      "from_qual": enclosing_qual(stack),
                                      "to_name": stem, "line": _line(child),
-                                     "provenance": "inferred", "_js_import": True})
+                                     "provenance": "inferred", "_js_import": True,
+                                     "_js_spec": modstr,
+                                     "_js_bindings": ([{"imported": "*",
+                                        "local": local, "ns": True}] if local else [])})
+                        if local:
+                            js_local_binding[local] = {
+                                "stem": stem, "spec": modstr,
+                                "imported": "*", "ns": True}
                     walk(child, stack)
                     continue
-                callee = callee_name(child)
+                callee, obj_root, is_member = callee_info(child)
                 if callee and callee.isidentifier():
-                    refs.append({"label": "calls",
-                                 "from_qual": enclosing_qual(stack),
-                                 "to_name": callee, "line": _line(child),
-                                 "provenance": "inferred"})
+                    if not is_member:
+                        # plain-identifier call `helper()` -> today's behavior.
+                        refs.append({"label": "calls",
+                                     "from_qual": enclosing_qual(stack),
+                                     "to_name": callee, "line": _line(child),
+                                     "provenance": "inferred"})
+                    elif obj_root is not None and obj_root in js_local_binding:
+                        # #3: `ns.helper()` where `ns`/`l` is a bound import
+                        # namespace -> scope the call to THAT module's file, so
+                        # assembly resolves `helper` to the module's def (not a
+                        # global same-name collision). Carry the bound module.
+                        b = js_local_binding[obj_root]
+                        refs.append({"label": "calls",
+                                     "from_qual": enclosing_qual(stack),
+                                     "to_name": callee, "line": _line(child),
+                                     "provenance": "inferred",
+                                     "_js_member_of": {"stem": b.get("stem"),
+                                                       "spec": b.get("spec")}})
+                    # else: unscoped member call (`this.foo()`, `arr.map()`,
+                    # some-local-obj.method()) -> DROP as noise (stdlib / intra-
+                    # class already covered by method defs). No edge.
+                walk(child, stack)
+            elif t == "export_statement":
+                # Barrel re-export: `export * from './y'` / `export {z} from './y'`
+                # -> a `reexports` edge barrel-file -> y-file (resolved like an
+                # import). A local `export {local}` (no `from`) is NOT a re-export
+                # (it just marks an existing def exported) -> skip. Powers #1
+                # barrel hops: assembly flattens importer->barrel->provider.
+                mod = module_str(child)
+                if mod:
+                    is_relative = (mod.startswith("./") or mod.startswith("../")
+                                   or mod.startswith("/"))
+                    is_aliasish = mod.startswith("@") and "/" in mod
+                    if is_relative or is_aliasish or _js_module_basename(mod):
+                        stem = _js_module_basename(mod)
+                        refs.append({"label": "reexports",
+                                     "from_qual": "<file>",
+                                     "to_name": stem, "line": _line(child),
+                                     "provenance": "inferred", "_js_reexport": True,
+                                     "_js_spec": mod})
                 walk(child, stack)
             else:
                 walk(child, stack)
 
     walk(root, [])
+    # sentinel ref carrying this file's local-import-binding map for #3 member-
+    # call scoping; assembly collects it per-file then skips it (no edge).
+    if js_local_binding:
+        refs.append({"_js_binding_map": js_local_binding})
     return defs, refs
 
 PARSERS = {"python": parse_python, "bash": parse_bash, "json": parse_json,
@@ -919,6 +1204,7 @@ def assemble_graph(parsed, root, built_at_sha):
 
     # pass 1: all def + file nodes (so cross-file refs can resolve)
     file_stem_idx = {}   # basename-stem (no ext) -> file node idx (JS import target)
+    file_rel_norm = {}   # normalized rel path (no ext) -> file node idx (alias/full-path match)
     for rel, defs, _refs in parsed:
         base = os.path.basename(rel)
         file_idx[rel] = add_node("file", base, rel, 1)
@@ -926,8 +1212,58 @@ def assemble_graph(parsed, root, built_at_sha):
         # first-wins for a stem so a deterministic target; index/main are common,
         # keep them resolvable but don't clobber a more specific same-stem file.
         file_stem_idx.setdefault(stem, file_idx[rel])
+        # normalized rel-no-ext for precise alias/full-path resolution
+        rel_norm = rel.replace("\\", "/")
+        for ext in _JS_EXTS:
+            if rel_norm.endswith(ext):
+                rel_norm = rel_norm[: -len(ext)]
+                break
+        file_rel_norm.setdefault(rel_norm, file_idx[rel])
         for d in defs:
             add_node(d["kind"], d["name"], d["file"], d["line"])
+
+    # #1: build the tsconfig/workspace alias map ONCE per root (fail-open).
+    ts_alias_map = _load_ts_alias_map(root)
+
+    def _resolve_js_import(spec, stem, importer_rel):
+        """Resolve a JS/TS import to a file-node idx. Order:
+        (1) tsconfig alias (@/x -> full-path match, then stem);
+        (2) relative spec -> full-path match rel-to-importer (handles ./dir/index
+            and same-stem collisions precisely), then index.* under the dir;
+        (3) basename-stem fallback (today's behavior).
+        Returns idx or None."""
+        # (1) alias
+        if spec:
+            ali = _resolve_ts_alias(spec, ts_alias_map)
+            if ali is not None:
+                astem, adirs = ali
+                for d in adirs:
+                    cand = (d + "/" + astem).strip("/") if astem else d
+                    if cand in file_rel_norm:
+                        return file_rel_norm[cand]
+                    idxc = (cand + "/index").strip("/")
+                    if idxc in file_rel_norm:
+                        return file_rel_norm[idxc]
+                if astem and astem in file_stem_idx:
+                    return file_stem_idx[astem]
+        # (2) relative spec -> resolve rel-to-importer dir
+        if spec and (spec.startswith("./") or spec.startswith("../")):
+            imp_dir = os.path.dirname(importer_rel.replace("\\", "/"))
+            joined = os.path.normpath(os.path.join(imp_dir, spec)).replace("\\", "/")
+            joined = joined.lstrip("./") if joined.startswith("./") else joined
+            for ext in _JS_EXTS:
+                if joined.endswith(ext):
+                    joined = joined[: -len(ext)]
+                    break
+            if joined in file_rel_norm:
+                return file_rel_norm[joined]
+            idxj = joined + "/index"
+            if idxj in file_rel_norm:
+                return file_rel_norm[idxj]
+        # (3) stem fallback
+        if stem and stem in file_stem_idx:
+            return file_stem_idx[stem]
+        return None
 
     rel_edges = []
 
@@ -960,12 +1296,70 @@ def assemble_graph(parsed, root, built_at_sha):
         d["labels"].add(label)
 
     # pass 2: contains (file -> defs) + resolve refs
+    # per-file JS import-binding maps (local-name -> {stem,spec,imported,ns}),
+    # collected from the sentinel ref each JS/TS file emits. Powers #3 member-
+    # call scoping. Also index file defs by (file-stem, def-name) so a member
+    # call on a bound module resolves to THAT module's def, not a global same-name.
+    js_binding_by_file = {}
+    for rel, defs, refs in parsed:
+        for r in refs:
+            if "_js_binding_map" in r:
+                js_binding_by_file[rel] = r["_js_binding_map"]
+    defs_by_stem = {}   # stem -> {name -> def-node-idx}
+    for rel, defs, _refs in parsed:
+        base = os.path.basename(rel)
+        stem = base.rsplit(".", 1)[0] if "." in base else base
+        d_map = defs_by_stem.setdefault(stem, {})
+        for d in defs:
+            nid = _node_id(d["kind"], d["name"], d["file"], d["line"])
+            if nid in idx_of:
+                d_map.setdefault(d["name"], idx_of[nid])
+
+    # #1 barrel: pre-resolve every file's re-export targets (barrel_file_idx ->
+    # [provider_file_idx]) so an import that lands on a barrel can be FLATTENED
+    # to the real provider(s). rel_by_idx maps a file node idx back to its rel
+    # (needed to alias-resolve the reexport spec rel-to-the-barrel).
+    rel_by_idx = {v: k for k, v in file_idx.items()}
+    reexport_targets = {}   # barrel file idx -> set(provider file idx)
+    for rel, _defs, refs in parsed:
+        bi = file_idx.get(rel)
+        if bi is None:
+            continue
+        for r in refs:
+            if not r.get("_js_reexport"):
+                continue
+            tgt = _resolve_js_import(r.get("_js_spec"), r.get("to_name"), rel)
+            if tgt is not None and tgt != bi:
+                reexport_targets.setdefault(bi, set()).add(tgt)
+
+    def _flatten_barrel(target_idx, _depth=0, _seen=None):
+        """If target_idx is a barrel (re-exports other files), return the set of
+        real provider file idxs it forwards to (transitively, cycle-guarded,
+        depth<=3). If it's not a barrel, return {target_idx} (it IS the provider).
+        A barrel that also has its own defs stays a provider too."""
+        if _seen is None:
+            _seen = set()
+        if target_idx in _seen or _depth > 3:
+            return set()
+        _seen.add(target_idx)
+        outs = reexport_targets.get(target_idx)
+        if not outs:
+            return {target_idx}
+        result = set()
+        for prov in outs:
+            result |= _flatten_barrel(prov, _depth + 1, _seen)
+        # keep the barrel itself too if it declares its own symbols
+        return result or {target_idx}
+
     for rel, defs, refs in parsed:
         fi = file_idx[rel]
+        binds = js_binding_by_file.get(rel, {})
         for d in defs:
             di = idx_of[_node_id(d["kind"], d["name"], d["file"], d["line"])]
             add_edge(fi, di, "contains", os.path.basename(rel), d["name"], "extracted")
         for r in refs:
+            if "_js_binding_map" in r:
+                continue  # sentinel, not an edge
             # JSON refs carry a DOTTED key path in from_qual and must resolve the
             # WHOLE path (not the last segment) against name_to_idx; the '<file>'
             # sentinel is the enclosing file node (top-level key parent).
@@ -985,13 +1379,48 @@ def assemble_graph(parsed, root, built_at_sha):
             # './util' -> util.js file node), not to a def/name. Try the stem map
             # first; unresolved (external pkg already dropped in extractor, so an
             # unresolved here is an in-repo file we didn't index) -> DROP.
+            if r.get("_js_reexport"):
+                continue  # barrel edges are pre-resolved into reexport_targets
             if r.get("_js_import"):
                 a = fi  # the importing file is the subject
                 src_name = os.path.basename(rel)
-                tgt = file_stem_idx.get(r["to_name"])
+                # #1: alias/full-path aware resolution (tsconfig paths, relative
+                # rel-to-importer, then basename-stem fallback). r may carry the
+                # raw spec (_js_spec) for alias matching; older refs carry stem only.
+                tgt = _resolve_js_import(r.get("_js_spec"), r["to_name"], rel)
                 if tgt is not None and tgt != fi:
                     add_edge(a, tgt, "imports", src_name, r["to_name"], "extracted")
                     _note_cross_project(a, tgt, "imports")
+                    # #1 barrel hop: if the import landed on a barrel (a file that
+                    # re-exports others), ALSO add a flattened import edge to the
+                    # real provider(s) so 'who provides X' is one hop, not a
+                    # dead-end at the barrel. Cycle-guarded, depth<=3.
+                    if tgt in reexport_targets:
+                        for prov in _flatten_barrel(tgt):
+                            if prov != fi and prov != tgt:
+                                add_edge(a, prov, "imports", src_name,
+                                         os.path.basename(rel_by_idx.get(prov, "")),
+                                         "extracted")
+                                _note_cross_project(a, prov, "imports")
+                continue
+            # #3: a member call scoped to a bound import namespace (`u.helper()`
+            # where `u` = import * from './util') resolves `helper` to THAT
+            # module's def FIRST (via defs_by_stem[util][helper]), not the global
+            # last-wins name_to_idx that would false-match a same-named fn in an
+            # unrelated file. Only fall back to global if the bound module has no
+            # such def (then mark inferred, not extracted).
+            if r.get("_js_member_of"):
+                mo = r["_js_member_of"]
+                mstem = mo.get("stem")
+                mtgt = None
+                if mstem and mstem in defs_by_stem:
+                    mtgt = defs_by_stem[mstem].get(r["to_name"])
+                if mtgt is not None:
+                    add_edge(a, mtgt, "calls", src_name, r["to_name"], "extracted")
+                    _note_cross_project(a, mtgt, "calls")
+                # bound module has no such def -> DROP (do not global-fallback: a
+                # module-scoped call to a name the module doesn't define is more
+                # likely a re-export/type than a real global collision hit).
                 continue
             tgt = name_to_idx.get(r["to_name"])
             if tgt is not None:

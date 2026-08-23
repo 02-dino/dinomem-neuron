@@ -4,6 +4,21 @@ All notable changes to dinomem-neuron are documented here.
 
 ---
 
+## 1.14.0 — 2026-08-23
+
+**JS/TS resolution depth — the code graph now resolves tsconfig `paths` aliases + workspace globs, hops barrel re-exports, and scopes member calls to the bound module. The JS/TS graph is now useful on real monorepo/agent codebases, not just relative-import toy trees.**
+### Added
+- **Import-binding capture.** `parse_javascript` now records, per import, the module spec + the imported symbols and their local aliases (`import {helper as h}` → `{imported:helper, local:h}`; `import * as ns` / `const l = require()` → namespace bindings). This local→module map is the foundation for member-call scoping and barrel hops.
+- **tsconfig `paths` + workspace-glob alias resolution (#1a).** At build time (once per root, fail-open) `code_graph.py` reads `tsconfig.json`/`tsconfig.base.json` `compilerOptions.baseUrl`+`paths` (JSONC-tolerant) and `package.json` `workspaces`, building an alias map. An aliased import like `import {x} from "@/lib/x"` now resolves to the real file node instead of dropping as external. Env `DINOMEM_TS_PATHS` (`alias=dir` colon-list) overrides for configs we can't parse. Malformed tsconfig → empty map, imports fall back to relative/stem resolution (no crash, no regression).
+- **Relative full-path resolution.** Relative specs now resolve rel-to-importer (`./dir/index`, same-stem collisions handled precisely) before the basename-stem fallback — fixing false matches where two files share a stem.
+- **Barrel re-export hop (#1b).** `export * from './y'` / `export {z} from './y'` become `reexports` edges; when an import lands on a barrel, a **flattened** import edge to the real provider(s) is also added (1-hop, so "who provides X" isn't a dead-end at the barrel). Cycle-guarded (visited-set, depth≤3) — a re-export cycle no longer hangs the build.
+### Changed
+- **Module-scoped member calls (#3).** `l.helper()` where `l` is a bound import namespace now resolves `helper` to **that module's** def (via a per-module def index), not the global last-wins name that false-matched a same-named function in an unrelated file. Unscoped member calls (`this.foo()`, `arr.map()`, local-object methods) are now **dropped** as noise (stdlib / intra-class already covered by method defs) instead of emitting bogus last-segment edges — a net precision gain.
+### Notes
+- New test `test/code_graph_tsjs_resolution_test.sh` covers alias resolution, barrel hop + cycle-no-hang, member-scoping with a name collision, unscoped-member drop, and malformed-tsconfig fail-open. The original `code_graph_tsjs_test.sh` (basename resolution + external-drop) still passes — no regression.
+
+---
+
 ## 1.13.0 — 2026-08-23
 
 **JS/TS join the code graph — the #1 language + every agent framework/MCP surface is now structurally navigable. One `parse_javascript` extractor serves JS/JSX/TS/TSX with cross-file import/require, cross-file calls, and class inheritance.**
