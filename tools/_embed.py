@@ -27,6 +27,101 @@ import pathlib
 # Single source of truth. Swap via env DINOMEM_EMBED_MODEL for a different model.
 _MODEL_ID = os.environ.get("DINOMEM_EMBED_MODEL", "intfloat/multilingual-e5-small")
 
+# ── TEI shared embed server (multi-agent cold-start fix) ──────────────────────
+# Problem: on a multi-agent host every agent subprocess cold-boots the embedding
+# model (~100MB, 2-5s) on each session_search / docs_search / hybrid_recall call.
+# 10 concurrent agents = 10 simultaneous model loads = ~1GB RAM spike + CPU
+# saturation competing with live inference. Serializing these (flock) would just
+# make users wait longer — wrong fix.
+#
+# Fix: TEI is already the shared embed server the installer starts (one process,
+# one model load). Route embed calls through TEI's /v1/embeddings via HTTP when
+# it's answering; fall back to local HuggingFace only when TEI is absent.
+# Per-call cost: ~2-5s cold model load → ~50ms HTTP round trip.
+#
+# Endpoint: DINOMEM_EMBED_URL env (default http://localhost:8080/v1/embeddings).
+# Force local: DINOMEM_EMBED_LOCAL=1 (offline dev, CI, explicit override).
+# e5 prefixing: applied here — TEI does NOT auto-prefix by default.
+# Fail-open: any TEI error falls through to local model, never breaks search.
+_TEI_URL = os.environ.get(
+    "DINOMEM_EMBED_URL",
+    "http://localhost:" + os.environ.get("TEI_PORT", "8080") + "/v1/embeddings",
+)
+_tei_ok: "bool | None" = None  # None = not yet probed; cached per-process
+
+def _probe_tei(timeout: float = 1.0) -> bool:
+    """Probe TEI /health. stdlib urllib only — no new deps. Fail-open."""
+    import urllib.request, urllib.error  # noqa: E401
+    try:
+        base = _TEI_URL.rstrip("/")
+        if base.endswith("/v1/embeddings"):
+            base = base[:-len("/v1/embeddings")]
+        with urllib.request.urlopen(base + "/health", timeout=timeout) as r:
+            return r.status == 200
+    except Exception:
+        return False
+
+def _tei_available() -> bool:
+    """Cached TEI probe — once per process."""
+    global _tei_ok
+    if _tei_ok is None:
+        try:
+            _tei_ok = _probe_tei()
+        except Exception:
+            _tei_ok = False
+    return bool(_tei_ok)
+
+def _build_tei_embeddings():
+    """Return a LangChain-compatible embeddings object backed by TEI HTTP.
+    Tries langchain_community.OpenAIEmbeddings (openai-compat) first;
+    falls back to a minimal stdlib urllib client. e5 prefixing applied here."""
+    base = _TEI_URL.rstrip("/")
+    if base.endswith("/v1/embeddings"):
+        base = base[:-len("/v1/embeddings")]
+
+    # Attempt 1: langchain_community (likely already installed via langchain_chroma)
+    try:
+        from langchain_community.embeddings import OpenAIEmbeddings as _OAI
+
+        class _TEILCEmbeddings(_OAI):
+            def embed_documents(self, texts):
+                if _PREFIX_ENABLED:
+                    texts = [_PASSAGE_PREFIX + t for t in texts]
+                return super().embed_documents(texts)
+            def embed_query(self, text: str):
+                if _PREFIX_ENABLED:
+                    text = _QUERY_PREFIX + text
+                return super().embed_query(text)
+
+        return _TEILCEmbeddings(
+            openai_api_key="tei",
+            openai_api_base=base,
+            model=_MODEL_ID,
+            check_embedding_ctx_length=False,
+        )
+    except Exception:
+        pass
+
+    # Attempt 2: minimal stdlib client (no extra deps)
+    import json as _json, urllib.request as _ur  # noqa: E401
+
+    class _TEIStdlibEmbeddings:
+        def _post(self, texts):
+            body = _json.dumps({"input": texts, "model": _MODEL_ID}).encode()
+            req = _ur.Request(_TEI_URL, data=body,
+                              headers={"Content-Type": "application/json"})
+            with _ur.urlopen(req, timeout=15) as r:
+                data = _json.loads(r.read())
+            return [x["embedding"] for x in sorted(data["data"], key=lambda x: x["index"])]
+        def embed_query(self, text: str):
+            return self._post([(_QUERY_PREFIX if _PREFIX_ENABLED else "") + text])[0]
+        def embed_documents(self, texts):
+            if _PREFIX_ENABLED:
+                texts = [_PASSAGE_PREFIX + t for t in texts]
+            return self._post(texts)
+
+    return _TEIStdlibEmbeddings()
+
 # Metadata key under which each Chroma collection records the embedding model it
 # was BUILT with. Ingest stamps it; query paths read it and warn on mismatch so a
 # model swap against an old-model store fails LOUD instead of silently returning
@@ -107,10 +202,32 @@ _embeddings = None
 
 
 def get_embeddings():
-    """Lazily build the prefixed HuggingFaceEmbeddings; raise SemanticUnavailable if deps missing."""
+    """Return the active embedding backend — TEI if running, local model otherwise.
+
+    Priority:
+      1. TEI (DINOMEM_EMBED_URL / localhost:8080) — probed once per process.
+         Shared across all agents on the host: one model load, zero cold-start.
+      2. Local HuggingFaceEmbeddings — fallback when TEI is absent or
+         DINOMEM_EMBED_LOCAL=1 is set.
+    Fail-open: TEI error falls through to local. SemanticUnavailable only if
+    both paths fail.
+    """
     global _embeddings
     if _embeddings is not None:
         return _embeddings
+
+    # Path 1: TEI shared server
+    if os.environ.get("DINOMEM_EMBED_LOCAL", "0") != "1" and _tei_available():
+        try:
+            _embeddings = _build_tei_embeddings()
+            import sys as _sys
+            print(f"[_embed] TEI @ {_TEI_URL}", file=_sys.stderr)
+            return _embeddings
+        except Exception as _e:
+            import sys as _sys
+            print(f"[_embed] TEI failed ({_e}), falling back to local", file=_sys.stderr)
+
+    # Path 2: local HuggingFace model (original behaviour)
     try:
         Prefixed = _build_prefixed_class()
     except Exception as e:
