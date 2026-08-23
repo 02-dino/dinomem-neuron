@@ -163,7 +163,7 @@ fail-soft, rest of retrieval unaffected). **Never** grep+read whole files for a
 structure question over unknown AST-modelled source when the graph can answer it scoped.
 
 **Coverage (CAPPED — do NOT index the world):** big-six + agent-config —
-**python / bash / json / markdown / JS / TS** (JS/JSX/TS/TSX). 40-language parity is
+**python / bash / json / markdown / JS / TS** (JS/JSX/TS/TSX — with tsconfig `paths` alias + workspace-glob resolution, barrel re-export hop, module-scoped member calls, and cross-file named-call scoping (`import {foo}; foo()` → the real module def, not a global same-name); external pkgs + unscoped `this.`/`arr.` member calls dropped; `code_query explain` annotates a flattened barrel edge `(via barrel.ts)`). 40-language parity is
 Graphify's PRODUCT need, NOT ours. Go/Rust/Java/C#/C++ + niche langs
 (fortran/ocaml/pascal/zig/etc) are **add-on-demand**: add a `parse_<lang>` + 2
 lines (`LANG_BY_EXT` + `PARSERS`) ONLY when a real buyer file exists — the

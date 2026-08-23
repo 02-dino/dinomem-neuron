@@ -216,6 +216,16 @@ def _edge_provenance(graph, a_idx, b_idx, label):
             return e.get("provenance", "?")
     return "?"
 
+def _edge_via(graph, a_idx, b_idx, label):
+    """#3: barrel provenance — the barrel basename a flattened importer->provider
+    edge hopped through, or None for a direct edge. Lets explain render
+    '(via barrel.ts)' so the hop path isn't invisible."""
+    for e in graph.get("relation_edges", []):
+        if e.get("a") == a_idx and e.get("b") == b_idx and e.get("label") == label:
+            if e.get("via"):
+                return e["via"]
+    return None
+
 
 # ── verb: explain ───────────────────────────────────────────
 def explain(graph, symbol, hops, path_prefix, project=None):
@@ -232,10 +242,14 @@ def explain(graph, symbol, hops, path_prefix, project=None):
     for r in visited:
         ni = nodes[r["idx"]]
         prov = _edge_provenance(graph, idx, r["idx"], r["label"]) if r["hop"] == 1 else "‑"
-        groups[r["label"]].append({
+        via = _edge_via(graph, idx, r["idx"], r["label"]) if r["hop"] == 1 else None
+        item = {
             "target": _fmt_node(ni), "hop": r["hop"],
             "provenance": prov.upper() if prov not in ("?", "‑") else prov,
-        })
+        }
+        if via:
+            item["via"] = via
+        groups[r["label"]].append(item)
     # incoming calls (called-by): edges whose b == idx
     edges = graph.get("relation_edges", [])
     called_by = []
@@ -320,7 +334,8 @@ def _render_explain(res):
         out.append(f"  {label}:")
         for it in items:
             tag = f" [{it['provenance']}]" if it["provenance"] not in ("‑", "?") else ""
-            out.append(f"    → {it['target']}{tag}" + (f"  (hop {it['hop']})" if it["hop"] > 1 else ""))
+            via = f" (via {it['via']})" if it.get("via") else ""
+            out.append(f"    → {it['target']}{tag}{via}" + (f"  (hop {it['hop']})" if it["hop"] > 1 else ""))
     if res["called_by"]:
         out.append("  called-by:")
         for cb in res["called_by"][:25]:

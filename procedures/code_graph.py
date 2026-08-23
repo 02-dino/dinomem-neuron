@@ -1104,11 +1104,23 @@ def parse_javascript(src: bytes, rel: str, parser):
                 callee, obj_root, is_member = callee_info(child)
                 if callee and callee.isidentifier():
                     if not is_member:
-                        # plain-identifier call `helper()` -> today's behavior.
-                        refs.append({"label": "calls",
-                                     "from_qual": enclosing_qual(stack),
-                                     "to_name": callee, "line": _line(child),
-                                     "provenance": "inferred"})
+                        ref = {"label": "calls",
+                               "from_qual": enclosing_qual(stack),
+                               "to_name": callee, "line": _line(child),
+                               "provenance": "inferred"}
+                        # #2 cross-file named-call: `foo()` where `foo` is a
+                        # NAMED import (import {foo} from './m') -> scope the
+                        # call to THAT module's def, so assembly resolves it to
+                        # m's foo, not a global last-wins same-name in an
+                        # unrelated file. Mirrors _js_member_of but for the
+                        # plain-identifier (non-member) call. A namespace/default
+                        # binding used as a bare call is rare; still scope it.
+                        b = js_local_binding.get(callee)
+                        if b is not None:
+                            ref["_js_call_of"] = {"stem": b.get("stem"),
+                                                  "spec": b.get("spec"),
+                                                  "imported": b.get("imported")}
+                        refs.append(ref)
                     elif obj_root is not None and obj_root in js_local_binding:
                         # #3: `ns.helper()` where `ns`/`l` is a bound import
                         # namespace -> scope the call to THAT module's file, so
@@ -1267,11 +1279,17 @@ def assemble_graph(parsed, root, built_at_sha):
 
     rel_edges = []
 
-    def add_edge(a, b, label, subj, obj, prov):
-        rel_edges.append({
+    def add_edge(a, b, label, subj, obj, prov, via=None):
+        e = {
             "a": a, "b": b, "label": label, "subject": subj, "object": obj,
             "confidence": 1.0, "provenance": prov, "source": "code_ast",
-        })
+        }
+        # #3 barrel provenance: a flattened importer->provider edge records the
+        # barrel basename it hopped through, so code_query explain can render
+        # '(via barrel.ts)'. None on every direct edge (no payload bloat).
+        if via:
+            e["via"] = via
+        rel_edges.append(e)
         if 0 <= a < len(nodes):
             nodes[a]["degree"] += 1
         if 0 <= b < len(nodes):
@@ -1396,11 +1414,12 @@ def assemble_graph(parsed, root, built_at_sha):
                     # real provider(s) so 'who provides X' is one hop, not a
                     # dead-end at the barrel. Cycle-guarded, depth<=3.
                     if tgt in reexport_targets:
+                        barrel_name = os.path.basename(rel_by_idx.get(tgt, ""))
                         for prov in _flatten_barrel(tgt):
                             if prov != fi and prov != tgt:
                                 add_edge(a, prov, "imports", src_name,
                                          os.path.basename(rel_by_idx.get(prov, "")),
-                                         "extracted")
+                                         "extracted", via=barrel_name)
                                 _note_cross_project(a, prov, "imports")
                 continue
             # #3: a member call scoped to a bound import namespace (`u.helper()`
@@ -1421,6 +1440,21 @@ def assemble_graph(parsed, root, built_at_sha):
                 # bound module has no such def -> DROP (do not global-fallback: a
                 # module-scoped call to a name the module doesn't define is more
                 # likely a re-export/type than a real global collision hit).
+                continue
+            # #2: a plain call to a NAMED import (`import {foo} from './m'; foo()`)
+            # resolves `foo` to m's def FIRST (same discipline as #3 member
+            # calls), not the global last-wins name_to_idx that false-matches a
+            # same-named fn in an unrelated file. Bound-but-not-a-def (type-only
+            # import, re-export) -> DROP, don't global-fallback.
+            if r.get("_js_call_of"):
+                co = r["_js_call_of"]
+                cstem = co.get("stem")
+                ctgt = None
+                if cstem and cstem in defs_by_stem:
+                    ctgt = defs_by_stem[cstem].get(r["to_name"])
+                if ctgt is not None:
+                    add_edge(a, ctgt, "calls", src_name, r["to_name"], "extracted")
+                    _note_cross_project(a, ctgt, "calls")
                 continue
             tgt = name_to_idx.get(r["to_name"])
             if tgt is not None:

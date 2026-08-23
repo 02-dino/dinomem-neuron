@@ -74,6 +74,18 @@ export function m(arr) {
 }
 EOF
 
+# ── #2: cross-file named-call binding-scoping + collision ─────────────────────
+echo 'export function collidedCall(x){return x+1;}' > "$FIX/callA.ts"
+echo 'export function collidedCall(y){return y-1;}' > "$FIX/callB.ts"
+cat > "$FIX/namedcall.ts" <<'EOF'
+import { collidedCall } from "./callA";
+function collidedCall_local(){ return 0; }
+export function nc() {
+  collidedCall();        // named import -> must resolve to callA.ts, NOT callB.ts
+  collidedCall_local();  // plain local call -> resolves to local def
+}
+EOF
+
 # ── malformed tsconfig fail-open (separate root) ─────────────────────────────
 BAD="$FIX/_bad"
 mkdir -p "$BAD"
@@ -133,6 +145,14 @@ if not efind("imports", from_file="useBarrel.ts", to_file="barrel.ts", resolved=
 if not efind("imports", from_file="useCycle.ts", to_file="cycleA.ts", resolved=True):
     fails.append("#1b cycle: useCycle.ts -> cycleA.ts missing")
 
+# #2 named-call scoping: collidedCall() -> callA.ts (NOT callB.ts)
+ca = efind("calls", from_file="namedcall.ts", to_file="callA.ts", obj="collidedCall", resolved=True)
+cb = efind("calls", from_file="namedcall.ts", to_file="callB.ts", obj="collidedCall", resolved=True)
+if ca is None:
+    fails.append("#2 named call collidedCall() did NOT resolve to callA.ts")
+if cb is not None:
+    fails.append("#2 named call collidedCall() WRONGLY resolved to callB.ts (binding not scoped)")
+
 # #3 member-scoping: a.collided() -> modA.ts (NOT modB.ts)
 ma = efind("calls", from_file="member.ts", to_file="modA.ts", obj="collided", resolved=True)
 mb = efind("calls", from_file="member.ts", to_file="modB.ts", obj="collided", resolved=True)
@@ -153,11 +173,18 @@ else:
         # useq -> q should still resolve by relative/stem even without tsconfig
         fails.append("malformed-tsconfig: relative import useq->q did not resolve (regression)")
 
+# #3 barrel provenance: the flattened useBarrel.ts -> y.ts edge must carry
+# via=barrel.ts so code_query explain can annotate the hop.
+barrel_edge = efind("imports", from_file="useBarrel.ts", to_file="y.ts", resolved=True)
+if barrel_edge is None or barrel_edge.get("via") != "barrel.ts":
+    fails.append("#3 flattened barrel edge missing via=barrel.ts provenance (got via=%r)"
+                 % (barrel_edge.get("via") if barrel_edge else None))
+
 if fails:
     print("RESULT: FAIL")
     for f in fails: print("  -", f)
     sys.exit(1)
 print("RESULT: PASS")
-print("  #1a alias + #1b barrel-hop/cycle + #3 member-scoping/collision/unscoped-drop + malformed-fail-open all OK")
+print("  #1a alias + #1b barrel-hop/cycle + #2 named-call/collision + #3 member-scoping/unscoped-drop + barrel-provenance + malformed-fail-open all OK")
 PY
 exit $?

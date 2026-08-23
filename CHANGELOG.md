@@ -4,6 +4,18 @@ All notable changes to dinomem-neuron are documented here.
 
 ---
 
+## 1.15.0 — 2026-08-23
+
+**JS/TS resolution finish — cross-file NAMED-call scoping (closes the last collision gap) + barrel provenance in `code_query explain`.**
+### Changed
+- **Cross-file named-call scoping (#2).** A plain call to a named import (`import {foo} from './m'; foo()`) now resolves `foo` to **m's** def, not the global last-wins `name_to_idx` that false-matched a same-named function in an unrelated file — the same collision class v1.14.0 fixed for member calls, now applied to plain identifier calls. Extractor tags the call ref with `_js_call_of={stem,spec,imported}` (mirrors `_js_member_of`); assembly resolves to `defs_by_stem[stem][name]` before global fallthrough. A named import that isn't a def in the bound module (type-only import, re-export) is DROPPED, not global-matched. Non-import plain calls unchanged.
+### Added
+- **Barrel provenance in `code_query explain` (#3).** A flattened importer->provider edge (added when an import lands on a barrel) now records `via=<barrel basename>`. `code_query explain` renders it as `(via barrel.ts)` so the hop path is visible instead of looking like a direct import. `add_edge` gained an optional `via` field (None on every direct edge — no payload bloat).
+### Notes
+- `test/code_graph_tsjs_resolution_test.sh` extended with a #2 named-call collision assertion (`collidedCall()` -> callA.ts NOT callB.ts) + a #3 provenance assertion (flattened barrel edge carries `via=barrel.ts`). Original `code_graph_tsjs_test.sh` + `code_graph_tsjs_resolution_test.sh` (all prior asserts) + bash/json/md all still PASS — no regression.
+
+---
+
 ## 1.14.0 — 2026-08-23
 
 **JS/TS resolution depth — the code graph now resolves tsconfig `paths` aliases + workspace globs, hops barrel re-exports, and scopes member calls to the bound module. The JS/TS graph is now useful on real monorepo/agent codebases, not just relative-import toy trees.**
