@@ -163,7 +163,7 @@ fail-soft, rest of retrieval unaffected). **Never** grep+read whole files for a
 structure question over unknown AST-modelled source when the graph can answer it scoped.
 
 **Coverage (CAPPED — do NOT index the world):** big-six + agent-config —
-**python / bash / json / markdown** now (TS/JS = phase 2). 40-language parity is
+**python / bash / json / markdown / JS / TS** (JS/JSX/TS/TSX). 40-language parity is
 Graphify's PRODUCT need, NOT ours. Go/Rust/Java/C#/C++ + niche langs
 (fortran/ocaml/pascal/zig/etc) are **add-on-demand**: add a `parse_<lang>` + 2
 lines (`LANG_BY_EXT` + `PARSERS`) ONLY when a real buyer file exists — the

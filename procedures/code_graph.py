@@ -36,7 +36,7 @@ NODE/EDGE SCHEMA (code_graph_v1)
   edges (similarity): [] empty — code is structural only.
 
 SCOPE DECISION (CAPPED — do NOT index the world)
-  Coverage = big-six + agent-config: python/bash/json/markdown NOW; TS/JS phase 2.
+  Coverage = big-six + agent-config: python/bash/json/markdown/JS/TS SHIPPED.
   40-language parity is Graphify's PRODUCT need, NOT ours. Go/Rust/Java/C#/C++ +
   niche langs (fortran/ocaml/pascal/zig/etc) are ADD-ON-DEMAND: add a
   parse_<lang> + 2 lines (LANG_BY_EXT + PARSERS) ONLY when a real buyer file
@@ -107,9 +107,10 @@ LANG_BY_EXT = {
     ".sh": "bash", ".bash": "bash",
     ".json": "json",
     ".md": "markdown", ".markdown": "markdown",
-    # scaffolded — enable as each grammar's query is written:
-    # ".js": "javascript", ".jsx": "javascript",
-    # ".ts": "typescript", ".tsx": "tsx",
+    ".js": "javascript", ".jsx": "javascript",
+    ".mjs": "javascript", ".cjs": "javascript",
+    ".ts": "typescript", ".tsx": "tsx",
+    # scaffolded — add-on-demand (add a parse_<lang> + 2 lines per scope doc):
     # ".go": "go", ".rs": "rust",
 }
 
@@ -666,8 +667,212 @@ def parse_markdown(src: bytes, rel: str, parser):
     walk(root)
     return defs, refs
 
+# ── AST extraction (javascript / typescript / jsx / tsx) ─────────────────
+# One extractor serves all four: the tree-sitter node types overlap (function_
+# declaration / class_declaration / import_statement / call_expression are
+# identical across the js/ts/tsx grammars; the parser OBJECT differs per grammar
+# via _ts_get_parser, but the walk is the same). TS-only nodes (interface_
+# declaration / type_alias_declaration) are captured as def nodes but need no
+# special edge logic in v1.
+#
+# Structural signal (verified against the live grammar walk):
+#   DEFS:
+#     function_declaration (name field)                 -> function
+#     variable_declarator whose value is arrow_function
+#       or function_expression (name = declared ident)  -> function
+#     method_definition (property_identifier) in a class -> method (Class.method)
+#     class_declaration (name)                           -> class
+#     interface_declaration / type_alias_declaration     -> type (TS only)
+#   inherits:
+#     class_heritage -> extends -> identifier            -> inherits edge
+#   imports:
+#     import_statement trailing string->string_fragment  -> imports (module path)
+#     call_expression whose fn ident == require + string  -> imports (CommonJS)
+#     -> resolve module path to a graph-known file by BASENAME (strip ./ ../,
+#        try .js/.jsx/.ts/.tsx + index.*). Bare pkg names / node_modules DROP
+#        (external, like bash externals / json external path-values).
+#   calls:
+#     call_expression fn = plain identifier               -> calls (callee)
+#     call_expression fn = member_expression (obj.method)  -> calls (last segment)
+#
+# Enclosing-qualname tracking = same name-stack walk as parse_python. Zero LLM.
+# Clean-room; graphify's extractors/ JS/TS + resolution.py (Apache-2.0) consulted
+# as REFERENCE ONLY (their 30+ _js_* helpers are wired to their store; v1 does
+# BASENAME resolution, not tsconfig-alias/workspace-glob — that's a store-specific
+# product need, not required for the cross-file import/call/inherits edges).
+_JS_EXTS = (".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs")
+
+def _js_module_basename(spec: str):
+    """A JS/TS import/require module specifier -> a basename candidate for
+    matching a graph-known file node, or None if it's an EXTERNAL package.
+    Relative ('./util', '../lib/bar') -> keep final path component, strip ext,
+    return the stem (assembly resolves by file-node basename). Bare specifiers
+    ('react', '@scope/pkg', 'node:fs') -> None (external -> DROP)."""
+    if not spec:
+        return None
+    spec = spec.strip().strip('"').strip("'")
+    if not spec:
+        return None
+    # external: bare package name / scoped pkg / node: builtin (not path-like)
+    if not (spec.startswith("./") or spec.startswith("../") or spec.startswith("/")):
+        return None
+    base = spec.replace("\\", "/").rstrip("/").split("/")[-1]
+    if not base:
+        return None  # e.g. import from './dir/' -> index.* (unresolved by basename v1)
+    # strip a known extension so './util' and './util.js' both -> 'util'
+    for ext in _JS_EXTS:
+        if base.endswith(ext):
+            base = base[: -len(ext)]
+            break
+    return base or None
+
+def parse_javascript(src: bytes, rel: str, parser):
+    """Return (defs, refs) for one JS/TS/JSX/TSX file. See module-header comment
+    for the node-type map. from_qual = enclosing def qualname (or '<module>');
+    resolution to idx is deferred to assemble_graph. Module-path imports carry a
+    STEM in to_name (assembly matches it against file-node basenames, last-wins);
+    external (bare-pkg) specifiers are dropped in this extractor, never emitted."""
+    tree = parser.parse(src)
+    root = tree.root_node
+    defs, refs = [], []
+
+    def enclosing_qual(stack):
+        return ".".join(stack) if stack else "<module>"
+
+    def add_def(kind, name, node, stack):
+        qual = ".".join(stack + [name])
+        defs.append({"kind": kind, "name": name, "file": rel,
+                     "line": _line(node), "qualname": qual})
+        return qual
+
+    def callee_name(call_node):
+        """call_expression -> callee bare name (plain ident, or member_expression
+        last property), or None for computed/complex callees."""
+        fn = call_node.child_by_field_name("function")
+        if fn is None:
+            return None
+        if fn.type == "identifier":
+            return _txt(fn, src)
+        if fn.type == "member_expression":
+            prop = fn.child_by_field_name("property")
+            if prop is not None and prop.type in ("property_identifier", "identifier"):
+                return _txt(prop, src)
+        return None
+
+    def module_str(imp_node):
+        """import_statement / import_clause-bearing node -> the module specifier
+        string (from the trailing `string`->`string_fragment`)."""
+        src_node = imp_node.child_by_field_name("source")
+        target = src_node if src_node is not None else None
+        if target is None:
+            for c in imp_node.children:
+                if c.type == "string":
+                    target = c
+                    break
+        if target is None:
+            return None
+        for c in target.children:
+            if c.type == "string_fragment":
+                return _txt(c, src)
+        return _txt(target, src)
+
+    def walk(node, stack):
+        for child in node.children:
+            t = child.type
+            if t == "function_declaration" or t == "generator_function_declaration":
+                nm = child.child_by_field_name("name")
+                name = _txt(nm, src) if nm else "<anon>"
+                kind = "method" if stack else "function"
+                q = add_def(kind, name, child, stack)
+                walk(child, stack + [name])
+            elif t == "class_declaration":
+                nm = child.child_by_field_name("name")
+                name = _txt(nm, src) if nm else "<anon>"
+                q = add_def("class", name, child, stack)
+                # inherits: class_heritage -> extends <identifier|member_expr>
+                for gc in child.children:
+                    if gc.type == "class_heritage":
+                        for h in gc.children:
+                            if h.type in ("identifier", "member_expression"):
+                                base = _txt(h, src).split(".")[-1]
+                                refs.append({"label": "inherits", "from_qual": q,
+                                             "to_name": base, "line": _line(child),
+                                             "provenance": "inferred"})
+                walk(child, stack + [name])
+            elif t in ("interface_declaration", "type_alias_declaration"):
+                nm = child.child_by_field_name("name")
+                if nm is not None:
+                    add_def("type", _txt(nm, src), child, stack)
+                walk(child, stack)
+            elif t == "method_definition":
+                nm = child.child_by_field_name("name")
+                name = _txt(nm, src) if nm else "<anon>"
+                add_def("method", name, child, stack)
+                walk(child, stack + [name])
+            elif t in ("lexical_declaration", "variable_declaration"):
+                # const/let/var: a declarator bound to an arrow/function_expr
+                # is a named function def; still descend for nested calls.
+                for dcl in child.children:
+                    if dcl.type != "variable_declarator":
+                        continue
+                    nm = dcl.child_by_field_name("name")
+                    val = dcl.child_by_field_name("value")
+                    if (nm is not None and nm.type == "identifier" and val is not None
+                            and val.type in ("arrow_function", "function_expression",
+                                             "function")):
+                        fname = _txt(nm, src)
+                        add_def("method" if stack else "function", fname, dcl, stack)
+                        walk(val, stack + [fname])
+                    else:
+                        walk(dcl, stack)
+            elif t == "import_statement":
+                mod = module_str(child)
+                stem = _js_module_basename(mod) if mod else None
+                if stem:
+                    refs.append({"label": "imports",
+                                 "from_qual": enclosing_qual(stack),
+                                 "to_name": stem, "line": _line(child),
+                                 "provenance": "inferred", "_js_import": True})
+                # external (stem None) -> DROP, no edge.
+            elif t == "call_expression":
+                fn = child.child_by_field_name("function")
+                # CommonJS require('./x') -> imports edge
+                if fn is not None and fn.type == "identifier" and _txt(fn, src) == "require":
+                    args = child.child_by_field_name("arguments")
+                    modstr = None
+                    if args is not None:
+                        for a in args.children:
+                            if a.type == "string":
+                                for sc in a.children:
+                                    if sc.type == "string_fragment":
+                                        modstr = _txt(sc, src)
+                                        break
+                                break
+                    stem = _js_module_basename(modstr) if modstr else None
+                    if stem:
+                        refs.append({"label": "imports",
+                                     "from_qual": enclosing_qual(stack),
+                                     "to_name": stem, "line": _line(child),
+                                     "provenance": "inferred", "_js_import": True})
+                    walk(child, stack)
+                    continue
+                callee = callee_name(child)
+                if callee and callee.isidentifier():
+                    refs.append({"label": "calls",
+                                 "from_qual": enclosing_qual(stack),
+                                 "to_name": callee, "line": _line(child),
+                                 "provenance": "inferred"})
+                walk(child, stack)
+            else:
+                walk(child, stack)
+
+    walk(root, [])
+    return defs, refs
+
 PARSERS = {"python": parse_python, "bash": parse_bash, "json": parse_json,
-           "markdown": parse_markdown}
+           "markdown": parse_markdown,
+           "javascript": parse_javascript, "typescript": parse_javascript,
+           "tsx": parse_javascript}
 
 
 # ── graph assembly ─────────────────────────────────────────────
@@ -713,8 +918,14 @@ def assemble_graph(parsed, root, built_at_sha):
         return idx
 
     # pass 1: all def + file nodes (so cross-file refs can resolve)
+    file_stem_idx = {}   # basename-stem (no ext) -> file node idx (JS import target)
     for rel, defs, _refs in parsed:
-        file_idx[rel] = add_node("file", os.path.basename(rel), rel, 1)
+        base = os.path.basename(rel)
+        file_idx[rel] = add_node("file", base, rel, 1)
+        stem = base.rsplit(".", 1)[0] if "." in base else base
+        # first-wins for a stem so a deterministic target; index/main are common,
+        # keep them resolvable but don't clobber a more specific same-stem file.
+        file_stem_idx.setdefault(stem, file_idx[rel])
         for d in defs:
             add_node(d["kind"], d["name"], d["file"], d["line"])
 
@@ -770,6 +981,18 @@ def assemble_graph(parsed, root, built_at_sha):
                 subj = r["from_qual"].split(".")[-1]
                 a = name_to_idx.get(subj, fi)  # enclosing def, else the file
             src_name = subj
+            # JS/TS imports resolve to a FILE node by basename-stem (module path
+            # './util' -> util.js file node), not to a def/name. Try the stem map
+            # first; unresolved (external pkg already dropped in extractor, so an
+            # unresolved here is an in-repo file we didn't index) -> DROP.
+            if r.get("_js_import"):
+                a = fi  # the importing file is the subject
+                src_name = os.path.basename(rel)
+                tgt = file_stem_idx.get(r["to_name"])
+                if tgt is not None and tgt != fi:
+                    add_edge(a, tgt, "imports", src_name, r["to_name"], "extracted")
+                    _note_cross_project(a, tgt, "imports")
+                continue
             tgt = name_to_idx.get(r["to_name"])
             if tgt is not None:
                 add_edge(a, tgt, r["label"], src_name, r["to_name"], r.get("provenance", "extracted") if is_json else "extracted")

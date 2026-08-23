@@ -4,6 +4,19 @@ All notable changes to dinomem-neuron are documented here.
 
 ---
 
+## 1.13.0 — 2026-08-23
+
+**JS/TS join the code graph — the #1 language + every agent framework/MCP surface is now structurally navigable. One `parse_javascript` extractor serves JS/JSX/TS/TSX with cross-file import/require, cross-file calls, and class inheritance.**
+### Added
+- **JavaScript/TypeScript extractor.** `code_graph.py` now parses `.js`/`.jsx`/`.mjs`/`.cjs`/`.ts`/`.tsx` via tree-sitter (one `parse_javascript` — the node types overlap across the js/ts/tsx grammars). Extracts: `function_declaration` + arrow/function-expression `variable_declarator` + `method_definition` → def nodes (`file:line`); `class_declaration` + `class_heritage`→`extends` → `inherits` edges; ESM `import_statement` **and** CommonJS `require()` → `imports` edges resolved to the target file node by basename-stem (`./util` → `util.ts`); `call_expression` (plain identifier or `member_expression` last segment) → `calls` edges. Bare/external specifiers (`react`, `node:fs`, `@scope/pkg`) are dropped as noise, same convention as bash externals. So `code_query explain <symbol>` and `hybrid_recall`'s CODE leg now return JS/TS hits — e.g. `collectOpenNotes` resolves to `handler.ts:84` with its cross-file callers/callees.
+- **JS/TS extractor test** (`test/code_graph_tsjs_test.sh`, NEW): deterministic fixture asserting cross-file ESM import, CommonJS `require`, cross-file call, class `extends`, TS import, and external-package drop — for both `.js` and `.ts`. SKIPs cleanly if the grammar is absent.
+### Changed
+- **Scope-decision doc flipped to shipped.** `code_graph.py` header, `TOOLS.md`, and the retrieval-routing skill now record coverage as **python/bash/json/markdown/JS/TS SHIPPED**; Go/Rust/Java/C#/C++ + niche langs remain **add-on-demand** (add a `parse_<lang>` + 2 lines only when a real buyer file exists). Do NOT index the world.
+### Notes
+- v1 uses **basename module resolution** (not tsconfig path-aliases / workspace globs) — enough for the cross-file import/call/inherits edges; alias resolution is a later add if a buyer needs it.
+
+---
+
 ## 1.12.0 — 2026-08-23
 
 **Code-structure graph goes multi-language — bash, JSON/config, and markdown now carry real edges, plus a prompt-anchor index, per-file freshness, and a path-scoped ingestion exemption. The ZERO-LLM code graph now models the whole agent-config surface, not just Python.**
