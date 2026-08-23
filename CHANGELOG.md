@@ -4,6 +4,16 @@ All notable changes to dinomem-neuron are documented here.
 
 ---
 
+## 1.17.0 — 2026-08-23
+
+**Cross-agent serialization and embedding reliability under multi-agent load.**
+### Added
+- **Cross-agent serialization for heavy crons** — `dinomem_run.sh` (via `dinomem_lock.sh`) now gates heavy cron jobs (memory extract, session ingest, code-graph refresh) behind a flock, preventing duplicate runs when multiple agents share the same workspace.
+- **TEI routing fix for multi-agent cold-start** — `_embed.py` now routes through TEI when TEI is running, so the first embedding call in a fresh agent session uses the fast server path instead of spinning up a redundant in-process embedder.
+- **embed.lock flock for TEI-down fallback serialization** — tool-level flock on `embed.lock` serializes the local fallback embedder when TEI is down, preventing concurrent model loads from racing.
+
+---
+
 ## 1.16.0 — 2026-08-23
 
 **12 new code-graph languages — go / rust / java / cpp / php / csharp / ruby / r / css / html / sql / yaml. The code graph now indexes structure across a real polyglot repo, not just the python/JS/TS core. Adding a language is extractor-only: ingestion (code_graph) + search (code_query, hybrid_recall CODE leg) are language-agnostic and traverse the graph without re-parsing, so a new lang works end-to-end automatically.**
