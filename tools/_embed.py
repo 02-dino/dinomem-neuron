@@ -228,21 +228,34 @@ def get_embeddings():
             print(f"[_embed] TEI failed ({_e}), falling back to local", file=_sys.stderr)
 
     # Path 2: local HuggingFace model (original behaviour)
+    # Serialize concurrent local model loads (TEI-down scenario).
+    # flock held only during cold load; cached _embeddings skips this path.
+    import fcntl as _fcntl
+    _lock_path = "/tmp/dinomem_embed.lock"
+    _lock_fd = open(_lock_path, "w")
     try:
-        Prefixed = _build_prefixed_class()
-    except Exception as e:
-        raise SemanticUnavailable(
-            "semantic rank needs langchain-huggingface + sentence-transformers "
-            "(pip install langchain-huggingface langchain-chroma sentence-transformers). "
-            f"import failed: {e}"
+        _fcntl.flock(_lock_fd, _fcntl.LOCK_EX)
+        # re-check cache under lock (another process may have loaded while we waited)
+        if _embeddings is not None:
+            return _embeddings
+        try:
+            Prefixed = _build_prefixed_class()
+        except Exception as e:
+            raise SemanticUnavailable(
+                "semantic rank needs langchain-huggingface + sentence-transformers "
+                "(pip install langchain-huggingface langchain-chroma sentence-transformers). "
+                f"import failed: {e}"
+            )
+        path, is_local = _resolve_local_model()
+        _embeddings = Prefixed(
+            model_name=path,
+            model_kwargs={"device": "cpu", "local_files_only": is_local},
+            encode_kwargs={"normalize_embeddings": True},
         )
-    path, is_local = _resolve_local_model()
-    _embeddings = Prefixed(
-        model_name=path,
-        model_kwargs={"device": "cpu", "local_files_only": is_local},
-        encode_kwargs={"normalize_embeddings": True},
-    )
-    return _embeddings
+        return _embeddings
+    finally:
+        _fcntl.flock(_lock_fd, _fcntl.LOCK_UN)
+        _lock_fd.close()
 
 
 def get_chroma(persist_dir, collection_name, collection_metadata=None, stamp_model=True):
