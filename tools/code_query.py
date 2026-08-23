@@ -35,6 +35,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 from collections import defaultdict, deque
 from pathlib import Path
@@ -93,6 +94,67 @@ def _staleness(graph) -> str | None:
         return (f"[stale] code graph built at {built[:8]} but HEAD is {head[:8]} — "
                 f"run procedures/code_graph.py to refresh")
     return None
+
+def _graph_built_at_epoch(graph) -> float | None:
+    """Graph build time as epoch seconds (from meta.built_at ISO), else None."""
+    meta = _meta(graph)
+    ts = meta.get("built_at")
+    if not ts:
+        return None
+    try:
+        from datetime import datetime
+        return datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp()
+    except Exception:
+        return None
+
+def _file_freshness(graph, files) -> list[str]:
+    """Per-file warnings: any source file whose mtime is NEWER than the graph's
+    built_at was edited since the graph was built, so its nodes/edges may be
+    stale even when built_at_sha == HEAD (uncommitted edits don't move HEAD).
+    Returns one warning line per stale file. Fail-open: missing built_at or an
+    unstatable file yields nothing. `root` anchors relative file paths."""
+    built = _graph_built_at_epoch(graph)
+    if built is None:
+        return []
+    root = _meta(graph).get("root") or "."
+    warns = []
+    for rel in files:
+        if not rel or rel in ("?", None):
+            continue
+        try:
+            ap = rel if os.path.isabs(rel) else os.path.join(root, rel)
+            if os.path.getmtime(ap) > built + 1:  # 1s slack for fs granularity
+                warns.append(
+                    f"⚠️ {rel} edited since graph build — refresh via "
+                    f"procedures/code_graph.py before trusting this")
+        except Exception:
+            continue
+    return warns
+
+def _result_files(res) -> list[str]:
+    """Extract the distinct source file paths a result surfaces, so freshness can
+    be checked per-file. Parses the '(file:line)' suffix _fmt_node emits."""
+    import re
+    seen, out = set(), []
+    def _grab(s):
+        if not isinstance(s, str):
+            return
+        m = re.search(r"\(([^()]+):\d+\)\s*$", s)
+        if m:
+            f = m.group(1)
+            if f not in seen:
+                seen.add(f); out.append(f)
+    if not isinstance(res, dict):
+        return out
+    _grab(res.get("node"))
+    for grp in (res.get("outgoing") or {}).values():
+        for item in grp:
+            _grab(item.get("target") if isinstance(item, dict) else item)
+    for cb in res.get("called_by") or []:
+        _grab(cb.get("source") if isinstance(cb, dict) else cb)
+    for hop in res.get("path") or []:
+        _grab(hop.get("node") if isinstance(hop, dict) else hop)
+    return out
 
 
 # ── scope + node helpers ─────────────────────────────────────────────────────
@@ -202,64 +264,6 @@ def projects(graph):
             "projects": [{"name": p, "nodes": counts.get(p, 0)} for p in projs],
             "depends_on": pedges}
 
-# ── verb: card (ZERO-LLM "what is this script about") ────────────────
-def card(graph, target, path_prefix=None, project=None):
-    """One-screen ZERO-LLM summary of a SCRIPT (file), assembled purely from
-    structural signals already in the graph — no LLM, no hallucination:
-      • doc      : the module docstring first line (author-written)
-      • defines  : the public functions/classes the file contains (top-level,
-                   non-underscore), the file's own API surface
-      • works_with: distinct OTHER files this file's code calls/imports into
-                    (cross-file resolved edges), i.e. its real collaborators
-    `target` is matched as a file first (basename or path), then falls back to
-    the file that contains a matching symbol."""
-    nodes = _nodes(graph)
-    # resolve to a FILE node: exact basename, else path endswith, else the file
-    # owning a matched symbol.
-    fi = None
-    t = target
-    for i, n in enumerate(nodes):
-        if n.get("kind") != "file" or not _in_scope(n, path_prefix, project):
-            continue
-        if n.get("name") == t or n.get("file", "").endswith(t) or n.get("file") == t:
-            fi = i; break
-    if fi is None:
-        idx, node = _find(graph, target, path_prefix, project)
-        if idx is not None:
-            fpath = node.get("file")
-            for i, n in enumerate(nodes):
-                if n.get("kind") == "file" and n.get("file") == fpath:
-                    fi = i; break
-    if fi is None:
-        return {"ok": False, "target": target, "reason": "file not found"}
-    fnode = nodes[fi]
-    fpath = fnode.get("file")
-    # defines: top-level functions/classes in THIS file, public first
-    defines = [n.get("name") for n in nodes
-               if n.get("file") == fpath and n.get("kind") in ("function", "class")
-               and not n.get("name", "").startswith("_")]
-    # works_with: distinct OTHER files reached by resolved calls/imports whose
-    # source node lives in THIS file. Dedup by file, keep project tag.
-    edges = graph.get("relation_edges", [])
-    own_idx = {i for i, n in enumerate(nodes) if n.get("file") == fpath}
-    seen, works = set(), []
-    for e in edges:
-        if e.get("label") not in ("calls", "imports"):
-            continue
-        a, b = e.get("a", -1), e.get("b", -1)
-        if a not in own_idx or not (0 <= b < len(nodes)):
-            continue
-        tgt = nodes[b]
-        tf = tgt.get("file")
-        if not tf or tf == fpath or tf in seen:
-            continue
-        seen.add(tf)
-        works.append({"file": tf, "project": tgt.get("project"),
-                      "basename": os.path.basename(tf)})
-    return {"ok": True, "target": target, "file": fpath,
-            "project": fnode.get("project"), "doc": fnode.get("doc", ""),
-            "defines": defines, "works_with": works}
-
 # ── verb: path (shortest edge path A -> B) ───────────────────────────
 def find_path(graph, a_sym, b_sym, path_prefix, max_hops=6, project=None):
     """Shortest directed edge path a_sym -> b_sym over relation edges. BFS on the
@@ -334,27 +338,6 @@ def _render_projects(res):
             out.append(f"    {e['from']} ─{'/'.join(e.get('via',[]))}→ {e['to']}  (w={e['weight']})")
     return "\n".join(out)
 
-def _render_card(res):
-    if not res["ok"]:
-        return f"✗ {res['target']}: {res['reason']}"
-    proj = res.get("project")
-    ptag = f" «{proj}»" if proj else ""
-    out = [f"◉ {os.path.basename(res['file'])}{ptag}  ({res['file']})"]
-    out.append(f"  about   : {res['doc'] or '(no module docstring)'}")
-    if res["defines"]:
-        shown = res["defines"][:12]
-        more = f"  (+{len(res['defines']) - len(shown)} more)" if len(res["defines"]) > len(shown) else ""
-        out.append(f"  defines : {', '.join(shown)}{more}")
-    else:
-        out.append("  defines : (no public functions/classes)")
-    if res["works_with"]:
-        ww = [f"{w['basename']}" + (f" «{w['project']}»" if w.get('project') else "")
-              for w in res["works_with"][:15]]
-        out.append(f"  works with: {', '.join(ww)}")
-    else:
-        out.append("  works with: (no resolved cross-file collaborators)")
-    return "\n".join(out)
-
 def _render_path(res):
     if not res["ok"]:
         return f"✗ {res['reason']}"
@@ -364,6 +347,66 @@ def _render_path(res):
         out.append(f"  {i}. {arrow}{s['node']}")
     return "\n".join(out)
 
+
+# ── verb: anchors (grep-backed prompt-anchor sidecar lookup) ───────────────
+# The heavy behavioral logic in install.sh heredoc prompts + cron JSON payloads
+# (Advancer/Improver 'Step N:', 'SCOPE LOCK', 'FAIRNESS ORDERING', role names) is
+# ONE opaque string blob to the AST. code_anchors.py greps those labels into a
+# sidecar anchors.json; this verb queries it so 'where does the Advancer decide
+# selection order' is a file:line lookup. Fuzzy substring/word match on label.
+def _anchors_path(code_json: Path) -> Path:
+    return code_json.parent / "anchors.json"
+
+def anchors(query, db_path, limit=20):
+    ap = _anchors_path(Path(db_path))
+    if not ap.exists():
+        return {"ok": False, "reason": f"no anchor index at {ap} — run "
+                f"procedures/code_anchors.py to build it"}
+    try:
+        data = json.loads(ap.read_text(encoding="utf-8", errors="replace"))
+    except Exception as e:
+        return {"ok": False, "reason": f"anchor index unreadable: {e}"}
+    items = data.get("anchors", [])
+    q = (query or "").strip().lower()
+    qwords = [w for w in re.split(r"\W+", q) if w]
+    scored = []
+    for a in items:
+        label = (a.get("label") or "").lower()
+        ctx = (a.get("context") or "").lower()
+        hay = label + " " + ctx
+        if q and q in label:
+            score = 3.0
+        elif qwords and all(w in hay for w in qwords):
+            score = 2.0
+        elif qwords and any(w in label for w in qwords):
+            score = 1.5
+        elif qwords and any(w in ctx for w in qwords):
+            score = 1.0
+        else:
+            score = 0.0
+        if score > 0:
+            scored.append((score, a))
+    scored.sort(key=lambda t: -t[0])
+    hits = [{"label": a["label"], "where": f"{a['file']}:{a['line']}",
+             "kind": a.get("kind"), "context": a.get("context", "")}
+            for _s, a in scored[:limit]]
+    return {"ok": True, "query": query, "total_indexed": len(items),
+            "match_count": len(scored), "hits": hits,
+            "built_at": data.get("built_at")}
+
+def _render_anchors(res):
+    if not res.get("ok"):
+        return f"✗ {res.get('reason', 'anchors error')}"
+    if not res["hits"]:
+        return (f"✗ no anchor matched '{res['query']}' "
+                f"({res['total_indexed']} indexed)")
+    out = [f"◉ anchors for '{res['query']}' ({res['match_count']} match):"]
+    for h in res["hits"]:
+        tag = f"[{h['kind']}] " if h.get("kind") else ""
+        out.append(f"  {tag}{h['label']}  ({h['where']})")
+        if h.get("context"):
+            out.append(f"      {h['context']}")
+    return "\n".join(out)
 
 # ── main ────────────────────────────────────────────────
 def main():
@@ -378,18 +421,29 @@ def main():
     pq.add_argument("text")
     pq.add_argument("--hops", type=int, default=1)
     ppr = sub.add_parser("projects", help="list projects + cross-project depends_on rollup")
-    pc = sub.add_parser("card", help="ZERO-LLM 'what is this script about' (doc + defines + works-with)")
-    pc.add_argument("target", help="script/file (basename or path) or a symbol it defines")
-    for p in (pe, pp, pq, ppr, pc):
+    pan = sub.add_parser("anchors", help="grep-backed prompt-anchor lookup (install.sh heredocs, cron payloads)")
+    pan.add_argument("query")
+    pan.add_argument("--limit", type=int, default=20)
+    for p in (pe, pp, pq, ppr, pan):
         p.add_argument("--db", dest="db", default=str(CODE_JSON),
                        help="code graph json path (default: kb/code_graph/code_graph.json)")
         p.add_argument("--json", action="store_true")
-    for p in (pe, pp, pq, pc):
+    for p in (pe, pp, pq):
         p.add_argument("--path", dest="path_prefix", default=None,
                        help="scope to a file-path prefix (e.g. procedures/)")
         p.add_argument("--project", dest="project", default=None,
                        help="scope to one project (e.g. dinomem-neuron); see `projects` verb")
     args = ap.parse_args()
+
+    if args.verb == "anchors":
+        # anchors read a SIDECAR (anchors.json next to the graph db), not the
+        # graph itself — no graph load / traversal / freshness needed.
+        res = anchors(args.query, args.db, args.limit)
+        if args.json:
+            print(json.dumps(res, indent=2))
+        else:
+            print(_render_anchors(res))
+        return
 
     graph = _open(Path(args.db))
     stale = _staleness(graph)
@@ -397,9 +451,6 @@ def main():
     if args.verb == "projects":
         res = projects(graph)
         rendered = _render_projects(res)
-    elif args.verb == "card":
-        res = card(graph, args.target, args.path_prefix, args.project)
-        rendered = _render_card(res)
     elif args.verb == "explain":
         res = explain(graph, args.symbol, args.hops, args.path_prefix, args.project)
         rendered = _render_explain(res)
@@ -415,13 +466,21 @@ def main():
             res = explain(graph, node.get("name"), args.hops, args.path_prefix, args.project)
             rendered = f"(matched '{node.get('name')}')\n" + _render_explain(res)
 
+    # per-file freshness: files edited since the graph was built (catches
+    # uncommitted edits that leave built_at_sha == HEAD but stale nodes).
+    freshness = _file_freshness(graph, _result_files(res)) if isinstance(res, dict) else []
+
     if args.json:
         if stale:
             res["staleness"] = stale
+        if freshness:
+            res["file_freshness"] = freshness
         print(json.dumps(res, indent=2))
     else:
         if stale:
             print(stale, file=sys.stderr)
+        for w in freshness:
+            print(w, file=sys.stderr)
         print(rendered)
 
 

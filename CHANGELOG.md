@@ -4,6 +4,25 @@ All notable changes to dinomem-neuron are documented here.
 
 ---
 
+## 1.12.0 — 2026-08-23
+
+**Code-structure graph goes multi-language — bash, JSON/config, and markdown now carry real edges, plus a prompt-anchor index, per-file freshness, and a path-scoped ingestion exemption. The ZERO-LLM code graph now models the whole agent-config surface, not just Python.**
+### Added
+- **Bash extractor.** `code_graph.py` now parses `.sh`/`.bash` via tree-sitter: `function_definition` → def nodes (`file:line`), `command` calls to graph-known local functions → `calls` edges, and `source`/`.` → `imports` edges resolving to the sourced file node. External-binary calls (grep/awk/…) are dropped as noise rather than inferred. So `code_query explain <shell_fn>` and `hybrid_recall`'s CODE leg now return shell hits — e.g. `guard_composite_pernote` resolves to `scripts/lib/gate_lib.sh:226` with its callers.
+- **JSON/config extractor.** Nested keys become dotted-path `config_key` nodes (`a.b.c`) with `contains` nesting edges; string values that are graph-known file paths become `references` edges. Config wiring is now navigable structure, not opaque text.
+- **Markdown extractor (code-repo docs only).** ATX headings → section nodes; `](path)` links and fenced-code path lines that name a graph-known file → `documents` doc→code edges. Docs that point at code are now edges (`README.md → auto_session_reset.py`). Memory/notes dirs are excluded by the exemption below, so `_note_`/`_pin_` never enter the code graph.
+- **Prompt-anchor index** (`procedures/code_anchors.py`, NEW; grep-backed, zero-LLM). `install.sh` heredoc prompts and cron JSON payloads are one opaque string to the AST — the `Step N:` / `SCOPE LOCK` / role-name decision points inside are structurally invisible. The scanner greps them into a sidecar (`kb/code_graph/anchors.json`) surfaced by a new `code_query anchors "<query>"` verb → label + `file:line` + context.
+- **Per-file freshness signal** in `code_query`: on top of the existing `[stale]` sha warning, if a queried symbol's source file mtime is newer than the graph's `built_at`, it prints `⚠️ <file> edited since graph build — refresh…` — catching uncommitted edits that leave `built_at_sha == HEAD` but stale nodes.
+- **Daily refresh cron** (`code_graph_refresh`, 4:10 UTC): git-incremental `code_graph.py` then `code_anchors.py`, both fail-soft. On par with `docs_ingest` — the graph + anchors stay current with no manual build.
+### Changed
+- **Path-scoped ingestion exemption.** `code_graph.py` auto-derives exempt prefixes (memory/ · kb/ · docs/ · the data_query source dirs from `catalog.json` · `DINOMEM_DOCS_DIR`) so the code graph never double-ingests dirs owned by memory_search/docs_search/data_query. Env `DINOMEM_CODE_GRAPH_EXEMPT` adds buyer RAG dirs. Verified: 0 nodes under the live `memory/` dir.
+- **`hybrid_recall` classifier widened.** A bare code-symbol-shaped token (snake_case/camelCase/dotted) + do/why/exist now routes to the CODE leg even without a structural keyword — so "what does `guard_composite_pernote` do and why" fuses the shell `file:line` hits with the memory "why". Guarded so plain prose ("why did we decide…") still falls through to relational.
+### Notes
+- **Scope is CAPPED (documented in `code_graph.py` header + retrieval-routing skill):** coverage = big-six + agent-config (python/bash/json/markdown now; TS/JS phase 2). Go/Rust/Java/C#/C++ + niche langs are add-on-demand — add a `parse_<lang>` + 2 lines only when a real buyer file exists. Do NOT index the world.
+- **Tests:** `test/code_graph_{bash,json,markdown}_test.sh`, each self-contained (tmpdir fixtures, install-agnostic resolver, SKIP if tree-sitter absent). All green (5/5, 4/4, 4/4).
+
+---
+
 ## 1.11.2 — 2026-08-23
 
 **Per-note gate keying kills Advancer starvation — a quiet project can no longer be starved of its wake by a busier sibling.**

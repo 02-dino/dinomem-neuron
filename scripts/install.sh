@@ -998,6 +998,15 @@ if [ "$DO_CRON" = 1 ]; then
   # session_ingest is triggered automatically by auto_session_reset.py (every 15 min)
   # No separate cron needed.
 
+  # code_graph refresh — daily at 4:10 UTC (ZERO-LLM, git-incremental so cheap):
+  # re-index code STRUCTURE (procedures/code_graph.py) so code_query stays current,
+  # then rebuild the grep-backed prompt-anchor sidecar (procedures/code_anchors.py)
+  # that indexes install.sh heredoc / cron-payload behavioral labels the AST can't
+  # see. Both fail-soft (tree-sitter missing -> code_graph offline; anchors is pure
+  # stdlib grep). Piggybacked in one cron entry (&&): structure first, anchors after.
+  CODEGRAPH_CRON="10 4 * * * cd $WS && python3 procedures/code_graph.py --path $WS >> logs/code_graph_refresh.log 2>&1 && python3 procedures/code_anchors.py --path $WS >> logs/code_graph_refresh.log 2>&1"
+  upsert_cron "code_graph.py --path" "dinomem-neuron: code-structure graph + prompt-anchor refresh (daily)" "$CODEGRAPH_CRON" "code_graph_refresh cron (daily 4:10 UTC)"
+
   # retrieval_log rollup — daily at 4:15 UTC (no LLM, pure stdlib): compresses
   # dailies older than 30d into monthly rollups + prunes raw, refreshes health.json
   # (routing-quality snapshot: calls/fallback-rate/empty-rate per retrieval tool).

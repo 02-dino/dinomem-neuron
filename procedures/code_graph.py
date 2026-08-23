@@ -35,6 +35,16 @@ NODE/EDGE SCHEMA (code_graph_v1)
          provenance extracted|inferred, source "code_ast"}
   edges (similarity): [] empty — code is structural only.
 
+SCOPE DECISION (CAPPED — do NOT index the world)
+  Coverage = big-six + agent-config: python/bash/json/markdown NOW; TS/JS phase 2.
+  40-language parity is Graphify's PRODUCT need, NOT ours. Go/Rust/Java/C#/C++ +
+  niche langs (fortran/ocaml/pascal/zig/etc) are ADD-ON-DEMAND: add a
+  parse_<lang> + 2 lines (LANG_BY_EXT + PARSERS) ONLY when a real buyer file
+  exists. The scaffold makes that a ~2-line job — so there is no reason to
+  pre-index languages nobody in the install actually ships. Do NOT index the
+  world; a bloated grammar set is slower, heavier, and buys nothing without
+  dogfood files. (Rationale + rulings: _note_project_code-graph-multilang.md.)
+
 USAGE
   python3 procedures/code_graph.py --path <root> [--lang py] [--json]
   (git incremental is step 3; this file ships the FULL-rebuild path first.)
@@ -94,15 +104,104 @@ def ts_available() -> bool:
 # START minimal (python only, proven), scaffold the rest for later steps.
 LANG_BY_EXT = {
     ".py": "python",
+    ".sh": "bash", ".bash": "bash",
+    ".json": "json",
+    ".md": "markdown", ".markdown": "markdown",
     # scaffolded — enable as each grammar's query is written:
     # ".js": "javascript", ".jsx": "javascript",
     # ".ts": "typescript", ".tsx": "tsx",
-    # ".sh": "bash", ".go": "go", ".rs": "rust",
+    # ".go": "go", ".rs": "rust",
 }
 
 SKIP_DIRS = {".git", "__pycache__", "node_modules", "venv", ".venv",
              ".dinomem-snap.git", ".mypy_cache", ".pytest_cache", "dist",
              "build", ".egg-info"}
+
+# ── path-scoped ingestion exemption ──────────────────────────────────────────
+# Dirs already OWNED by another retrieval surface (memory_search, docs_search,
+# data_query) must NOT be re-ingested into the code graph — that would double-
+# index the same content under two routers and clash on recall. We AUTO-DERIVE
+# the exempt-prefix set from EXISTING catalogs (no hand-maintained list):
+#   (a) memory/           -> owned by memory_search (hard default; always)
+#   (b) kb/               -> our own index store (never source code)
+#   (c) docs_ingest DOCS_DIR (rel) -> owned by docs_search (RAG)
+#   (d) data_register catalog source paths -> owned by data_query (SQL)
+# Buyers add their own RAG dirs via env DINOMEM_CODE_GRAPH_EXEMPT (colon-list).
+# Fail-open everywhere: a missing catalog / unreadable file contributes nothing,
+# never crashes the walk. Prefixes are rel-to-root, normalized with trailing "/".
+_EXEMPT_HARD = ("memory/", "kb/")  # always owned by memory_search / index store
+
+def _norm_prefix(p: str) -> str:
+    p = p.replace(os.sep, "/").strip().strip("/")
+    return (p + "/") if p else ""
+
+def derive_exempt_prefixes(root: str) -> set[str]:
+    """Union of hard defaults + docs_ingest DOCS_DIR + data_query catalog source
+    dirs + env override, each as a rel-to-root prefix ('memory/', 'docs/', ...).
+    Every source is best-effort: any failure yields no prefix, never raises."""
+    root_p = Path(root)
+    prefixes = set(_EXEMPT_HARD)
+
+    # (c) docs_search RAG dir (docs_ingest DOCS_DIR). Only exempt when it lives
+    # UNDER root (a shared workspace docs/ dir); an absolute-elsewhere DOCS_DIR
+    # can't collide with this walk anyway.
+    try:
+        docs_dir = os.environ.get("DINOMEM_DOCS_DIR", "").strip() or str(root_p / "docs")
+        dp = Path(docs_dir).expanduser().resolve()
+        rel = os.path.relpath(dp, root_p)
+        if not rel.startswith("..") and rel != ".":
+            prefixes.add(_norm_prefix(rel))
+    except Exception:
+        pass
+
+    # (d) data_query catalog: exempt the DIRECTORY of each registered source file.
+    try:
+        cat = root_p / "kb" / "data_store" / "catalog.json"
+        if cat.exists():
+            data = json.loads(cat.read_text(encoding="utf-8", errors="replace"))
+            entries = data.values() if isinstance(data, dict) else (data or [])
+            for e in entries:
+                if not isinstance(e, dict):
+                    continue
+                for key in ("source", "source_file", "file", "path", "sources"):
+                    val = e.get(key)
+                    if not val:
+                        continue
+                    for src in (val if isinstance(val, list) else [val]):
+                        try:
+                            sp = Path(str(src)).expanduser().resolve()
+                            rel = os.path.relpath(sp.parent, root_p)
+                            if not rel.startswith("..") and rel != ".":
+                                prefixes.add(_norm_prefix(rel))
+                        except Exception:
+                            continue
+    except Exception:
+        pass
+
+    # env override (buyer-supplied colon-list of rel or abs dirs)
+    env = os.environ.get("DINOMEM_CODE_GRAPH_EXEMPT", "").strip()
+    if env:
+        for raw in env.split(os.pathsep):
+            raw = raw.strip()
+            if not raw:
+                continue
+            try:
+                if os.path.isabs(raw):
+                    rel = os.path.relpath(Path(raw).resolve(), root_p)
+                    if rel.startswith("..") or rel == ".":
+                        continue
+                    prefixes.add(_norm_prefix(rel))
+                else:
+                    prefixes.add(_norm_prefix(raw))
+            except Exception:
+                continue
+
+    prefixes.discard("")
+    return prefixes
+
+def _is_exempt(rel: str, prefixes: set[str]) -> bool:
+    r = rel.replace(os.sep, "/").lstrip("./")
+    return any(r.startswith(p) for p in prefixes)
 
 CODE_SUBDIR = os.path.join("kb", "code_graph")
 CODE_JSON = "code_graph.json"
@@ -163,10 +262,16 @@ def walk_code_files(root: str, exts: set[str]) -> list[tuple[str, str, str]]:
     hardcoded dirs."""
     root_p = Path(root)
     patterns = _load_gitignore(root_p)
+    exempt = derive_exempt_prefixes(root)
     out = []
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS
                        and not d.endswith(".egg-info")]
+        # prune exempt dirs at the directory level (cheap; avoids descending
+        # into memory/ kb/ docs/ data_query source dirs entirely)
+        rel_dir = os.path.relpath(dirpath, root)
+        dirnames[:] = [d for d in dirnames
+                       if not _is_exempt(os.path.join(rel_dir, d) if rel_dir != "." else d, exempt)]
         for fn in filenames:
             ext = os.path.splitext(fn)[1].lower()
             lang = exts.get(ext) if isinstance(exts, dict) else None
@@ -175,6 +280,8 @@ def walk_code_files(root: str, exts: set[str]) -> list[tuple[str, str, str]]:
             ap = os.path.join(dirpath, fn)
             rel = os.path.relpath(ap, root)
             if _ignored(rel, fn, patterns):
+                continue
+            if _is_exempt(rel, exempt):
                 continue
             out.append((ap, rel, lang))
     return out
@@ -193,41 +300,8 @@ def _line(node) -> int:
     return node.start_point[0] + 1  # tree-sitter rows are 0-based
 
 
-def _module_doc(root, src: bytes) -> str:
-    """First-line module docstring, ZERO-LLM. The top-of-file string literal
-    (`expression_statement > string`) if present, else ''. First non-empty line
-    only, bounded to 200 chars — a factual author-written purpose line, never
-    LLM-generated. Fail-open: any shape we don't recognize -> ''."""
-    try:
-        for child in root.children:
-            # module docstring is either a bare `string` node (py grammar emits
-            # this at module top) OR an `expression_statement` wrapping one.
-            s = None
-            if child.type == "string":
-                s = child
-            elif child.type == "expression_statement" and child.children \
-                    and child.children[0].type == "string":
-                s = child.children[0]
-            if s is not None:
-                    raw = _txt(s, src).strip().lstrip("rRbBuUfF")
-                    # strip triple (\"\"\" / ''') then single quote delimiters
-                    for q in ('"""', "'''", '"', "'"):
-                        if raw.startswith(q) and raw.endswith(q) and len(raw) >= 2 * len(q):
-                            raw = raw[len(q):-len(q)]
-                            break
-                    for ln in raw.splitlines():
-                        ln = ln.strip()
-                        if ln:
-                            return ln[:200]
-                    return ""
-            if child.type not in ("comment",):
-                break  # only the FIRST statement can be the module docstring
-    except Exception:
-        pass
-    return ""
-
 def parse_python(src: bytes, rel: str, parser):
-    """Return (defs, refs, doc) for one python file.
+    """Return (defs, refs) for one python file.
       defs: [{kind, name, file, line, qualname}]  (qualname = Class.method / func)
       refs: [{label calls|imports|inherits, from_qual, to_name, line, provenance}]
     from_qual is the enclosing def's qualname (or '<module>'). Resolution to idx
@@ -236,7 +310,6 @@ def parse_python(src: bytes, rel: str, parser):
     tree = parser.parse(src)
     root = tree.root_node
     defs, refs = [], []
-    doc = _module_doc(root, src)
 
     def enclosing_qual(stack):
         return ".".join(stack) if stack else "<module>"
@@ -290,10 +363,311 @@ def parse_python(src: bytes, rel: str, parser):
                 walk(child, stack)
 
     walk(root, [])
-    return defs, refs, doc
+    return defs, refs
 
 
-PARSERS = {"python": parse_python}
+# ── AST extraction (bash) ──────────────────────────────────────────
+# Bash has no import system; the structural signal is (1) function_definition
+# nodes and (2) `source`/`.` of another script (an import/source edge) and (3)
+# a command whose name is a graph-known local function (a calls edge). Unresolved
+# command names are DROPPED (every bare word in bash is a 'command' — echo, ls,
+# grep, etc. — so an unresolved-name edge would be almost entirely noise; unlike
+# python where an unresolved call still names a real symbol). Zero LLM; pure AST.
+#
+# Clean-room implementation. Approach cross-checked against graphify's
+# extractors/bash.py + symbol_resolution.resolve_bash_source_edges (Apache-2.0)
+# as REFERENCE only; no code lifted (their extractor is wired to their store).
+_BASH_BUILTINS = {
+    # never emit calls edges for these even if a same-named local fn exists — they
+    # are overwhelmingly the shell builtin, not a user function.
+    "echo", "printf", "cd", "test", "[", "[[", "read", "exit", "return",
+    "local", "export", "set", "unset", "shift", "eval", "source", ".",
+    "true", "false", ":", "trap", "wait", "kill", "exec", "declare",
+    "readonly", "getopts", "shopt", "builtin", "command", "type", "hash",
+    # shell keywords / control words that appear as command_name in the grammar
+    "continue", "break", "then", "else", "elif", "fi", "do", "done",
+    "case", "esac", "while", "until", "for", "if", "function", "in",
+}
+
+def _bash_cmd_name(cmd, src: bytes):
+    """First command_name child's literal text (bash `command` has no 'name'
+    field; child_by_field_name('name') returns the wrong node). None if absent."""
+    for c in cmd.children:
+        if c.type == "command_name":
+            return _txt(c, src).strip()
+    return None
+
+def _bash_source_arg(cmd, src: bytes):
+    """The path argument of a `source`/`.` command -> basename stem for matching.
+    Reads the first string/word sibling after command_name; strips quotes and
+    any leading $VAR/dir components so `"$DIR/lib/gate_lib.sh"` -> 'gate_lib.sh'.
+    Returns the basename (with extension) or None."""
+    arg = None
+    seen_name = False
+    for c in cmd.children:
+        if c.type == "command_name":
+            seen_name = True
+            continue
+        if seen_name and c.type in ("string", "word", "raw_string", "concatenation"):
+            arg = _txt(c, src)
+            break
+    if not arg:
+        return None
+    arg = arg.strip().strip('"').strip("'")
+    # keep only the final path component (basename); ignores $DIR/ prefixes
+    base = arg.replace("\\", "/").rstrip("/").split("/")[-1]
+    return base or None
+
+def parse_bash(src: bytes, rel: str, parser):
+    """Return (defs, refs) for one bash file.
+      defs: function_definition nodes -> {kind function, name, file, line, qualname}
+      refs: calls (command name == a local fn, resolved later) + imports
+            (source/. of another script; to_name = sourced basename).
+    Bash is flat (no nested-class scope); qualname == name. Resolution to idx is
+    deferred to assemble_graph (same contract as python)."""
+    tree = parser.parse(src)
+    root = tree.root_node
+    defs, refs = [], []
+
+    # pass A: collect this file's own function names (enclosing-scope tagging is
+    # flat in bash; a call's from_qual is best-effort the nearest enclosing fn).
+    def collect_defs(node):
+        for child in node.children:
+            if child.type == "function_definition":
+                nm = child.child_by_field_name("name")
+                name = _txt(nm, src).strip() if nm else None
+                if name:
+                    defs.append({"kind": "function", "name": name, "file": rel,
+                                 "line": _line(child), "qualname": name})
+                collect_defs(child)
+            else:
+                collect_defs(child)
+    collect_defs(root)
+
+    # pass B: refs. A command inside a function def is attributed to that fn;
+    # otherwise to '<module>'. imports (source/.) always attribute to '<module>'
+    # (they run at load time). calls to same-file/other-file local fns resolve
+    # in assembly by NAME; builtins + unknown externals are skipped here.
+    def walk_refs(node, enclosing):
+        for child in node.children:
+            if child.type == "function_definition":
+                nm = child.child_by_field_name("name")
+                fn_name = _txt(nm, src).strip() if nm else enclosing
+                walk_refs(child, fn_name or enclosing)
+            elif child.type == "command":
+                cname = _bash_cmd_name(child, src)
+                if cname in ("source", "."):
+                    base = _bash_source_arg(child, src)
+                    if base:
+                        refs.append({"label": "imports", "from_qual": "<module>",
+                                     "to_name": base, "line": _line(child),
+                                     "provenance": "inferred", "_bash_source": True})
+                elif cname and cname not in _BASH_BUILTINS \
+                        and not cname.startswith("$") and "/" not in cname \
+                        and not cname.startswith(("\"", "'")) \
+                        and cname.replace("_", "").replace("-", "").isalnum():
+                    # candidate local-fn call; kept ONLY if it resolves to a
+                    # graph-known function during assembly (unresolved dropped).
+                    refs.append({"label": "calls", "from_qual": enclosing,
+                                 "to_name": cname, "line": _line(child),
+                                 "provenance": "inferred", "_bash_call": True})
+                walk_refs(child, enclosing)
+            else:
+                walk_refs(child, enclosing)
+    walk_refs(root, "<module>")
+    return defs, refs
+
+# ── AST extraction (json / config) ───────────────────────────────────
+# Config files are structural too: a nested key path (channels.telegram.actions)
+# is a navigable location, and a string VALUE that is a path to a file already in
+# the graph is a structural reference (a config wiring code). We model:
+#   (a) each object key -> a `config_key` node id'd by its DOTTED PATH (so
+#       `channels.telegram.actions` is one node, queryable by code_query), with
+#       a `contains` edge parent-key -> child-key (nesting) and file -> top-key.
+#   (b) a string value that resolves to a graph-known file -> `references` edge
+#       from the enclosing key node to that file node.
+# Array indices are NOT keyed (noise); we descend into array elements to catch
+# path-valued strings but don't emit a node per index. data_query-registered
+# dataset json is already excluded by the step-1 walk exemption, so this only
+# fires on real config. Zero LLM; pure AST. Clean-room (graphify json_config ref).
+#
+# Key-node explosion guard: giant generated json (lockfiles, vendored blobs) can
+# have thousands of keys. We cap nested key-nodes per file + depth so a config
+# stays navigable without flooding the graph.
+_JSON_MAX_KEYS_PER_FILE = 400
+_JSON_MAX_DEPTH = 8
+
+def _json_str_value(node, src: bytes):
+    """Literal text of a JSON string node without the surrounding quotes."""
+    for c in node.children:
+        if c.type == "string_content":
+            return _txt(c, src)
+    # empty string "" has no string_content child
+    return "" if node.type == "string" else None
+
+def _looks_like_path(s: str) -> bool:
+    """Cheap filter: a value worth trying to resolve to a file node. Must contain
+    a path separator or a known source extension, and no whitespace/url scheme."""
+    if not s or len(s) > 300 or " " in s or "://" in s or s.startswith("$"):
+        return False
+    return ("/" in s) or s.rsplit(".", 1)[-1].lower() in (
+        "py", "sh", "bash", "js", "ts", "json", "md", "go", "rs")
+
+def parse_json(src: bytes, rel: str, parser):
+    """Return (defs, refs) for one json/config file.
+      defs: config_key nodes (dotted-path name) + the enclosing file node's
+            children; each carries kind 'config_key', name=dotted path, line.
+      refs: `contains` (parent-key -> child-key nesting; resolved by unique
+            dotted-path name) + `references` (key -> a graph-known file whose
+            path == a string value; resolved in assembly by file basename/rel).
+    We id key nodes by DOTTED PATH so nesting is queryable; qualname == path."""
+    tree = parser.parse(src)
+    root = tree.root_node
+    defs, refs = [], []
+    key_count = [0]
+
+    def descend(node, prefix, depth):
+        # node is an object/array/value; prefix is the dotted key path to it.
+        if node.type == "object":
+            for pair in node.children:
+                if pair.type != "pair":
+                    continue
+                key_node = pair.child_by_field_name("key")
+                val_node = pair.child_by_field_name("value")
+                if key_node is None:
+                    continue
+                key = _json_str_value(key_node, src)
+                if key is None:
+                    continue
+                path = f"{prefix}.{key}" if prefix else key
+                if depth <= _JSON_MAX_DEPTH and key_count[0] < _JSON_MAX_KEYS_PER_FILE:
+                    defs.append({"kind": "config_key", "name": path, "file": rel,
+                                 "line": _line(key_node), "qualname": path})
+                    key_count[0] += 1
+                    # nesting edge: parent key path -> this key path
+                    if prefix:
+                        refs.append({"label": "contains", "from_qual": prefix,
+                                     "to_name": path, "line": _line(key_node),
+                                     "provenance": "extracted", "_json_key": True})
+                    else:
+                        # top-level key: file -> key
+                        refs.append({"label": "contains", "from_qual": "<file>",
+                                     "to_name": path, "line": _line(key_node),
+                                     "provenance": "extracted", "_json_topkey": True})
+                if val_node is not None:
+                    _handle_value(val_node, path, depth + 1)
+
+    def _handle_value(val, path, depth):
+        if val.type == "object":
+            descend(val, path, depth)
+        elif val.type == "array":
+            for el in val.children:
+                if el.type in ("object", "array"):
+                    _handle_value(el, path, depth)
+                elif el.type == "string":
+                    _maybe_path_ref(el, path)
+        elif val.type == "string":
+            _maybe_path_ref(val, path)
+
+    def _maybe_path_ref(strnode, path):
+        s = _json_str_value(strnode, src)
+        if s and _looks_like_path(s):
+            base = s.replace("\\", "/").rstrip("/").split("/")[-1]
+            if base:
+                refs.append({"label": "references", "from_qual": path,
+                             "to_name": base, "line": _line(strnode),
+                             "provenance": "inferred", "_json_ref": True})
+
+    # root is a `document` node wrapping the top-level value; descend into its
+    # object child (a top-level array/scalar has no keys -> nothing to extract).
+    for child in root.children:
+        if child.type == "object":
+            descend(child, "", 1)
+            break
+    return defs, refs
+
+# ── AST extraction (markdown) ─ CODE-REPO PATHS ONLY ─────────────────────
+# Markdown in a CODE repo (skills/, github/, project docs) structurally wires
+# docs to code: a SKILL.md that links [x](scripts/foo.sh) or names a script in a
+# fenced code block is DOCUMENTING that code. We model:
+#   (a) each heading -> a `section` node (name = heading text, file:line).
+#   (b) a markdown link [text](path) OR a fenced-code line that is a bare path,
+#       where the path resolves to a graph-known file -> `documents` edge from
+#       the file's doc node to that code file node (unresolved DROPPED, like the
+#       bash/json externals — an out-of-repo link is noise).
+# CRITICAL: memory/ and docs/ are ALREADY exempt (step 1), so this only fires on
+# CODE-REPO markdown, never our _note_/_pin_ files (owned by memory_search) or
+# docs_search's RAG corpus. Structural only — no semantic overlap with those.
+# The block tree splits link URLs into char nodes, so we regex the raw text for
+# link targets + scan code-fence content (cheaper + grammar-version-robust than
+# threading the markdown_inline sub-parser). Zero LLM. Clean-room (graphify ref).
+import re as _re
+_MD_LINK = _re.compile(r"\]\(\s*<?([^)>\s]+)>?\s*(?:\"[^\"]*\")?\)")
+_MD_MAX_SECTIONS = 300
+
+def _md_heading_text(node, src: bytes):
+    """Text of an atx_heading / setext_heading: the inline child's literal."""
+    for c in node.children:
+        if c.type == "inline":
+            return _txt(c, src).strip()
+    # fallback: strip leading #'s from the whole node
+    return _txt(node, src).lstrip("#").strip()
+
+def parse_markdown(src: bytes, rel: str, parser):
+    """Return (defs, refs) for one CODE-REPO markdown file.
+      defs: section nodes (heading text, file:line).
+      refs: `documents` edges (doc -> a graph-known file named by a link target
+            or a code-fence path line; resolved in assembly by basename).
+    from_qual is '<file>' (the doc file node is the documenter); resolution maps
+    it to this file's node. Unresolved targets are DROPPED."""
+    tree = parser.parse(src)
+    root = tree.root_node
+    defs, refs = [], []
+    sec_count = [0]
+    seen_targets = set()
+
+    def add_ref(target, line):
+        base = target.replace("\\", "/").rstrip("/").split("/")[-1]
+        base = base.split("#")[0].split("?")[0]  # strip anchor/query
+        if not base or base in seen_targets:
+            return
+        # only path-like code targets (has an ext we index or a dir separator)
+        low = base.rsplit(".", 1)[-1].lower()
+        if low not in ("py", "sh", "bash", "js", "ts", "tsx", "jsx", "go",
+                       "rs", "json", "md") and "/" not in target:
+            return
+        seen_targets.add(base)
+        refs.append({"label": "documents", "from_qual": "<file>",
+                     "to_name": base, "line": line, "provenance": "inferred",
+                     "_md_ref": True})
+
+    def walk(node):
+        for child in node.children:
+            if child.type in ("atx_heading", "setext_heading"):
+                if sec_count[0] < _MD_MAX_SECTIONS:
+                    txt = _md_heading_text(child, src)
+                    if txt:
+                        name = txt[:120]
+                        defs.append({"kind": "section", "name": name, "file": rel,
+                                     "line": _line(child), "qualname": name})
+                        sec_count[0] += 1
+            elif child.type == "fenced_code_block":
+                for gc in child.children:
+                    if gc.type == "code_fence_content":
+                        for ln in _txt(gc, src).splitlines():
+                            s = ln.strip().strip("`").strip()
+                            # a bare path line inside a code fence
+                            if s and " " not in s and ("/" in s or "." in s):
+                                add_ref(s, _line(gc))
+            elif child.type in ("paragraph", "inline"):
+                for m in _MD_LINK.finditer(_txt(child, src)):
+                    add_ref(m.group(1), _line(child))
+            walk(child)
+    walk(root)
+    return defs, refs
+
+PARSERS = {"python": parse_python, "bash": parse_bash, "json": parse_json,
+           "markdown": parse_markdown}
 
 
 # ── graph assembly ─────────────────────────────────────────────
@@ -323,7 +697,7 @@ def assemble_graph(parsed, root, built_at_sha):
     name_to_idx = {}     # bare name -> idx (for ref resolution; last wins)
     file_idx = {}        # rel -> file node idx
 
-    def add_node(kind, name, rel, line, doc=""):
+    def add_node(kind, name, rel, line):
         nid = _node_id(kind, name, rel, line)
         if nid in idx_of:
             return idx_of[nid]
@@ -333,15 +707,14 @@ def assemble_graph(parsed, root, built_at_sha):
             "file": rel, "line": line, "title": name,
             "snippet": f"{kind} {name} ({rel}:{line})", "degree": 0,
             "project": _derive_project(rel, root),
-            "doc": doc,  # module docstring first line (file nodes only; ZERO-LLM)
         })
         idx_of[nid] = idx
         name_to_idx[name] = idx
         return idx
 
     # pass 1: all def + file nodes (so cross-file refs can resolve)
-    for rel, defs, _refs, doc in parsed:
-        file_idx[rel] = add_node("file", os.path.basename(rel), rel, 1, doc=doc)
+    for rel, defs, _refs in parsed:
+        file_idx[rel] = add_node("file", os.path.basename(rel), rel, 1)
         for d in defs:
             add_node(d["kind"], d["name"], d["file"], d["line"])
 
@@ -376,18 +749,43 @@ def assemble_graph(parsed, root, built_at_sha):
         d["labels"].add(label)
 
     # pass 2: contains (file -> defs) + resolve refs
-    for rel, defs, refs, _doc in parsed:
+    for rel, defs, refs in parsed:
         fi = file_idx[rel]
         for d in defs:
             di = idx_of[_node_id(d["kind"], d["name"], d["file"], d["line"])]
             add_edge(fi, di, "contains", os.path.basename(rel), d["name"], "extracted")
         for r in refs:
-            src_name = r["from_qual"].split(".")[-1]
-            a = name_to_idx.get(src_name, fi)  # enclosing def, else the file
+            # JSON refs carry a DOTTED key path in from_qual and must resolve the
+            # WHOLE path (not the last segment) against name_to_idx; the '<file>'
+            # sentinel is the enclosing file node (top-level key parent).
+            is_json = r.get("_json_key") or r.get("_json_topkey") or r.get("_json_ref")
+            if is_json:
+                if r["from_qual"] == "<file>":
+                    a = fi
+                    subj = os.path.basename(rel)
+                else:
+                    a = name_to_idx.get(r["from_qual"], fi)
+                    subj = r["from_qual"]
+            else:
+                subj = r["from_qual"].split(".")[-1]
+                a = name_to_idx.get(subj, fi)  # enclosing def, else the file
+            src_name = subj
             tgt = name_to_idx.get(r["to_name"])
             if tgt is not None:
-                add_edge(a, tgt, r["label"], src_name, r["to_name"], "extracted")
+                add_edge(a, tgt, r["label"], src_name, r["to_name"], r.get("provenance", "extracted") if is_json else "extracted")
                 _note_cross_project(a, tgt, r["label"])
+            elif r.get("_json_ref"):
+                # a config path-value that points OUTSIDE the graph (external file
+                # or a not-indexed path) -> DROP; an inferred edge to a phantom
+                # file node would be noise, same rationale as bash externals.
+                continue
+            elif r.get("_bash_call") or r.get("_bash_source"):
+                # bash: an unresolved command name is almost always an external
+                # binary (grep/ls/…) or an out-of-graph script, NOT a real in-repo
+                # symbol. Emitting an inferred edge for it would flood the graph
+                # with noise, so DROP it (unlike python, where an unresolved call
+                # still names a meaningful symbol worth an inferred edge).
+                continue
             else:
                 add_edge(a, -1, r["label"], src_name, r["to_name"], "inferred")
 
@@ -411,7 +809,7 @@ def assemble_graph(parsed, root, built_at_sha):
     projects = sorted({n.get("project") for n in nodes if n.get("project")})
 
     lang_counts = {}
-    for _row in parsed:
+    for rel, defs, _ in parsed:
         lang_counts["files"] = lang_counts.get("files", 0) + 1
 
     payload = {
@@ -442,7 +840,7 @@ def _head_sha(root):
 
 
 def _parse_one(ap, rel, lang, errors):
-    """Parse a single file -> (rel, defs, refs, doc) or None on error (recorded)."""
+    """Parse a single file -> (rel, defs, refs) or None on error (recorded)."""
     parser_fn = PARSERS.get(lang)
     if parser_fn is None:
         return None
@@ -450,8 +848,8 @@ def _parse_one(ap, rel, lang, errors):
         parser = _ts_get_parser(lang)
         with open(ap, "rb") as fh:
             src = fh.read()
-        defs, refs, doc = parser_fn(src, rel, parser)
-        return (rel, defs, refs, doc)
+        defs, refs = parser_fn(src, rel, parser)
+        return (rel, defs, refs)
     except Exception as e:
         errors.append({"file": rel, "error": str(e)})
         return None
@@ -500,7 +898,7 @@ def build_full(root, exts, code_json_path, code_db_path):
         r = _parse_one(ap, rel, lang, errors)
         if r is not None:
             parsed.append(r)
-            cache[rel] = {"defs": r[1], "refs": r[2], "doc": r[3], "lang": lang}
+            cache[rel] = {"defs": r[1], "refs": r[2], "lang": lang}
     return _persist(parsed, cache, root, code_json_path, code_db_path, errors)
 
 
@@ -548,9 +946,9 @@ def build_incremental(root, exts, code_json_path, code_db_path):
             continue
         r = _parse_one(ap, rel, lang, errors)
         if r is not None:
-            cache[rel] = {"defs": r[1], "refs": r[2], "doc": r[3], "lang": lang}
+            cache[rel] = {"defs": r[1], "refs": r[2], "lang": lang}
             changed_reparsed += 1
-    parsed = [(rel, v["defs"], v["refs"], v.get("doc", "")) for rel, v in cache.items()]
+    parsed = [(rel, v["defs"], v["refs"]) for rel, v in cache.items()]
     payload = _persist(parsed, cache, root, code_json_path, code_db_path, errors)
     return payload, f"incremental(reparsed={changed_reparsed} dropped={dropped})"
 

@@ -89,9 +89,9 @@ The discriminators below describe **what `hybrid_recall` routes to under the hoo
 epub/md/txt) · "save/remember this doc" · content `>2000 chars`.
 
 **Action:**
-- **Uploaded file:** `python3 DINOMEM_WORKSPACE_PLACEHOLDER/procedures/docs_ingest.py --file <media path>` → confirm.
+- **Uploaded file:** `python3 /root/.openclaw/workspace-analyst/procedures/docs_ingest.py --file <media path>` → confirm.
   The script self-extracts pdf/docx/etc → `docs/<slug>.md`.
-- **Pasted text:** save `docs/<slug>.md` → `python3 DINOMEM_WORKSPACE_PLACEHOLDER/procedures/docs_ingest.py --file docs/<slug>.md` → confirm.
+- **Pasted text:** save `docs/<slug>.md` → `python3 /root/.openclaw/workspace-analyst/procedures/docs_ingest.py --file docs/<slug>.md` → confirm.
 
 **Media path:** inbound uploads land at `~/.openclaw/media/inbound/<uuid>` (from the
 `<media:...>` placeholder); pass that path straight to `--file`.
@@ -114,7 +114,7 @@ query in a workspace · after you've edited source and want callers/callee edges
 current · whenever `code_query` prints a `[stale]` flag (built_at_sha ≠ HEAD) or
 returns empty. It's cheap + git-incremental (re-parses only changed files), so
 refreshing is near-free.
-- `python3 DINOMEM_WORKSPACE_PLACEHOLDER/procedures/code_graph.py --path <root>`
+- `python3 /root/.openclaw/workspace-analyst/procedures/code_graph.py --path <root>`
   (AST, no LLM; `--full` forces a from-scratch rebuild). Default root ladder:
   `--path` arg > `DINOMEM_CODE_ROOTS` env > agent workspace > `~/.openclaw`.
 
@@ -122,7 +122,7 @@ refreshing is near-free.
 hierarchy / where is <fn> defined / how does A reach B" over source — INSTEAD of
 grep+read. Reflex: a code-structure question about this repo's own code → `code_query`
 FIRST, grep only as fallback.
-- `python3 DINOMEM_WORKSPACE_PLACEHOLDER/tools/code_query.py explain <symbol>`
+- `python3 /root/.openclaw/workspace-analyst/tools/code_query.py explain <symbol>`
   (neighborhood: contains/calls/called-by/imports/inherits, each `file:line` +
   EXTRACTED/INFERRED provenance).
 - `... code_query.py path <A> <B>` (shortest edge path A→B).
@@ -162,6 +162,25 @@ graph — no collision); OPTIONAL tree-sitter dep (missing → code_graph offlin
 fail-soft, rest of retrieval unaffected). **Never** grep+read whole files for a
 structure question over unknown AST-modelled source when the graph can answer it scoped.
 
+**Coverage (CAPPED — do NOT index the world):** big-six + agent-config —
+**python / bash / json / markdown** now (TS/JS = phase 2). 40-language parity is
+Graphify's PRODUCT need, NOT ours. Go/Rust/Java/C#/C++ + niche langs
+(fortran/ocaml/pascal/zig/etc) are **add-on-demand**: add a `parse_<lang>` + 2
+lines (`LANG_BY_EXT` + `PARSERS`) ONLY when a real buyer file exists — the
+scaffold makes it a ~2-line job, so there's no reason to pre-index languages
+nobody ships. Bash/json/markdown now DO carry real edges (bash: function defs +
+`source`/call edges; json: nested-key nodes + path-value `references`; markdown:
+code-repo doc→code `documents` edges) — so the earlier "shell call-graph is
+weak" carve-out is now narrower: shell **is** modelled (function defs + `source`
++ local-fn calls), though external-binary calls are still dropped as noise.
+Extractors auto-honor the **path-scoped exemption** (memory/ · docs/ ·
+data_query source dirs excluded so nothing double-ingests; env
+`DINOMEM_CODE_GRAPH_EXEMPT` adds buyer RAG dirs). Behavioral logic buried in
+`install.sh` heredoc prompts / cron payloads (which the AST sees as one opaque
+string) is covered by a grep-backed **prompt-anchor sidecar**:
+`procedures/code_anchors.py` → `code_query anchors "<query>"` returns the
+`Step N:` / `SCOPE LOCK` / role-name label → `file:line`.
+
 ## Structured data → `data_query` (exact SQL)
 
 **When:** row · count · range · filter · sort · aggregate · field lookup · "how
@@ -170,8 +189,8 @@ registered exact data (csv/json/parquet; any structured/semi-structured dataset)
 
 **Action:**
 - **Query:** read `kb/data_store/catalog.json` → pick table(s) by keywords+columns →
-  `python3 DINOMEM_WORKSPACE_PLACEHOLDER/tools/data_query.py --sql "SELECT ... FROM <table> WHERE ..."` (SELECT-only).
-- **Register:** `python3 DINOMEM_WORKSPACE_PLACEHOLDER/procedures/data_register.py --file <path.csv|json|parquet> --name <table> --desc "..." [--keywords a,b,c]`.
+  `python3 /root/.openclaw/workspace-analyst/tools/data_query.py --sql "SELECT ... FROM <table> WHERE ..."` (SELECT-only).
+- **Register:** `python3 /root/.openclaw/workspace-analyst/procedures/data_register.py --file <path.csv|json|parquet> --name <table> --desc "..." [--keywords a,b,c]`.
 
 **Notes:** store = `kb/data_store/` (one duckdb, one table per dataset — NOT a
 category column, NOT a db-per-category); handles structured + semi-structured

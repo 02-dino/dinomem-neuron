@@ -28,6 +28,7 @@ stubs that pass candidates through unranked. Each later step fills ONE stage.
 """
 import argparse
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -71,6 +72,15 @@ def classify(query: str, hint: str | None) -> list[str]:
     # 'what does X do AND why does it exist') routes here, not to bare relational.
     if any(w in q for w in ("function", "method", "class ", " calls", "called by",
                             "imports", "inherits", "defined in", "code", "what calls")):
+        return INTENTS["code"]
+    # bare-symbol + do/why: a query that NAMES a code-symbol-shaped token (snake_case,
+    # camelCase, or dotted) alongside 'do'/'why'/'exist' is the killer 'what does X
+    # do AND why' even without a structural keyword. Now that bash/json/md symbols
+    # are modelled, route these to the code leg so the shell/config 'X' fuses with
+    # the memory 'why'. Guarded on an identifier-shaped token so plain prose ("why
+    # did we decide") still falls through to relational.
+    if any(w in q for w in ("do", "does", "why", "exist", "purpose", "what is")) \
+            and re.search(r"\b\w*(?:_\w+|[a-z][A-Z])\w*\b|\b\w+\.\w+\b", query):
         return INTENTS["code"]
     if any(w in q for w in ("why", "caused", "led to", "depends", "affects", "downstream", "trace", "chain")):
         return INTENTS["relational"]
