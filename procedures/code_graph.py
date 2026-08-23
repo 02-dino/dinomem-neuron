@@ -110,8 +110,23 @@ LANG_BY_EXT = {
     ".js": "javascript", ".jsx": "javascript",
     ".mjs": "javascript", ".cjs": "javascript",
     ".ts": "typescript", ".tsx": "tsx",
-    # scaffolded — add-on-demand (add a parse_<lang> + 2 lines per scope doc):
-    # ".go": "go", ".rs": "rust",
+    # multi-lang batch (2026-08-23): grammars verified present in the installed
+    # tree-sitter-language-pack. c# is SCAFFOLD-ONLY (grammar missing from the
+    # pack -> DownloadError); uncomment .cs the moment `get_parser('c_sharp')`
+    # resolves — parse_java's spec is a near-drop-in template for it.
+    ".go": "go",
+    ".rs": "rust",
+    ".java": "java",
+    ".cpp": "cpp", ".cc": "cpp", ".cxx": "cpp", ".hpp": "cpp",
+    ".hh": "cpp", ".hxx": "cpp",
+    ".php": "php",
+    ".rb": "ruby",
+    ".sql": "sql",
+    ".css": "css",
+    ".html": "html", ".htm": "html",
+    ".R": "r", ".r": "r",
+    ".yaml": "yaml", ".yml": "yaml",
+    ".cs": "csharp",  # pack grammar key is 'csharp' (not 'c_sharp')
 }
 
 SKIP_DIRS = {".git", "__pycache__", "node_modules", "venv", ".venv",
@@ -1166,10 +1181,440 @@ def parse_javascript(src: bytes, rel: str, parser):
         refs.append({"_js_binding_map": js_local_binding})
     return defs, refs
 
+# ── AST extraction (C-family: go / rust / java / cpp / php) ───────────────────
+# These grammars all model the same four structural signals with DIFFERENT node
+# names: a function/method DEF, a class/struct/trait/impl DEF, a CALL expression,
+# an IMPORT/use/include, and (java/cpp/php/rust-impl) an INHERITS/extends. A
+# single generic walker (_cfamily_extract) drives all five off a per-lang SPEC
+# table (node-type -> role), so the only per-lang code is the spec, not a copy
+# of the walk (build-quality DRY). Clean-room: node types verified empirically
+# via get_parser+AST-walk, not lifted from any project.
+#
+# spec keys:
+#   func_defs   : {node_type} -> function/method def (kind derived by nesting)
+#   type_defs   : {node_type: kind} -> class/struct/trait/impl/interface def
+#   calls       : {node_type} -> a call expression (callee = its 'function'/
+#                 'name' field or first identifier-ish descendant)
+#   imports     : {node_type} -> an import/use/include stmt (module = last
+#                 dotted/path segment)
+#   inherits    : {node_type} -> a superclass/base clause under a type def
+
+def _first_ident(node, src, types=("identifier", "type_identifier",
+                                    "field_identifier", "name")):
+    """First descendant whose type is in `types` (BFS, shallow-first). Used to
+    pull a def name or a callee name when the grammar has no clean 'name' field."""
+    q = list(node.children)
+    while q:
+        n = q.pop(0)
+        if n.type in types:
+            return _txt(n, src)
+        q.extend(n.children)
+    return None
+
+def _name_of(node, src):
+    """Def name: prefer a 'name' field, else first identifier descendant."""
+    nm = node.child_by_field_name("name")
+    if nm is not None:
+        return _txt(nm, src)
+    return _first_ident(node, src)
+
+def _callee_of(node, src):
+    """Callee name of a call node: prefer 'function'/'name' field, take the LAST
+    dotted/scoped segment (obj.method -> method, ns::f -> f); else first ident."""
+    fn = node.child_by_field_name("function") or node.child_by_field_name("name")
+    raw = _txt(fn, src) if fn is not None else _first_ident(node, src)
+    if not raw:
+        return None
+    for sep in ("::", ".", "->"):
+        if sep in raw:
+            raw = raw.split(sep)[-1]
+    raw = raw.strip()
+    return raw if raw.isidentifier() else None
+
+def _cfamily_extract(src, rel, parser, spec):
+    """Generic (defs, refs) walk driven by a per-lang SPEC. Same contract as
+    parse_python. Nesting -> method vs function; a type-def on the stack tags
+    its members as methods and its inherits clause to the type qualname."""
+    tree = parser.parse(src)
+    defs, refs = [], []
+    func_defs = spec.get("func_defs", set())
+    type_defs = spec.get("type_defs", {})
+    call_nodes = spec.get("calls", set())
+    import_nodes = spec.get("imports", set())
+    inherit_nodes = spec.get("inherits", set())
+
+    def enclosing_qual(stack):
+        return ".".join(stack) if stack else "<module>"
+
+    def walk(node, stack):
+        for child in node.children:
+            t = child.type
+            if t in type_defs:
+                name = _name_of(child, src) or "<anon>"
+                qual = ".".join(stack + [name])
+                defs.append({"kind": type_defs[t], "name": name, "file": rel,
+                             "line": _line(child), "qualname": qual})
+                # inherits: scan the type def's children for a base/heritage node,
+                # then collect ONLY type-identifier descendants (skip 'extends'/
+                # 'implements'/':'/',' keyword+punctuation tokens the grammar
+                # exposes as siblings). Dedup per type-def so a base named once
+                # isn't emitted twice.
+                seen_bases = set()
+                _ITYPES = ("type_identifier", "identifier", "scoped_type_identifier",
+                           "scoped_identifier", "generic_type", "qualified_name",
+                           "name", "namespaced_name", "constant",
+                           "scope_resolution")
+                for gc in child.children:
+                    if gc.type not in inherit_nodes:
+                        continue
+                    q = list(gc.children)
+                    while q:
+                        h = q.pop(0)
+                        if h.type in _ITYPES:
+                            bn = _txt(h, src).split(".")[-1].split("::")[-1].strip()
+                            bn = bn.split("<")[0]  # strip generic args A<B> -> A
+                            if bn and bn.isidentifier() and bn != name \
+                                    and bn not in seen_bases:
+                                seen_bases.add(bn)
+                                refs.append({"label": "inherits",
+                                             "from_qual": qual, "to_name": bn,
+                                             "line": _line(child),
+                                             "provenance": "inferred"})
+                            continue  # don't descend into a matched type node
+                        q.extend(h.children)
+                walk(child, stack + [name])
+            elif t in func_defs:
+                name = _name_of(child, src) or "<anon>"
+                kind = "method" if stack else "function"
+                qual = ".".join(stack + [name])
+                defs.append({"kind": kind, "name": name, "file": rel,
+                             "line": _line(child), "qualname": qual})
+                walk(child, stack + [name])
+            elif t in call_nodes:
+                callee = _callee_of(child, src)
+                if callee:
+                    refs.append({"label": "calls",
+                                 "from_qual": enclosing_qual(stack),
+                                 "to_name": callee, "line": _line(child),
+                                 "provenance": "inferred"})
+                walk(child, stack)
+            elif t in import_nodes:
+                mod = _first_ident(child, src, types=(
+                    "identifier", "type_identifier", "package_identifier",
+                    "scoped_identifier", "namespace_name", "string_literal",
+                    "interpreted_string_literal", "system_lib_string"))
+                if mod:
+                    mod = mod.strip().strip('"').strip("'").strip("<>")
+                    mod = mod.replace("\\", "/").rstrip("/").split("/")[-1]
+                    for sep in ("::", "."):
+                        if sep in mod:
+                            mod = mod.split(sep)[0]
+                    if mod:
+                        refs.append({"label": "imports",
+                                     "from_qual": enclosing_qual(stack),
+                                     "to_name": mod, "line": _line(child),
+                                     "provenance": "inferred"})
+                walk(child, stack)
+            else:
+                walk(child, stack)
+
+    walk(tree.root_node, [])
+    return defs, refs
+
+_SPEC_GO = {
+    "func_defs": {"function_declaration", "method_declaration"},
+    "type_defs": {"type_declaration": "type"},
+    "calls": {"call_expression"},
+    "imports": {"import_spec"},
+    "inherits": set(),
+}
+_SPEC_RUST = {
+    "func_defs": {"function_item"},
+    "type_defs": {"struct_item": "struct", "trait_item": "trait",
+                  "enum_item": "enum", "impl_item": "impl"},
+    "calls": {"call_expression"},
+    "imports": {"use_declaration"},
+    "inherits": set(),
+}
+_SPEC_JAVA = {
+    "func_defs": {"method_declaration", "constructor_declaration"},
+    "type_defs": {"class_declaration": "class",
+                  "interface_declaration": "interface",
+                  "enum_declaration": "enum"},
+    "calls": {"method_invocation"},
+    "imports": {"import_declaration"},
+    "inherits": {"superclass", "super_interfaces"},
+}
+_SPEC_CPP = {
+    "func_defs": {"function_definition"},
+    "type_defs": {"class_specifier": "class", "struct_specifier": "struct"},
+    "calls": {"call_expression"},
+    "imports": {"preproc_include"},
+    "inherits": {"base_class_clause"},
+}
+_SPEC_PHP = {
+    "func_defs": {"function_definition", "method_declaration"},
+    "type_defs": {"class_declaration": "class",
+                  "interface_declaration": "interface",
+                  "trait_declaration": "trait"},
+    "calls": {"function_call_expression", "member_call_expression",
+              "scoped_call_expression"},
+    "imports": {"namespace_use_declaration"},
+    "inherits": {"base_clause", "class_interface_clause"},
+}
+
+_SPEC_CSHARP = {
+    "func_defs": {"method_declaration", "constructor_declaration",
+                  "local_function_statement"},
+    "type_defs": {"class_declaration": "class",
+                  "interface_declaration": "interface",
+                  "struct_declaration": "struct",
+                  "record_declaration": "record",
+                  "enum_declaration": "enum"},
+    "calls": {"invocation_expression"},
+    "imports": {"using_directive"},
+    "inherits": {"base_list"},
+}
+
+def parse_go(src, rel, parser):    return _cfamily_extract(src, rel, parser, _SPEC_GO)
+def parse_rust(src, rel, parser):  return _cfamily_extract(src, rel, parser, _SPEC_RUST)
+def parse_java(src, rel, parser):  return _cfamily_extract(src, rel, parser, _SPEC_JAVA)
+def parse_cpp(src, rel, parser):   return _cfamily_extract(src, rel, parser, _SPEC_CPP)
+def parse_php(src, rel, parser):   return _cfamily_extract(src, rel, parser, _SPEC_PHP)
+def parse_csharp(src, rel, parser):return _cfamily_extract(src, rel, parser, _SPEC_CSHARP)
+
+# ── AST extraction (dynamic: ruby / r) ───────────────────────────────────────
+# Ruby + R share the generic walker too; R's `f <- function(...)` is a top-level
+# assignment whose name is the assignment target, so R needs a small pre-pass to
+# name function_definition nodes from their binding. Ruby maps cleanly.
+_SPEC_RUBY = {
+    "func_defs": {"method", "singleton_method"},
+    "type_defs": {"class": "class", "module": "module"},
+    "calls": {"call"},
+    "imports": set(),   # require handled below (it's a `call`, special-cased)
+    "inherits": {"superclass"},
+}
+
+def parse_ruby(src, rel, parser):
+    """Ruby via the generic walker + require/require_relative -> imports (they
+    parse as a `call` to `require`, so we rewrite those calls into import edges
+    and suppress the bare `require` call edge)."""
+    defs, refs = _cfamily_extract(src, rel, parser, _SPEC_RUBY)
+    out = []
+    for r in refs:
+        if r["label"] == "calls" and r["to_name"] in ("require", "require_relative", "load"):
+            continue  # drop the bare require() call edge (the arg is the import)
+        out.append(r)
+    # extract require STRING args as imports (grammar: call > argument_list >
+    # string). Cheap re-walk for the string literal after a require identifier.
+    tree = parser.parse(src)
+    def rw(node):
+        for c in node.children:
+            if c.type == "call":
+                mn = c.child_by_field_name("method") or _first_ident(c, src)
+                mname = _txt(mn, src) if hasattr(mn, "type") else mn
+                if mname in ("require", "require_relative", "load"):
+                    s = _first_ident(c, src, types=("string", "string_content",
+                                                    "simple_symbol"))
+                    if s:
+                        base = s.strip().strip('"').strip("'")
+                        base = base.replace("\\", "/").rstrip("/").split("/")[-1]
+                        base = base.rsplit(".", 1)[0] if "." in base else base
+                        if base:
+                            out.append({"label": "imports", "from_qual": "<module>",
+                                        "to_name": base, "line": _line(c),
+                                        "provenance": "inferred"})
+            rw(c)
+    rw(tree.root_node)
+    return defs, out
+
+def parse_r(src, rel, parser):
+    """R: `name <- function(...)` is an assignment binding a function_definition.
+    Name the def from its assignment target; source()/library()/require() ->
+    imports; other calls -> calls. Generic walker can't see the binding, so R
+    gets a bespoke (small) walk."""
+    tree = parser.parse(src)
+    defs, refs = [], []
+
+    def target_name(assign_node):
+        # left <- right : left is the first child (identifier)
+        lhs = assign_node.children[0] if assign_node.children else None
+        return _txt(lhs, src) if lhs is not None and lhs.type == "identifier" else None
+
+    def walk(node, stack):
+        for child in node.children:
+            t = child.type
+            if t in ("binary_operator", "left_assignment", "equals_assignment") or (
+                    t == "call" and False):
+                # find a function_definition on the RHS
+                fdef = None
+                for gc in child.children:
+                    if gc.type == "function_definition":
+                        fdef = gc
+                        break
+                if fdef is not None:
+                    name = target_name(child) or "<anon>"
+                    defs.append({"kind": "function", "name": name, "file": rel,
+                                 "line": _line(child), "qualname": name})
+                    walk(fdef, stack + [name])
+                    continue
+                walk(child, stack)
+            elif t == "call":
+                fn = child.child_by_field_name("function") or _first_ident(child, src)
+                callee = _txt(fn, src) if hasattr(fn, "type") else fn
+                if callee in ("source", "library", "require"):
+                    s = _first_ident(child, src, types=("string", "identifier"))
+                    if s:
+                        base = s.strip().strip('"').strip("'")
+                        base = base.replace("\\", "/").rstrip("/").split("/")[-1]
+                        base = base.rsplit(".", 1)[0] if "." in base else base
+                        if base:
+                            refs.append({"label": "imports", "from_qual":
+                                         (".".join(stack) if stack else "<module>"),
+                                         "to_name": base, "line": _line(child),
+                                         "provenance": "inferred"})
+                elif callee and callee.isidentifier():
+                    refs.append({"label": "calls", "from_qual":
+                                 (".".join(stack) if stack else "<module>"),
+                                 "to_name": callee, "line": _line(child),
+                                 "provenance": "inferred"})
+                walk(child, stack)
+            else:
+                walk(child, stack)
+
+    walk(tree.root_node, [])
+    return defs, refs
+
+# ── AST extraction (structural-only: css / html / sql) ───────────────────────
+# No classic call graph. css: selectors are the 'defs', @import an edge. html:
+# no defs, script/link src|href -> imports (doc->asset). sql: table/view defs,
+# FROM/JOIN table names -> references.
+def parse_css(src, rel, parser):
+    tree = parser.parse(src)
+    defs, refs = [], []
+    def walk(node):
+        for c in node.children:
+            if c.type in ("class_selector", "id_selector"):
+                nm = _first_ident(c, src, types=("class_name", "id_name", "identifier"))
+                if nm:
+                    pfx = "." if c.type == "class_selector" else "#"
+                    defs.append({"kind": "selector", "name": pfx + nm, "file": rel,
+                                 "line": _line(c), "qualname": pfx + nm})
+            elif c.type in ("import_statement", "@import"):
+                s = _first_ident(c, src, types=("string_value", "string", "call_expression"))
+                if s:
+                    base = s.strip().strip('"').strip("'").replace("url(", "").rstrip(")")
+                    base = base.replace("\\", "/").rstrip("/").split("/")[-1]
+                    if base:
+                        refs.append({"label": "imports", "from_qual": "<file>",
+                                     "to_name": base, "line": _line(c),
+                                     "provenance": "inferred"})
+            walk(c)
+    walk(tree.root_node)
+    return defs, refs
+
+def parse_html(src, rel, parser):
+    """No defs; a <script src> / <link href> is a doc->asset imports edge."""
+    tree = parser.parse(src)
+    refs = []
+    def attr_val(el, want):
+        for c in el.children:
+            if c.type in ("start_tag", "self_closing_tag"):
+                for a in c.children:
+                    if a.type == "attribute":
+                        an = _first_ident(a, src, types=("attribute_name",))
+                        if an == want:
+                            av = _first_ident(a, src, types=("attribute_value", "quoted_attribute_value"))
+                            return av
+        return None
+    def walk(node):
+        for c in node.children:
+            if c.type in ("script_element", "element"):
+                for want in ("src", "href"):
+                    v = attr_val(c, want)
+                    if v:
+                        base = v.strip().strip('"').strip("'")
+                        base = base.replace("\\", "/").rstrip("/").split("/")[-1]
+                        if base:
+                            refs.append({"label": "imports", "from_qual": "<file>",
+                                         "to_name": base, "line": _line(c),
+                                         "provenance": "inferred"})
+            walk(c)
+    walk(tree.root_node)
+    return [], refs
+
+def parse_sql(src, rel, parser):
+    """CREATE TABLE/VIEW -> defs; FROM/JOIN table names -> references."""
+    tree = parser.parse(src)
+    defs, refs = [], []
+    def walk(node, cur):
+        for c in node.children:
+            t = c.type
+            if t in ("create_table", "create_view"):
+                nm = _first_ident(c, src, types=("identifier", "object_reference"))
+                kind = "table" if t == "create_table" else "view"
+                if nm:
+                    nm = nm.split(".")[-1]
+                    defs.append({"kind": kind, "name": nm, "file": rel,
+                                 "line": _line(c), "qualname": nm})
+                    walk(c, nm)
+                    continue
+            elif t in ("from", "join"):
+                nm = _first_ident(c, src, types=("identifier", "object_reference"))
+                if nm:
+                    nm = nm.split(".")[-1]
+                    refs.append({"label": "references", "from_qual": cur or "<file>",
+                                 "to_name": nm, "line": _line(c),
+                                 "provenance": "inferred"})
+            walk(c, cur)
+    walk(tree.root_node, None)
+    return defs, refs
+
+def parse_yaml(src, rel, parser):
+    """Structural-only (like json): TOP-LEVEL mapping keys are the 'defs' (config
+    sections a reader navigates to). No call graph. Grammar: document > block_node
+    > block_mapping > block_mapping_pair, key = first flow_node/plain_scalar/
+    string_scalar. Only depth-1 pairs (top-level keys) become defs, mirroring the
+    json extractor's top-key treatment."""
+    tree = parser.parse(src)
+    defs = []
+    def key_text(pair):
+        # a block_mapping_pair's key is its first child subtree; pull the scalar
+        k = pair.child_by_field_name("key")
+        node = k if k is not None else (pair.children[0] if pair.children else None)
+        if node is None:
+            return None
+        return _first_ident(node, src, types=(
+            "string_scalar", "plain_scalar", "flow_node", "double_quote_scalar",
+            "single_quote_scalar", "identifier"))
+    def walk(node, depth):
+        for c in node.children:
+            if c.type == "block_mapping_pair" and depth == 0:
+                nm = key_text(c)
+                if nm:
+                    nm = nm.strip().strip('"').strip("'")
+                    if nm:
+                        defs.append({"kind": "key", "name": nm, "file": rel,
+                                     "line": _line(c), "qualname": nm})
+                # do NOT descend into nested mappings (top-level keys only)
+                continue
+            # descend through stream/document/block_node/block_mapping wrappers
+            if c.type in ("stream", "document", "block_node", "block_mapping",
+                          "flow_node", "block_sequence", "block_sequence_item"):
+                walk(c, depth)
+            else:
+                walk(c, depth + 1)
+    walk(tree.root_node, 0)
+    return defs, []
+
 PARSERS = {"python": parse_python, "bash": parse_bash, "json": parse_json,
            "markdown": parse_markdown,
            "javascript": parse_javascript, "typescript": parse_javascript,
-           "tsx": parse_javascript}
+           "tsx": parse_javascript,
+           "go": parse_go, "rust": parse_rust, "java": parse_java,
+           "cpp": parse_cpp, "php": parse_php, "ruby": parse_ruby,
+           "r": parse_r, "css": parse_css, "html": parse_html,
+           "sql": parse_sql, "yaml": parse_yaml, "csharp": parse_csharp}
 
 
 # ── graph assembly ─────────────────────────────────────────────
@@ -1233,6 +1678,19 @@ def assemble_graph(parsed, root, built_at_sha):
         file_rel_norm.setdefault(rel_norm, file_idx[rel])
         for d in defs:
             add_node(d["kind"], d["name"], d["file"], d["line"])
+
+    # per-file def index: rel -> {def-name -> idx}. Fixes the same-name CROSS-FILE
+    # collision (two files each declaring `class A` / `func f`): the compiled/
+    # dynamic langs (go/rust/java/cpp/php/ruby/r/python) resolve an intra-file
+    # calls/inherits/references to the SAME-FILE def FIRST, before the global
+    # last-wins name_to_idx that would misroute it to an unrelated file's twin.
+    defs_by_file = {}
+    for rel, defs, _refs in parsed:
+        m = defs_by_file.setdefault(rel, {})
+        for d in defs:
+            nid = _node_id(d["kind"], d["name"], d["file"], d["line"])
+            if nid in idx_of:
+                m.setdefault(d["name"], idx_of[nid])
 
     # #1: build the tsconfig/workspace alias map ONCE per root (fail-open).
     ts_alias_map = _load_ts_alias_map(root)
@@ -1391,7 +1849,13 @@ def assemble_graph(parsed, root, built_at_sha):
                     subj = r["from_qual"]
             else:
                 subj = r["from_qual"].split(".")[-1]
-                a = name_to_idx.get(subj, fi)  # enclosing def, else the file
+                # same-file-first for the SUBJECT (enclosing def): a symbol name
+                # shared across files (class A in two files) must not collapse to
+                # a global twin's node. Prefer a def-in-this-file, then global,
+                # then the file node.
+                a = defs_by_file.get(rel, {}).get(subj)
+                if a is None:
+                    a = name_to_idx.get(subj, fi)
             src_name = subj
             # JS/TS imports resolve to a FILE node by basename-stem (module path
             # './util' -> util.js file node), not to a def/name. Try the stem map
@@ -1456,6 +1920,17 @@ def assemble_graph(parsed, root, built_at_sha):
                     add_edge(a, ctgt, "calls", src_name, r["to_name"], "extracted")
                     _note_cross_project(a, ctgt, "calls")
                 continue
+            # same-file-first: an intra-file calls/inherits/references resolves to
+            # a def IN THIS FILE before the global last-wins name_to_idx, so a
+            # symbol name shared across files (class A in two files) doesn't
+            # cross-contaminate. Only for the AST langs that emit bare-name refs
+            # (skip JSON dotted-key refs, which need whole-path global match).
+            if not is_json and r["label"] in ("calls", "inherits", "references"):
+                local = defs_by_file.get(rel, {}).get(r["to_name"])
+                if local is not None and local != a:
+                    add_edge(a, local, r["label"], src_name, r["to_name"], "extracted")
+                    _note_cross_project(a, local, r["label"])
+                    continue
             tgt = name_to_idx.get(r["to_name"])
             if tgt is not None:
                 add_edge(a, tgt, r["label"], src_name, r["to_name"], r.get("provenance", "extracted") if is_json else "extracted")

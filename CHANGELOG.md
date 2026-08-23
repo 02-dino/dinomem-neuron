@@ -4,6 +4,22 @@ All notable changes to dinomem-neuron are documented here.
 
 ---
 
+## 1.16.0 — 2026-08-23
+
+**12 new code-graph languages — go / rust / java / cpp / php / csharp / ruby / r / css / html / sql / yaml. The code graph now indexes structure across a real polyglot repo, not just the python/JS/TS core. Adding a language is extractor-only: ingestion (code_graph) + search (code_query, hybrid_recall CODE leg) are language-agnostic and traverse the graph without re-parsing, so a new lang works end-to-end automatically.**
+
+> c# was NOT actually blocked by a missing grammar — the earlier `get_parser('c_sharp')` DownloadError was a wrong-name query. The tree-sitter-language-pack key is **`csharp`**. Fixed + shipped as a full extractor, not a scaffold. yaml added too (structural-only, top-level keys as defs, like json).**
+### Added
+- **C-family + dynamic extractors (go, rust, java, cpp, php, ruby, r).** All seven route through ONE generic walker (`_cfamily_extract`) driven by a per-language node-type SPEC table (func-defs / type-defs / calls / imports / inherits) — the only per-lang code is the spec, not a copy of the walk (DRY). Emits the same `(defs, refs)` contract as python/JS. go: func+method+type, import_spec, call_expression. rust: fn+struct/trait/enum/impl, use_declaration, call_expression. java: class/interface/enum + extends/implements, method_invocation, import_declaration. cpp: function_definition + class/struct + base_class_clause, preproc_include, call_expression. php: class/interface/trait + base_clause, function/method/scoped calls, namespace_use. ruby: class(+superclass)/module/method, require→imports. r: `name <- function(...)` defs (binding-named), source()/library()→imports, calls.
+- **Structural-only extractors (css, html, sql).** No classic call graph: css = selectors (`.class`/`#id`) as defs + `@import` edges; html = `<script src>`/`<link href>`→imports (doc→asset); sql = CREATE TABLE/VIEW→defs + FROM/JOIN table names→references.
+- **c# scaffold.** LANG_BY_EXT `.cs` entry is present-but-commented — the grammar is absent from the installed tree-sitter pack (`get_parser('c_sharp')` → DownloadError). Uncomment to wire the instant the grammar lands; `parse_java`'s spec is a near-drop-in template.
+### Fixed
+- **Same-name CROSS-FILE collision.** With multiple files declaring an identically-named symbol (`class A` in a.java AND a.php), the global last-wins `name_to_idx` misrouted intra-file `calls`/`inherits`/`references` — both the edge SUBJECT (enclosing def) and TARGET resolved to an unrelated file's twin, cross-contaminating (one file's inherits absorbed another's). Now the AST langs resolve an intra-file ref to a **same-file def first** (subject and target), before the global fallback. Same collision class fixed for JS/TS member/named calls in v1.14/1.15, now generalized to all bare-name AST refs.
+### Notes
+- New `test/code_graph_multilang_test.sh`: a fixture + defs/refs assertion per language; a lang whose grammar is absent from the pack is SKIPped (portable across packs). Full 10-lang mixed build: **0 parse errors**. All prior tests (python/bash/json/md/tsjs/tsjs_resolution) still PASS — no regression.
+
+---
+
 ## 1.15.0 — 2026-08-23
 
 **JS/TS resolution finish — cross-file NAMED-call scoping (closes the last collision gap) + barrel provenance in `code_query explain`.**
