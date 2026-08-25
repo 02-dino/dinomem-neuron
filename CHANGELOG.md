@@ -4,6 +4,14 @@ All notable changes to dinomem-neuron are documented here.
 
 ---
 
+## 1.17.1 — 2026-08-25
+
+**Fix: code-graph refresh no longer reports a benign tree-sitter-offline no-op as a job failure.**
+### Fixed
+- **`code_graph.py` fail-soft exit policy.** When the tree-sitter binding is missing but a previously-built graph already exists on disk, `main()` now exits `0` (benign no-op — the graph is still fully served, since `code_query` traverses the JSON and never re-parses) instead of unconditionally exiting `3`. A scheduled code-graph refresh cron therefore stops surfacing a spurious failure alert on every run in an environment where tree-sitter is not installed. A real failure (exit `3`) is still reported when offline **and** no graph exists to serve. Path resolution unchanged (`resolve_root` + `_code_paths`, both install-time/env-driven — no hardcoded paths).
+
+---
+
 ## 1.17.0 — 2026-08-23
 
 **Cross-agent serialization and embedding reliability under multi-agent load.**

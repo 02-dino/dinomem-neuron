@@ -2128,9 +2128,26 @@ def main():
     args = ap.parse_args()
 
     if not ts_available():
-        msg = {"ok": False, "offline": True, "reason": _TS_ERR}
-        print(json.dumps(msg) if args.json else f"[code_graph] OFFLINE: {_TS_ERR}", file=sys.stderr)
-        sys.exit(3)
+        # FAIL-SOFT exit policy: a missing tree-sitter binding is NOT a hard
+        # failure when a previously-built graph already exists on disk — the graph
+        # is still fully served (code_query traverses the JSON, it never re-parses)
+        # and there is simply nothing to (re)build this run. Exiting non-zero here
+        # makes a scheduled refresh job report a benign OFFLINE no-op as a job
+        # failure, which surfaces to the user as a spurious failure alert. Report a
+        # real failure (exit 3) ONLY when offline AND no graph exists to serve.
+        offline_root = resolve_root(args.path)
+        code_json, _ = _code_paths(offline_root)
+        graph_exists = os.path.exists(code_json)
+        msg = {"ok": graph_exists, "offline": True, "graph_present": graph_exists, "reason": _TS_ERR}
+        if args.json:
+            print(json.dumps(msg), file=sys.stderr)
+        elif graph_exists:
+            print(f"[code_graph] OFFLINE (tree-sitter absent) but existing graph served "
+                  f"from {code_json} — nothing to rebuild. {_TS_ERR}", file=sys.stderr)
+        else:
+            print(f"[code_graph] OFFLINE: {_TS_ERR}", file=sys.stderr)
+        # exit 0 when a graph is present (benign no-op), 3 only when truly unusable.
+        sys.exit(0 if graph_exists else 3)
 
     root = resolve_root(args.path)
     exts = dict(LANG_BY_EXT)
