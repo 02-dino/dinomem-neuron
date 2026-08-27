@@ -977,25 +977,44 @@ fi
 # upsert_cron: add or update a cron entry by script keyword
 upsert_cron() {
   local keyword="$1" comment="$2" cron_line="$3" label="$4"
-  local existing
-  # AGENT-SCOPED MATCH (multi-agent safety): the crontab is per-USER(root), shared
-  # by every agent on this host. A bare `grep "$keyword"` (e.g. memory_graph.py)
-  # matches EVERY agent's line, so `grep -v` would strip another agent's cron.
-  # We scope the match by the workspace fingerprint ("cd $WS &&"), which is unique
-  # per agent, AND suffix the comment marker with [agent:$AGENT_ID] for clarity.
-  # Fallback: if $WS is somehow empty, degrade to the old keyword match (single-
-  # agent buyer path is unaffected — one agent, one line).
-  local scope
-  if [ -n "${WS:-}" ]; then scope="cd $WS && .*$keyword"; else scope="$keyword"; fi
-  comment="$comment [agent:${AGENT_ID:-default}]"
+  local aid="${AGENT_ID:-default}"
+  local tag="# dinomem-managed:${keyword}:${aid}"
+  comment="$comment [agent:${aid}]"
+  local managed_line="${cron_line} ${tag}"
+  # ROBUST DEDUP (fixes duplicate-on-upgrade): key on a per-agent MANAGED TAG,
+  # not on command shape. Historical bug: scope "cd $WS && .*$keyword" missed any
+  # dinomem line NOT starting with `cd $WS &&` (e.g. `DINOMEM_AGENT_ID=... bash
+  # dinomem_run.sh ...`), so an upgrade appended a 2nd copy instead of replacing.
+  #
+  # Phase 1 ADOPTION (one-time, safe migration): stamp the tag onto any LEGACY
+  # dinomem line for this script+agent that predates the tag scheme — identified
+  # by a DISTINCTIVE installer signature (the `dinomem_run.sh` wrapper OR a
+  # `DINOMEM_*=` env var the installer sets) + this agent's own $WS + the script,
+  # and not already tagged. A user's hand-written `cd $WS && python3
+  # procedures/<script>` has NEITHER wrapper nor DINOMEM_ env, so it is NOT adopted
+  # and NOT clobbered. This is the false-delete guard.
+  if [ -n "${WS:-}" ]; then
+    crontab -l 2>/dev/null | awk -v ws="$WS" -v kw="$keyword" -v tag="$tag" '
+      {
+        line=$0
+        if (line ~ /# dinomem-managed:/) { print line; next }
+        dino_sig = (index(line,"dinomem_run.sh")>0 || line ~ /DINOMEM_[A-Z_]+=/)
+        if (index(line, ws)>0 && dino_sig && index(line, kw)>0) { print line " " tag }
+        else { print line }
+      }' | crontab -
+  fi
+  # Phase 2 MATCH BY TAG: dedup/replace keys on the tag only, so untagged user
+  # jobs calling the same script are never touched.
+  local scope existing
+  scope="${tag}\$"
   existing=$(crontab -l 2>/dev/null | grep -E "$scope" || true)
-  if [ "$existing" = "$cron_line" ]; then
+  if [ "$existing" = "$managed_line" ]; then
     skip "$label (exists, up to date)"
   elif [ -n "$existing" ]; then
-    { crontab -l 2>/dev/null | grep -vE "$scope"; echo "# $comment"; echo "$cron_line"; } | crontab -
+    { crontab -l 2>/dev/null | grep -vE "$scope"; echo "# $comment"; echo "$managed_line"; } | crontab -
     ok "$label (updated)"
   else
-    { crontab -l 2>/dev/null; echo "# $comment"; echo "$cron_line"; } | crontab -
+    { crontab -l 2>/dev/null; echo "# $comment"; echo "$managed_line"; } | crontab -
     ok "$label (registered)"
   fi
 }
