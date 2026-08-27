@@ -4,6 +4,14 @@ All notable changes to dinomem-neuron are documented here.
 
 ---
 
+## 1.17.2 — 2026-08-27
+
+**Fix: memory DB path is now resolved by ASKING OpenClaw, never guessed — kills the `unable to open database file` crash on non-default install layouts.**
+### Fixed
+- **Portable memory sqlite path resolution (`memory_synthesis.py`, `memory_graph.py`, `scripts/install.sh`).** The daily `memory_synthesis` / `memory_graph` crons hardcoded the sqlite DB path with no fallback; when the install-time value didn't match a box's real layout, both crashed with `sqlite3.OperationalError: unable to open database file` at a path that never existed on that machine (reported: a box where the baked path pointed at `/home/ubuntu/.openclaw/memory/main.sqlite`). Root cause: OpenClaw's DB layout is version-dependent (`agents/<id>/agent/openclaw-agent.sqlite` on modern, `memory/<id>.sqlite` on legacy) and the internal agent-id is not always the workspace name — so *any* hardcoded convention is a guess that breaks on some install. Fix: `install.sh` now resolves the real path from the single source of truth — `openclaw memory status` prints `Store: <path>` — via a new `resolve_memory_db` helper (order: `DINOMEM_MEMORY_DB` env override → openclaw `Store:` → legacy layout probe) and bakes it in at install time (the status call is ~25s, far too slow for the per-cron path). Runtime fallback in both procedures now probes modern-layout-first instead of a single wrong convention, so a git-pull-only update still degrades to a real path. No manual step for the installer; `DINOMEM_MEMORY_DB` remains an override for custom layouts.
+
+---
+
 ## 1.17.1 — 2026-08-25
 
 **Fix: code-graph refresh no longer reports a benign tree-sitter-offline no-op as a job failure.**
