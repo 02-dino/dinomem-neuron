@@ -98,7 +98,11 @@ hr()   { printf '\033[1m== %s ==\033[0m\n' "$*"; }
 _apply_subst() {
   local _f="$1"
   sed -i "s|DINOMEM_WORKSPACE_PLACEHOLDER|$WS|g" "$_f"
-  sed -i "s|DINOMEM_SQLITE_PLACEHOLDER|$SQLITE_PATH|g" "$_f"
+  # New portable token (memory_synthesis/memory_graph). Kept alongside the legacy
+  # literal-path sed below so both old and freshly-updated procedure copies get a
+  # correct baked DB path. Procedures ALSO auto-detect at runtime if sed is skipped.
+  sed -i "s|DINOMEM_DB_PLACEHOLDER|$SQLITE_PATH|g" "$_f"
+  sed -i "s|/root/.openclaw/agents/analyst/agent/openclaw-agent.sqlite|$SQLITE_PATH|g" "$_f"
   sed -i "s|DINOMEM_OPENCLAW_MEMORY_PLACEHOLDER|$OPENCLAW_MEMORY_DIR|g" "$_f"
   sed -i "s|DINOMEM_HF_CACHE_PLACEHOLDER|$HOME/.cache/huggingface|g" "$_f"
   sed -i "s|DINOMEM_AGENT_ID_PLACEHOLDER|$AGENT_ID|g" "$_f"

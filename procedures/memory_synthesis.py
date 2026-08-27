@@ -62,14 +62,36 @@ def _resolve_schema(db_path):
             sys.exit(f"memory index schema not supported:\n{e}")
     return _SCHEMA_CACHE[key]
 
-DB_PATH = Path("DINOMEM_SQLITE_PLACEHOLDER")
 # Workspace resolution (priority): DINOMEM_WORKSPACE env var > install-time sed
 # substitution > self-locate from this file's location (safety net if sed was
-# skipped/failed). DB_PATH (sqlite) stays on sed — it is not self-locatable.
+# skipped/failed).
 _WS_DEFAULT = "DINOMEM_WORKSPACE_PLACEHOLDER"
 if _WS_DEFAULT.startswith("DINOMEM_"):  # sed did not run
     _WS_DEFAULT = str(Path(__file__).resolve().parent.parent)
 _WS = Path(os.environ.get("DINOMEM_WORKSPACE", _WS_DEFAULT))
+
+# DB path resolution (priority): DINOMEM_MEMORY_DB env var > install-time sed
+# substitution > auto-detect from OpenClaw config home. Previously this was a
+# naked hardcode with NO fallback — if sed was skipped or the config home
+# differed, the cron crashed with sqlite OperationalError (unable to open
+# database file) pointing at a path that never existed on that box. Now it
+# degrades gracefully.
+_DB_DEFAULT = "DINOMEM_DB_PLACEHOLDER"
+if _DB_DEFAULT.startswith("DINOMEM_"):  # sed did not run — auto-detect
+    _cfg_home = Path(os.environ.get("OPENCLAW_CONFIG_PATH", "")).parent \
+        if os.environ.get("OPENCLAW_CONFIG_PATH") \
+        else Path(os.environ.get("OPENCLAW_DIR", str(Path.home() / ".openclaw")))
+    # Prefer the modern per-agent DB, then legacy layouts. First existing wins;
+    # if none exist yet, keep the modern path so a clear error names the box's
+    # real home (not someone else's /home/ubuntu).
+    _agent = os.environ.get("DINOMEM_AGENT_ID", "analyst")
+    _candidates = [
+        _cfg_home / "agents" / _agent / "agent" / "openclaw-agent.sqlite",
+        _cfg_home / "memory" / f"{_agent}.sqlite",
+        _cfg_home / "memory" / "main.sqlite",
+    ]
+    _DB_DEFAULT = str(next((c for c in _candidates if c.exists()), _candidates[0]))
+DB_PATH = Path(os.environ.get("DINOMEM_MEMORY_DB", _DB_DEFAULT))
 GRAPH_JSON = _WS / "kb/memory_neuron/l2_graph/memory_graph.json"
 # Generated L3 insight drafts live in their own subfolder (they accumulate as
 # dated files, unlike the always-overwritten L2 graph). kb/memory_neuron/ is
