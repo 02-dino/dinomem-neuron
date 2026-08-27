@@ -123,6 +123,60 @@ _TOKEN_RE = re.compile(r"[a-z0-9]+", re.IGNORECASE)
 
 _bm25_cache = None          # (count, docs, metas, idf, doc_len, avg_len, tf_list)
 
+# ---------------------------------------------------------------------------
+# BM25 disk cache — persistence across subprocesses.
+#
+# Each search CLI invocation (docs_search / hybrid_recall leg) is a FRESH
+# subprocess, so the in-memory `_bm25_cache` global is always cold. Rebuilding
+# BM25 over the full chunk store (~14k chunks) costs ~6s build + ~6s rank = ~12s,
+# pushing a small-k query to ~14s — over the 15s memory_search timeout, so recall
+# silently returns nothing while the DB itself is fine.
+#
+# Fix: persist the built index to disk keyed on (collection, chunk-count). Count
+# is the existing invalidation signal — any ingest/rebuild changes it, auto-busting
+# the cache. Warm queries load the pickle (sub-second) and skip the rebuild.
+import pickle as _pickle
+import hashlib as _bm25_hashlib
+from pathlib import Path as _BM25Path
+
+_BM25_CACHE_DIR = _BM25Path(
+    os.environ.get("DINOMEM_BM25_CACHE_DIR")
+    or (_BM25Path(__file__).resolve().parent.parent / "cache" / "bm25")
+)
+
+def _bm25_disk_path(count: int) -> _BM25Path:
+    key = _bm25_hashlib.sha1(f"docs:{count}".encode()).hexdigest()[:16]
+    return _BM25_CACHE_DIR / f"bm25_docs_{count}_{key}.pkl"
+
+def _bm25_disk_load(count: int):
+    p = _bm25_disk_path(count)
+    try:
+        if p.is_file():
+            with open(p, "rb") as fh:
+                data = _pickle.load(fh)
+            if isinstance(data, tuple) and data and data[0] == count:
+                return data
+    except Exception:
+        pass
+    return None
+
+def _bm25_disk_store(data) -> None:
+    try:
+        _BM25_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        p = _bm25_disk_path(data[0])
+        tmp = p.with_suffix(".pkl.tmp")
+        with open(tmp, "wb") as fh:
+            _pickle.dump(data, fh, protocol=_pickle.HIGHEST_PROTOCOL)
+        os.replace(tmp, p)
+        for old in _BM25_CACHE_DIR.glob("bm25_docs_*.pkl"):
+            if old != p:
+                try:
+                    old.unlink()
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
 
 def _tokenize(text: str) -> List[str]:
     return _TOKEN_RE.findall((text or "").lower())
@@ -149,6 +203,12 @@ def _build_bm25():
     if _bm25_cache is not None and _bm25_cache[0] == count:
         return _bm25_cache
 
+    # warm path: load prebuilt index from disk (survives subprocess boundary)
+    disk = _bm25_disk_load(count)
+    if disk is not None:
+        _bm25_cache = disk
+        return _bm25_cache
+
     tf_list: List[Dict[str, int]] = []
     df: Dict[str, int] = {}
     doc_len: List[int] = []
@@ -168,6 +228,7 @@ def _build_bm25():
     idf = {t: math.log(1 + (n - dfi + 0.5) / (dfi + 0.5)) for t, dfi in df.items()}
 
     _bm25_cache = (count, docs, metas, idf, doc_len, avg_len, tf_list)
+    _bm25_disk_store(_bm25_cache)
     return _bm25_cache
 
 
