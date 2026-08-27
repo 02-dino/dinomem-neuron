@@ -75,15 +75,24 @@ _WS = Path(os.environ.get("DINOMEM_WORKSPACE", _WS_DEFAULT))
 # Previously this was a naked hardcode with NO fallback — if sed was skipped or
 # the config home differed, the cron crashed with sqlite OperationalError
 # (unable to open database file) pointing at a path that never existed on that
-# box. The derived default is the SAME convention install.sh seds in
-# (<config-home>/memory/<agent>.sqlite) — deterministic, no filesystem probing.
+# box. PRIMARY: install.sh asks OpenClaw (`openclaw memory status` -> Store:)
+# and bakes the REAL path here — correct on any layout/agent-id. This runtime
+# block only fires as a FALLBACK when the sed was skipped (e.g. a git-pull
+# update without re-running the installer). It probes the two known OpenClaw
+# layouts, modern first, so it degrades to a real path on this box rather than a
+# single wrong convention guess. Env DINOMEM_MEMORY_DB always wins.
 _DB_DEFAULT = "DINOMEM_DB_PLACEHOLDER"
-if _DB_DEFAULT.startswith("DINOMEM_"):  # sed did not run — derive convention path
+if _DB_DEFAULT.startswith("DINOMEM_"):  # sed skipped — fall back to layout probe
     _cfg_home = Path(os.environ.get("OPENCLAW_CONFIG_PATH", "")).parent \
         if os.environ.get("OPENCLAW_CONFIG_PATH") \
         else Path(os.environ.get("OPENCLAW_DIR", str(Path.home() / ".openclaw")))
     _agent = os.environ.get("DINOMEM_AGENT_ID", "analyst")
-    _DB_DEFAULT = str(_cfg_home / "memory" / f"{_agent}.sqlite")
+    _cands = [
+        _cfg_home / "agents" / _agent / "agent" / "openclaw-agent.sqlite",
+        _cfg_home / "memory" / f"{_agent}.sqlite",
+        _cfg_home / "memory" / "main.sqlite",
+    ]
+    _DB_DEFAULT = str(next((c for c in _cands if c.exists()), _cands[0]))
 DB_PATH = Path(os.environ.get("DINOMEM_MEMORY_DB", _DB_DEFAULT))
 GRAPH_JSON = _WS / "kb/memory_neuron/l2_graph/memory_graph.json"
 # Generated L3 insight drafts live in their own subfolder (they accumulate as

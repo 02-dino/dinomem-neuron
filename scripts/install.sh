@@ -153,6 +153,35 @@ openclaw_running() {
   timeout 10 openclaw status >/dev/null 2>&1
 }
 
+# resolve_memory_db <agent_id> <openclaw_dir>: print the REAL sqlite DB path for
+# this box. WHY this exists: OpenClaw's DB layout is version-dependent
+# (agents/<id>/agent/openclaw-agent.sqlite on modern, memory/<id>.sqlite on
+# legacy) and the internal agent-id is not always the workspace name, so ANY
+# hardcoded convention is a guess that crashes some installer with "unable to
+# open database file". The single source of truth is OpenClaw itself:
+# `openclaw memory status` prints `Store: <path>`. We ask it here (install time)
+# and bake the answer; the runtime call is ~25s, far too slow for the daily
+# cron. Order: env override > openclaw Store: > legacy convention probe (only if
+# the CLI is absent/errors). Never emits a foreign /home/* or bare hardcode.
+resolve_memory_db() {
+  local _agent="$1" _ocdir="$2" _store=""
+  if [ -n "${DINOMEM_MEMORY_DB:-}" ]; then printf '%s\n' "$DINOMEM_MEMORY_DB"; return 0; fi
+  if command -v openclaw >/dev/null 2>&1; then
+    _store="$(timeout 40 openclaw memory status 2>/dev/null \
+      | awk -F': *' '/^Store:/{print $2; exit}')"
+    _store="${_store/#\~/$HOME}"
+    if [ -n "$_store" ]; then printf '%s\n' "$_store"; return 0; fi
+  fi
+  local _cand
+  for _cand in \
+    "$_ocdir/agents/$_agent/agent/openclaw-agent.sqlite" \
+    "$_ocdir/memory/$_agent.sqlite" \
+    "$_ocdir/memory/main.sqlite"; do
+    [ -e "$_cand" ] && { printf '%s\n' "$_cand"; return 0; }
+  done
+  printf '%s\n' "$_ocdir/agents/$_agent/agent/openclaw-agent.sqlite"
+}
+
 [ -d "$WS" ] || fail "Workspace not found: $WS  (pass --workspace DIR)"
 
 # AGENT_ID resolution (kept MANUAL by design — never auto-detected from OpenClaw
@@ -289,7 +318,18 @@ OPENCLAW_MEMORY_DIR="$OPENCLAW_DIR/memory"
 # place. session_ingest.py reads from here (same path the base dinomem installer
 # uses). Must match, or the session-search index never refreshes.
 SESSIONS_DIR="$OPENCLAW_DIR/agents/$AGENT_ID/sessions"
-SQLITE_PATH="$OPENCLAW_MEMORY_DIR/$AGENT_ID.sqlite"
+
+# ── Memory sqlite DB path — ASK OpenClaw, don't guess ───────────────────────
+# WHY: OpenClaw's DB layout varies by version (agents/<id>/agent/openclaw-agent
+# .sqlite on modern, memory/<id>.sqlite on legacy) AND the internal agent-id is
+# not always the workspace name. Any hardcoded convention is a guess that breaks
+# on some box — the exact bug an installer hit (crash: unable to open database
+# file at a path that never existed on their box). The one source of truth is
+# OpenClaw itself: `openclaw memory status` prints `Store: <path>` = the real DB
+# for THIS box/agent. We resolve it ONCE here at install and bake it in (the
+# runtime call takes ~25s — far too slow for the daily cron). Order: explicit
+# env override > openclaw Store: > legacy convention probe (only if CLI absent).
+SQLITE_PATH="$(resolve_memory_db "$AGENT_ID" "$OPENCLAW_DIR")"
 
 echo
 hr "dinomem-neuron -> $WS (agent: $AGENT_ID)"
