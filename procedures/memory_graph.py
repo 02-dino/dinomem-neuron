@@ -92,22 +92,19 @@ _WS = Path(_os.environ.get("DINOMEM_WORKSPACE", _WS_DEFAULT))
 OUT_DIR = _WS / "kb/memory_neuron/l2_graph"
 
 # DB path resolution (priority): DINOMEM_MEMORY_DB env var > install-time sed
-# substitution > auto-detect from OpenClaw config home. Previously this was a
-# naked hardcode with NO fallback — if sed was skipped or the config home
-# differed, callers crashed with "sqlite3.OperationalError: unable to open
-# database file" pointing at a path that never existed on that box.
+# substitution > derive the CONVENTION path from this box's config home.
+# Previously this was a naked hardcode with NO fallback — if sed was skipped or
+# the config home differed, callers crashed with "sqlite3.OperationalError:
+# unable to open database file" pointing at a path that never existed on that
+# box. The derived default is the SAME convention install.sh seds in
+# (<config-home>/memory/<agent>.sqlite) — deterministic, no filesystem probing.
 _DB_DEFAULT = "DINOMEM_DB_PLACEHOLDER"
-if _DB_DEFAULT.startswith("DINOMEM_"):  # sed did not run — auto-detect
+if _DB_DEFAULT.startswith("DINOMEM_"):  # sed did not run — derive convention path
     _cfg_home = Path(_os.environ.get("OPENCLAW_CONFIG_PATH", "")).parent \
         if _os.environ.get("OPENCLAW_CONFIG_PATH") \
         else Path(_os.environ.get("OPENCLAW_DIR", str(Path.home() / ".openclaw")))
     _agent = _os.environ.get("DINOMEM_AGENT_ID", "analyst")
-    _candidates = [
-        _cfg_home / "agents" / _agent / "agent" / "openclaw-agent.sqlite",
-        _cfg_home / "memory" / f"{_agent}.sqlite",
-        _cfg_home / "memory" / "main.sqlite",
-    ]
-    _DB_DEFAULT = str(next((c for c in _candidates if c.exists()), _candidates[0]))
+    _DB_DEFAULT = str(_cfg_home / "memory" / f"{_agent}.sqlite")
 DB_PATH = Path(_os.environ.get("DINOMEM_MEMORY_DB", _DB_DEFAULT))
 
 
