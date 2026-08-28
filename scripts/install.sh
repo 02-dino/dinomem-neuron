@@ -93,6 +93,35 @@ skip() { printf '  \033[33m[skip]\033[0m %s\n' "$*"; }
 warn() { printf '  \033[33m[warn]\033[0m %s\n' "$*"; }
 fail() { printf '  \033[31m[fail]\033[0m %s\n' "$*"; exit 1; }
 hr()   { printf '\033[1m== %s ==\033[0m\n' "$*"; }
+# wire_managed_block FILE BEGIN END BLOCK LABEL — idempotent UNCONDITIONAL upsert of
+# one managed marker span. WHY it exists: AGENTS.md and TOOLS.md both carry a neuron
+# managed block; the old skip-unless-force wiring meant an upgrade SILENTLY kept a
+# stale block (no code_query/code_graph) forever. Contract: if the BEGIN..END span
+# is present, strip EXACTLY that span (fixed-string match on neuron's OWN markers —
+# base's separate BEGIN:dinomem span is untouched) then append the fresh BLOCK; if
+# absent, just append. ALWAYS writes the current block regardless of same/different
+# (identical content = same result, so re-runs stay idempotent; no --force needed).
+# Gotcha: the two awk passes are (1) strip inclusive span, (2) trim trailing blanks
+# the strip leaves, so we never accumulate blank lines across re-runs.
+wire_managed_block() {
+  local _file="$1" _begin="$2" _end="$3" _block="$4" _label="$5"
+  touch "$_file"
+  if grep -qF "$_begin" "$_file" 2>/dev/null; then
+    local _tmp; _tmp="$(mktemp)"
+    awk -v b="$_begin" -v e="$_end" '
+      index($0,b){skip=1}
+      !skip{print}
+      index($0,e){skip=0}
+    ' "$_file" > "$_tmp"
+    awk 'NF{last=NR} {lines[NR]=$0} END{for(i=1;i<=last;i++) print lines[i]}' "$_tmp" > "$_file"
+    rm -f "$_tmp"
+    printf '\n%s\n' "$_block" >> "$_file"
+    ok "$_label block refreshed (old block stripped, current block written)"
+  else
+    printf '\n%s\n' "$_block" >> "$_file"
+    ok "$_label wired"
+  fi
+}
 # _apply_subst FILE — apply ALL neuron placeholder substitutions in place (sed).
 # One place, so copy + content-compare stay identical.
 _apply_subst() {
@@ -2372,34 +2401,7 @@ BLOCK="$BEGIN
 $DINOMEM_BODY
 $END"
 
-touch "$AGENTS"
-if grep -qF "$BEGIN" "$AGENTS" 2>/dev/null; then
-  # Neuron block already present. Refresh it in place ONLY under --force, so
-  # upgrades from an older dinomem-neuron (longer inline block, no skill stubs)
-  # actually pick up the current short block instead of keeping stale text.
-  # Strip the old BEGIN..END span first, then append the fresh block
-  # (idempotent upsert — never stacks a second block). Targets neuron's OWN
-  # markers, so base's separate BEGIN:dinomem block is untouched.
-  if [ "$FORCE" = 1 ]; then
-    _tmp_agents="$(mktemp)"
-    # Delete the inclusive BEGIN..END region (fixed-string match), keep the rest.
-    awk -v b="$BEGIN" -v e="$END" '
-      index($0,b){skip=1}
-      !skip{print}
-      index($0,e){skip=0}
-    ' "$AGENTS" > "$_tmp_agents"
-    # Trim trailing blank lines the removal may leave, then append fresh block.
-    awk 'NF{last=NR} {lines[NR]=$0} END{for(i=1;i<=last;i++) print lines[i]}' "$_tmp_agents" > "$AGENTS"
-    rm -f "$_tmp_agents"
-    printf '\n%s\n' "$BLOCK" >> "$AGENTS"
-    ok "AGENTS.md block refreshed (old neuron block stripped, current block written)"
-  else
-    skip "AGENTS.md already wired (re-run with --force to refresh the managed block)"
-  fi
-else
-  printf '\n%s\n' "$BLOCK" >> "$AGENTS"
-  ok "AGENTS.md wired"
-fi
+wire_managed_block "$AGENTS" "$BEGIN" "$END" "$BLOCK" "AGENTS.md"
 
 # ── Wire TOOLS.md ────────────────────────────────────────────────────────────
 # AGENTS.md carries the WHEN/policy (session_deep_recall). TOOLS.md carries the
@@ -2674,13 +2676,7 @@ TOOLS_BLOCK="$BEGIN
 $TOOLS_BODY
 $END"
 
-touch "$TOOLS"
-if grep -qF "$BEGIN" "$TOOLS" 2>/dev/null; then
-  skip "TOOLS.md already wired (use --force to refresh)"
-else
-  printf '\n%s\n' "$TOOLS_BLOCK" >> "$TOOLS"
-  ok "TOOLS.md wired"
-fi
+wire_managed_block "$TOOLS" "$BEGIN" "$END" "$TOOLS_BLOCK" "TOOLS.md"
 
 # ── Patch openclaw.json bootstrap caps ───────────────────────────────────────
 hr "OpenClaw config"
