@@ -49,6 +49,7 @@ while [ $# -gt 0 ]; do
     --force)          FORCE=1; shift ;;
     --agree)          LICENSE_AGREED=1; shift ;;
     --no-auto-base)   NO_AUTO_BASE=1; shift ;;
+    --dry-run)        DRY_RUN=1; shift ;;
     -h|--help)        grep -E '^#( |$)' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
@@ -447,6 +448,10 @@ PY="$(command -v python3)"
 py_can_import() { "$PY" -c "import $1" 2>/dev/null; }
 pip_install() {
   # usage: pip_install <pip-args...>; returns 0 on success.
+  # DRY_RUN: never touch the Python environment; just report the planned install.
+  if [ "${DRY_RUN:-0}" = 1 ]; then
+    printf '  [plan] pip install %s\n' "$*"; return 0
+  fi
   # Retries up to 3x with backoff — transient PyPI/index hiccups were causing
   # langchain-chroma (and other deps) to fail on first attempt, forcing manual
   # re-runs during buyer installs. Second attempt of each pass adds
@@ -1016,6 +1021,7 @@ if command -v python3 >/dev/null 2>&1; then
     --workspace "$WS" \
     --agent-id "$AGENT_ID" \
     --skills-dir "$SKILL_DIR/skills" \
+    $( [ "${DRY_RUN:-0}" = 1 ] && printf -- '--dry-run' ) \
     || warn "skill allowlist wiring failed; skills may be excluded"
 else
   warn "python3 not found; skill allowlist wiring skipped"
