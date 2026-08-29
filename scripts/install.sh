@@ -1141,14 +1141,26 @@ if [ "$DO_CRON" = 1 ]; then
 
   # crond does not inherit the interactive shell, so model-routing env vars must
   # be baked into the cron lines or they are silently ignored on scheduled runs.
-  # CHEAP_ENV  -> non-reasoning crons (topic_index, docs_ingest): route to the
-  #              cheap model when DINOMEM_CHEAP_MODEL is set; unset = default-safe.
+  # CHEAP_ENV  -> non-reasoning crons (topic_index, docs_ingest). THE ANCHOR is
+  #              agents.defaults.compaction.model, read AT RUNTIME by
+  #              _cheap_model.py on every cron run -> crons need NOTHING baked in
+  #              the normal case (set compaction.model once, every cron follows,
+  #              no drift). Bake DINOMEM_CHEAP_MODEL ONLY when it actually DIFFERS
+  #              from the anchor (a deliberate per-script override). Baking an
+  #              ambient value == anchor is what caused silent drift.
   # REASON_ENV -> reasoning crons (synthesis, contradiction_check): carry the
   #              thinking level when DINOMEM_REASONING_THINKING is set.
   CHEAP_ENV=""
   if [ -n "${DINOMEM_CHEAP_MODEL:-}" ]; then
-    CHEAP_ENV="DINOMEM_CHEAP_MODEL=$DINOMEM_CHEAP_MODEL "
-    ok "cron cheap model: $DINOMEM_CHEAP_MODEL"
+    # env -u isolates the pure anchor read (_cheap_model.py checks env FIRST, so
+    # without unsetting it the probe returns the env value -> always equal).
+    _anchor_now="$(env -u DINOMEM_CHEAP_MODEL OPENCLAW_CONFIG="${OPENCLAW_JSON:-$HOME/.openclaw/openclaw.json}" python3 "$SKILL_DIR/procedures/_cheap_model.py" 2>/dev/null || true)"
+    if [ "$DINOMEM_CHEAP_MODEL" != "$_anchor_now" ]; then
+      CHEAP_ENV="DINOMEM_CHEAP_MODEL=$DINOMEM_CHEAP_MODEL "
+      ok "cron cheap model (explicit override, differs from anchor): $DINOMEM_CHEAP_MODEL"
+    else
+      ok "cron cheap model: following compaction.model anchor at runtime (no bake)"
+    fi
   fi
   REASON_ENV=""
   if [ -n "${DINOMEM_REASONING_THINKING:-}" ]; then

@@ -8,7 +8,10 @@ call (dinomem bulk + analyst HyDE + no-reasoning crons) follows automatically.
 Precedence (first wins):
   1. DINOMEM_CHEAP_MODEL env  -> explicit override (e.g. a cron that pins a model)
   2. agents.defaults.compaction.model in openclaw.json  -> the ANCHOR
-  3. hardcoded haiku fallback  -> safety net (never 404s if config unreadable)
+  3. "" (empty)  -> caller falls back to the user's OpenClaw default (model.primary)
+WHY empty and NOT a hardcoded model (e.g. haiku): a fixed id could 404 on another
+user's provider and ERROR bulk work instead of making it cheaper. Installer WARNS
+when this resolves empty so the user knows to set compaction.model.
 
 Reasoning stays on agents.defaults.model.primary; that is NOT this function's
 job. This only resolves the cheap tier.
@@ -16,8 +19,6 @@ job. This only resolves the cheap tier.
 import json
 import os
 from pathlib import Path
-
-_HAIKU_FALLBACK = "ninerouter/cc/claude-haiku-4-5-20251001"
 
 # Config path is overridable for tests / non-default installs.
 _CONFIG_PATH = os.environ.get("OPENCLAW_CONFIG") or os.environ.get("DINOMEM_OPENCLAW_CONFIG") or str(Path.home() / ".openclaw" / "openclaw.json")
@@ -40,16 +41,20 @@ def _compaction_model(config_path: str = _CONFIG_PATH) -> str:
 
 
 def cheap_model(config_path: str = _CONFIG_PATH) -> str:
-    """Resolve the cheap model. env override -> compaction anchor -> haiku."""
+    """Resolve the cheap model.
+    env override -> compaction anchor -> legacy env -> "" (caller uses OpenClaw default).
+    """
     env = os.environ.get("DINOMEM_CHEAP_MODEL", "").strip()
     if env:
         return env
     anchor = _compaction_model(config_path)
     if anchor:
         return anchor
-    # legacy back-compat env, then hard fallback
-    legacy = os.environ.get("DINOMEM_NO_REASONING_MODEL", "").strip()
-    return legacy or _HAIKU_FALLBACK
+    # legacy back-compat env, else "" -> caller uses the user's OpenClaw default
+    # (model.primary). NO hardcoded model: a fixed id could 404 on another user's
+    # provider and ERROR bulk work instead of making it cheaper. Installer WARNS
+    # when this resolves empty so the user knows to set compaction.model.
+    return os.environ.get("DINOMEM_NO_REASONING_MODEL", "").strip()
 
 
 if __name__ == "__main__":
