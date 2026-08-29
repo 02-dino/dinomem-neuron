@@ -734,6 +734,35 @@ hr "Python dependencies"
 py_can_import langchain_chroma && skip "langchain-chroma (installed)" || (
   pip_install langchain-chroma && ok "langchain-chroma" || warn "langchain-chroma install failed"
 )
+# CPU-only torch BEFORE langchain-huggingface. WHY: langchain-huggingface pulls
+# sentence-transformers -> torch, and PyPI's DEFAULT torch is the CUDA build
+# (+cuXXX, ~1.2 GiB + up to ~2.7 GiB of unused nvidia/* CUDA libs) even on a
+# box with NO GPU (torch.cuda.is_available() stays False). That dead weight is a
+# top OOM contributor during embedding spikes. Installing the CPU wheel FIRST
+# means langchain-huggingface finds a satisfying torch and never drags CUDA in.
+# Idempotent + covers BOTH cases: fresh box (prevents CUDA) AND an existing box
+# that already has a +cuXXX torch (force-reinstalls it to +cpu, reclaiming the
+# CUDA libs). Skips cleanly if torch is already the +cpu build. GPU boxes: set
+# DINOMEM_TORCH_KEEP_CUDA=1 to opt out. Warn-not-block on any failure.
+if [ "${DINOMEM_TORCH_KEEP_CUDA:-0}" = 1 ]; then
+  skip "torch CPU-pin disabled (DINOMEM_TORCH_KEEP_CUDA=1)"
+else
+  _torch_build=$("$PY" -c "import torch,sys; sys.stdout.write(torch.__version__)" 2>/dev/null || echo "")
+  case "$_torch_build" in
+    *+cpu)
+      skip "torch already CPU-only ($_torch_build)" ;;
+    "")
+      # torch absent -> install CPU wheel so langchain-huggingface won't pull CUDA.
+      pip_install torch --index-url https://download.pytorch.org/whl/cpu \
+        && ok "torch (CPU-only) installed" \
+        || warn "torch CPU install failed — langchain-huggingface may pull the CUDA build (works but heavier). Fix: $PY -m pip install torch --index-url https://download.pytorch.org/whl/cpu" ;;
+    *)
+      # torch present but CUDA/other build -> swap in place to CPU (reclaims nvidia libs).
+      pip_install --force-reinstall torch --index-url https://download.pytorch.org/whl/cpu \
+        && ok "torch switched to CPU-only (was $_torch_build) — reclaimed unused CUDA libs" \
+        || warn "could not switch torch to CPU (have $_torch_build) — still works, just heavier. Fix: $PY -m pip install --force-reinstall torch --index-url https://download.pytorch.org/whl/cpu" ;;
+  esac
+fi
 py_can_import langchain_huggingface && skip "langchain-huggingface (installed)" || (
   pip_install langchain-huggingface && ok "langchain-huggingface" || warn "langchain-huggingface install failed"
 )
