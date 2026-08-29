@@ -27,3 +27,7 @@ scripts/.check_*.last_run
 
 # local code-structure index (built on demand, never versioned)
 kb/code_graph/
+
+# Internal operator scripts (buyer watermark/leak tracer — never ship)
+scripts/make_release.sh
+scripts/trace_release.sh
