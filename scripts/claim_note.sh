@@ -42,7 +42,17 @@ die() { echo "claim_note: $*" >&2; exit 2; }
 cmd="${1:-}"; note="${2:-}"; claimant="${3:-}"
 [ -n "$cmd" ] || die "usage: claim_note.sh <claim|refresh|release|check> <note> [claimant]"
 [ -n "$note" ] || die "missing <note> path"
-[ -f "$note" ] || die "note not found: $note"
+# Accept either a full path OR a bare _note_ filename: if <note> isn't a file as
+# given, retry it under the memory dir. Makes callers robust to the memory/ prefix
+# (a bare '_note_foo.md' resolves the same as 'memory/_note_foo.md').
+if [ ! -f "$note" ]; then
+  _memdir="DINOMEM_WORKSPACE_PLACEHOLDER/memory"
+  if [ -f "$_memdir/$note" ]; then
+    note="$_memdir/$note"
+  else
+    die "note not found: $note (tried '$note' and '$_memdir/$note')"
+  fi
+fi
 
 now_iso() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 now_epoch() { date -u +%s; }
