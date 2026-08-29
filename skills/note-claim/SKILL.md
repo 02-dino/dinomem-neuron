@@ -6,7 +6,7 @@ description: Claim a dinomem project/task note before editing it from a live int
 # Note claiming (dinomem-neuron)
 
 The Advancer / Improver / Deleter crons READ a note's `claimed_by` / `claimed_at`
-and back off a fresh claim (live-session window: 120 min) — but **nothing writes
+and back off a fresh claim (live-session window: 30 min) — but **nothing writes
 that claim for a live interactive session**. You (the live agent) are the **write
 side** of the protocol. Skip it and a cron can grab the same note mid-edit and
 double-write or re-nag.
