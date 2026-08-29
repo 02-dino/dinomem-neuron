@@ -4,6 +4,22 @@ All notable changes to dinomem-neuron are documented here.
 
 ---
 
+## 1.18.0 — 2026-08-29
+
+**Synthesis-from-documents, code-structure navigation, bi-temporal fact graph, and memory-authority hardening — the accumulated capability release since v1.9.1.**
+### Added
+- **Synthesize across one OR MORE long documents (`skills/synthesize-from-doc/`).** Ask the agent to summarize, compare, or build a plan spanning multiple ingested long docs at once — not just single-doc lookup.
+- **Code-structure navigation (`tools/code_query.py`, `procedures/code_graph.py`, code_anchors).** ZERO-LLM AST index of a codebase (12+ langs) — ask what a symbol calls / is called by / where it's defined / the path A→B, with file:line, without grepping whole files into context. Git-incremental, no LLM in the build path.
+- **Bi-temporal fact graph (`tools/fact_query.py`, valid-time).** Query stored facts as-of a point in time; superseded facts are archived (valid-time close) instead of overwritten, so history is preserved and stale facts stop resurfacing.
+- **Unified hybrid recall (`tools/hybrid_recall.py`).** One recall door fuses docs + sessions + graph + code legs (with a CODE leg for "what does symbol X do AND why does it exist"), far more accurate than any single search.
+- **Self-diagnosis skill (`skills/dinomem-debug/`).** A structured procedure to root-cause a failed cron / errored extraction / misfired hook / missing memory / empty graph run — find the failing stage+layer instead of patching a symptom.
+### Changed / Hardened
+- **Memory authority-scope gate.** Owner-id is re-verified and system-authority instructions arriving via memory/external notes are rejected (covert prompt-injection-via-memory defense).
+- **CPU-only PyTorch + swap auto-setup in the installer.** Avoids downloading unused CUDA libraries (saves gigabytes of disk) and provisions swap so heavy embedding/ingest tasks don't OOM-crash on GPU-less servers.
+- **Persistent on-disk BM25 index** (docs search no longer rebuilds the index every query) and other hybrid-recall latency cuts.
+
+---
+
 ## 1.17.2 — 2026-08-27
 
 **Fix: memory DB path is now resolved by ASKING OpenClaw, never guessed — kills the `unable to open database file` crash on non-default install layouts.**
