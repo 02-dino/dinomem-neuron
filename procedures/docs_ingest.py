@@ -36,18 +36,8 @@ from typing import List, Dict, Tuple, Optional
 
 import pandas as pd
 from langchain_chroma import Chroma
+from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_core.documents import Document
-
-# Shared embedding resolver + e5 query:/passage: prefixing (single source of
-# truth: tools/_embed.py). Migrated 2026-07-09 (L1) off the per-file _PrefixedHFE
-# + local snapshot-resolution dupes so ingest (passage) and query vectors always
-# align to one model/prefix definition. tools/ is a sibling of procedures/.
-import sys as _sys_embed
-_sys_embed.path.insert(0, str(Path(__file__).parent.parent / "tools"))
-try:
-    from tools._embed import get_embeddings, model_id, EMBED_MODEL_META_KEY
-except ImportError:
-    from _embed import get_embeddings, model_id, EMBED_MODEL_META_KEY
 
 # ── Config ────────────────────────────────────────────────────────────────────
 WORKSPACE = Path(__file__).parent.parent
@@ -56,6 +46,33 @@ DB_PATH = str(WORKSPACE / "kb/vector_db_docs")
 DOCS_ENTITY_GRAPH = WORKSPACE / "kb" / "docs_entity_graph.json"
 LOG_FILE = WORKSPACE / "logs/docs_ingest.log"
 
+# Resolve the local model snapshot dynamically (see docs_search.py). Must match
+# what docs_search uses, or ingested vectors won't align with query vectors.
+# Single source of truth via env (fallback const). Must match docs_search.py.
+_MODEL_ID = os.environ.get("DINOMEM_EMBED_MODEL", "intfloat/multilingual-e5-small")
+_hf_cache = Path(
+    os.environ.get("HF_HOME")
+    or (Path.home() / ".cache" / "huggingface")
+)
+_model_root = _hf_cache / "hub" / ("models--" + _MODEL_ID.replace("/", "--")) / "snapshots"
+try:
+    _snaps = sorted(p for p in _model_root.iterdir() if p.is_dir()) if _model_root.exists() else []
+    LOCAL_MODEL_PATH = str(_snaps[-1]) if _snaps else _MODEL_ID
+except Exception:
+    LOCAL_MODEL_PATH = _MODEL_ID
+_LOCAL_MODEL_RESOLVED = LOCAL_MODEL_PATH != _MODEL_ID
+
+# e5 asymmetric prefixing (query:/passage:) — must match docs_search.py.
+_PREFIX_ENABLED = os.environ.get("DINOMEM_EMBED_PREFIX", "1") != "0"
+class _PrefixedHFE(HuggingFaceEmbeddings):
+    def embed_documents(self, texts):
+        if _PREFIX_ENABLED:
+            texts = ["passage: " + t for t in texts]
+        return super().embed_documents(texts)
+    def embed_query(self, text):
+        if _PREFIX_ENABLED:
+            text = "query: " + text
+        return super().embed_query(text)
 
 MAX_SECTION_CHARS = 2000   # split section into paragraphs if larger
 MAX_PARA_CHARS    = 1500   # split paragraph into sentences if larger
@@ -233,38 +250,29 @@ def _get_openclaw_model():
             pass
     return None
 
-# Standard cheap-model tag is DINOMEM_CHEAP_MODEL (matches the rest of dinomem);
-# legacy DINOMEM_NO_REASONING_MODEL kept as back-compat fallback. Unset = OpenClaw
-# default (default-safe — no hardcoded gemini that 404s on buyers without it).
-def _resolve_no_reasoning_model():
-    """Cheap model via the single compaction anchor (procedures/_cheap_model.py):
-    DINOMEM_CHEAP_MODEL env -> agents.defaults.compaction.model -> legacy env.
-    Falls back to raw env if the helper is unavailable (portable ship-safe)."""
-    try:
-        import importlib.util as _ilu
-        _hp = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_cheap_model.py")
-        _spec = _ilu.spec_from_file_location("_cheap_model", _hp)
-        _cm = _ilu.module_from_spec(_spec)
-        _spec.loader.exec_module(_cm)
-        return _cm.cheap_model() or None
-    except Exception:
-        return (
-            os.environ.get("DINOMEM_CHEAP_MODEL", "").strip()
-            or os.environ.get("DINOMEM_NO_REASONING_MODEL", "").strip()
-            or None
-        )
-
-_NO_REASONING_MODEL = _resolve_no_reasoning_model()
+# Cheap tier AUTO-LINKED to agents.defaults.compaction.model via _cheap_model
+# helper (single anchor: change compaction.model -> this follows). Precedence:
+# DINOMEM_CHEAP_MODEL env override -> compaction anchor -> haiku fallback.
+try:
+    import sys as _sys, os as _os2
+    _sys.path.insert(0, _os2.path.dirname(_os2.path.abspath(__file__)))
+    from _cheap_model import cheap_model as _cheap_model_fn
+    _NO_REASONING_MODEL = _cheap_model_fn()
+except Exception:
+    _NO_REASONING_MODEL = (
+        os.environ.get("DINOMEM_CHEAP_MODEL", "").strip()
+        or os.environ.get("DINOMEM_NO_REASONING_MODEL", "").strip()
+        or "ninerouter/cc/claude-haiku-4-5-20251001"
+    )
 
 def _call_llm(prompt: str, max_tokens: int = 1500, model: str = None) -> Tuple[bool, str]:
-    """Call LLM via OpenClaw gateway (cheap model when set, else OpenClaw default)."""
+    """Call LLM via OpenClaw gateway (cheap model by default)."""
     import shutil as _shutil
     _oc = _shutil.which("openclaw") or "/home/linuxbrew/.linuxbrew/bin/openclaw"
     _model = model or _NO_REASONING_MODEL
     _cmd = [_oc, "capability", "model", "run",
-            "--prompt", prompt, "--gateway", "--json"]
-    if _model:
-        _cmd += ["--model", _model]
+            "--prompt", prompt, "--gateway", "--json",
+            "--model", _model]
     try:
         result = subprocess.run(_cmd, capture_output=True, text=True, timeout=90)
         if result.returncode == 0:
@@ -281,161 +289,22 @@ def _call_llm(prompt: str, max_tokens: int = 1500, model: str = None) -> Tuple[b
     return False, ""
 
 
-# ── Vision OCR ─────────────────────────────────────────────────────────────
-# No GPU, no vLLM, no extra Python dep. A user installs dinomem-neuron and shares
+# ── Vision OCR (reuses the SAME gateway model-run endpoint as _call_llm) ───────
+# No GPU, no vLLM, no extra Python dep. A noob installs dinomem-neuron and drops
 # an image or scanned PDF — this reads it via the configured vision model.
-#
-# EFFICIENCY (2026-07-23): `openclaw capability model run --file` COLD-BOOTS a
-# fresh ~600-790MB Node/OpenClaw runtime PER IMAGE just to relay one call to the
-# remote vision model — pure boot waste that, batched across many PDF pages, can
-# swap-thrash a small VPS. So the PRIMARY path is now a direct provider-HTTP POST
-# reusing the buyer's OWN already-configured model + key (the same resolver the
-# memory pipeline already relies on — ZERO new setup for the noob installer). The
-# CLI subprocess stays as an automatic FALLBACK, so anyone whose provider/model
-# can't take images (or where HTTP resolution fails) keeps working exactly as
-# before. No config to enable, no gateway-endpoint dependency, no port/token
-# assumptions — it self-configures from whatever the user already has.
-def _ocr_resolve_provider(model: str):
-    """Resolve (model, api_key, api_base, api_format) from the user's OpenClaw
-    config for the given model — no hardcoded provider. Returns key=None when
-    nothing is resolvable, in which case the HTTP path is skipped (CLI fallback).
-    Mirrors extract_memory.py's proven resolvers so behavior stays consistent."""
-    cfg_path = Path.home() / ".openclaw" / "openclaw.json"
-    if not model or not cfg_path.exists():
-        return model, None, None, "openai"
-    try:
-        cfg = json.loads(cfg_path.read_text())
-    except Exception:
-        return model, None, None, "openai"
-    env = cfg.get("env", {}) or {}
-    providers = cfg.get("models", {}).get("providers", {}) or {}
-
-    def _pick(names, env_key=None):
-        for n in names:
-            p = providers.get(n, {}) or {}
-            if p.get("apiKey"):
-                return p.get("apiKey"), p.get("baseUrl"), p.get("api", "openai")
-        ek = env.get(env_key) if env_key else None
-        return ek, None, "openai"
-
-    key = base = None
-    fmt = "openai"
-    ml = model.lower()
-    if ml.startswith("kimi") or "/kimi" in ml:
-        key, base, fmt = _pick(["kimi-coding", "kimi-code"], "KIMI_API_KEY")
-    elif ml.startswith("gemini") or "/gemini" in ml or ml.startswith("google"):
-        key, base, fmt = _pick(["google"], "GEMINI_API_KEY")
-        if base is None:
-            fmt = "google"
-    elif ml.startswith("openrouter"):
-        key, base, fmt = _pick(["openrouter"], "OPENROUTER_API_KEY")
-    elif "/" in model:
-        prefix = model.split("/", 1)[0]
-        p = providers.get(prefix, {}) or {}
-        key = p.get("apiKey") or env.get(f"{prefix.upper().replace('-', '_')}_API_KEY")
-        base = p.get("baseUrl")
-        fmt = p.get("api", "openai")
-        if not key:
-            orp = providers.get("openrouter", {}) or {}
-            key = orp.get("apiKey") or env.get("OPENROUTER_API_KEY")
-            base = orp.get("baseUrl") or base
-    return model, key, base, fmt
-
-
-def _ocr_via_http(image_path: Path, model: str, timeout: int = 120) -> Tuple[bool, str]:
-    """PRIMARY OCR path: direct provider-HTTP POST with an image_url part, using
-    the buyer's own configured key/base. No Node cold-start. Best-effort — any
-    failure (no key, non-vision model, network) returns (False,'') so the caller
-    falls back to the CLI subprocess. Supports openai-compatible + google formats;
-    anthropic-format providers fall through to CLI (kept simple/robust)."""
-    import base64 as _b64, urllib.request as _u
-    _model, key, base, fmt = _ocr_resolve_provider(model)
-    if not key or not base:
-        return False, ""
-    try:
-        suffix = image_path.suffix.lower()
-        mime = "image/png" if suffix == ".png" else (
-            "image/webp" if suffix == ".webp" else "image/jpeg")
-        b64 = _b64.b64encode(image_path.read_bytes()).decode()
-        data_uri = f"data:{mime};base64,{b64}"
-        if fmt == "google":
-            headers = {"Content-Type": "application/json"}
-            body = {"contents": [{"role": "user", "parts": [
-                {"text": _OCR_PROMPT},
-                {"inline_data": {"mime_type": mime, "data": b64}},
-            ]}], "generationConfig": {"maxOutputTokens": 4000, "temperature": 0.1}}
-            endpoint = f"{base}/models/{_model}:generateContent?key={key}"
-        elif fmt == "anthropic-messages":
-            # Keep the HTTP path OpenAI/Google only; anthropic-format -> CLI fallback.
-            return False, ""
-        else:  # openai-compatible (ninerouter, openrouter, kimi, xai, etc.)
-            headers = {"Content-Type": "application/json",
-                       "Authorization": f"Bearer {key}"}
-            _mid = _model
-            _parts = _model.split("/")
-            if len(_parts) >= 3:
-                _mid = "/".join(_parts[1:])
-            body = {"model": _mid, "messages": [{"role": "user", "content": [
-                {"type": "text", "text": _OCR_PROMPT},
-                {"type": "image_url", "image_url": {"url": data_uri}},
-            ]}], "max_tokens": 4000, "temperature": 0.1, "stream": False}
-            endpoint = f"{base.rstrip('/')}/chat/completions"
-        req = _u.Request(endpoint, data=json.dumps(body).encode(), headers=headers, method="POST")
-        with _u.urlopen(req, timeout=timeout) as resp:
-            raw = resp.read().decode("utf-8")
-        # Handle SSE-style streamed responses defensively.
-        if raw.lstrip().startswith("data:"):
-            chunks = []
-            for line in raw.splitlines():
-                line = line.strip()
-                if not line.startswith("data:"):
-                    continue
-                payload = line[5:].strip()
-                if not payload or payload == "[DONE]":
-                    continue
-                try:
-                    d = json.loads(payload).get("choices", [{}])[0].get("delta", {})
-                    if d.get("content"):
-                        chunks.append(d["content"])
-                except Exception:
-                    pass
-            text = "".join(chunks).strip()
-        else:
-            out = json.loads(raw)
-            if fmt == "google":
-                cands = out.get("candidates", [{}])
-                parts = (cands[0].get("content", {}) or {}).get("parts", []) if cands else []
-                text = "".join(p.get("text", "") for p in parts).strip()
-            else:
-                text = (out.get("choices", [{}])[0].get("message", {}) or {}).get("content", "").strip()
-        if text and text.upper() != "NONE":
-            return True, text
-    except Exception as e:
-        log(f"  ℹ️  OCR HTTP path unavailable ({str(e)[:120]}) — falling back to CLI")
-    return False, ""
-
-
 def _ocr_image(image_path: Path, model: str = None) -> Tuple[bool, str]:
-    """Transcribe text/tables/charts from an image. PRIMARY: direct provider-HTTP
-    (no Node cold-start). FALLBACK: `openclaw capability model run --file`.
-    Returns (ok, text)."""
-    _model = model or _NO_REASONING_MODEL
-
-    # PRIMARY: direct provider HTTP — reuses the buyer's own configured model/key,
-    # zero new setup, no 600MB Node cold-boot per image.
-    ok, text = _ocr_via_http(image_path, _model)
-    if ok:
-        return True, text
-
-    # FALLBACK: the original CLI subprocess. Rare path now (non-vision model,
-    # anthropic-format provider, or HTTP failure). Keeps every install working.
+    """Transcribe text/tables/charts from an image via the OpenClaw gateway
+    vision endpoint (openclaw capability model run --file). Returns (ok, text)."""
     import shutil as _shutil
     _oc = _shutil.which("openclaw") or "/home/linuxbrew/.linuxbrew/bin/openclaw"
+    # OCR is transcription, not reasoning — cheap model only (matches neuron pattern).
+    # No opus fallback: if cheap model isn't configured, that's operator error to fix,
+    # not a reason to silently burn expensive credits.
+    _model = model or _NO_REASONING_MODEL
     _cmd = [_oc, "capability", "model", "run",
             "--file", str(image_path),
-            "--prompt", _OCR_PROMPT, "--gateway", "--json"]
-    if _model:
-        _cmd += ["--model", _model]
+            "--prompt", _OCR_PROMPT,
+            "--gateway", "--json", "--model", _model]
     try:
         result = subprocess.run(_cmd, capture_output=True, text=True, timeout=180)
         if result.returncode == 0:
@@ -468,6 +337,7 @@ def _ocr_pdf_pages(src: Path, pages: List[int], model: str = None) -> str:
                 ["pdftoppm", "-png", "-r", "150", "-f", str(p), "-l", str(p),
                  str(src), base],
                 capture_output=True, text=True, timeout=120)
+            # pdftoppm appends -NN or -N depending on page count; find the output.
             png = None
             for cand in sorted(Path(td).glob(f"page_{p}*.png")):
                 png = cand
@@ -480,237 +350,6 @@ def _ocr_pdf_pages(src: Path, pages: List[int], model: str = None) -> str:
                 blocks.append(f"\n\n## (page {p} — OCR)\n\n{text}")
                 log(f"  🖼️  OCR'd scanned/mixed page {p} ({len(text)} chars)")
     return "".join(blocks)
-
-
-# ── Audio/video transcription (subtitle-first ladder → key-gated → local) ───────
-def _extract_audio(src: Path, out_wav: Path) -> bool:
-    """ffmpeg: extract/normalize any audio or video file to 16k mono wav (what
-    ASR wants). Returns True on success. System ffmpeg only — no Python dep."""
-    import shutil as _shutil
-    if not _shutil.which("ffmpeg"):
-        log("  ⚠️  ffmpeg not found — cannot process audio/video")
-        return False
-    r = subprocess.run(
-        ["ffmpeg", "-y", "-i", str(src), "-ar", "16000", "-ac", "1",
-         "-vn", str(out_wav)],
-        capture_output=True, text=True, timeout=900)
-    return r.returncode == 0 and out_wav.exists()
-
-
-def _transcribe_deepgram(wav: Path) -> str:
-    """Key-gated fast path. Only used if DEEPGRAM_API_KEY is in env. Best-effort;
-    returns '' on any failure so the caller falls through to local ASR."""
-    key = os.environ.get("DEEPGRAM_API_KEY")
-    if not key:
-        return ""
-    try:
-        import urllib.request
-        data = wav.read_bytes()
-        req = urllib.request.Request(
-            "https://api.deepgram.com/v1/listen?model=nova-2&smart_format=true",
-            data=data,
-            headers={"Authorization": f"Token {key}",
-                     "Content-Type": "audio/wav"},
-            method="POST")
-        with urllib.request.urlopen(req, timeout=300) as resp:
-            j = json.loads(resp.read().decode())
-        alt = j["results"]["channels"][0]["alternatives"][0]
-        txt = alt.get("transcript", "").strip()
-        if txt:
-            log("  🎙️  transcribed via Deepgram (key-gated fast path)")
-        return txt
-    except Exception as e:
-        log(f"  ⚠️  Deepgram path failed ({e}); falling back to local ASR")
-        return ""
-
-
-def _transcribe_local(wav: Path) -> str:
-    """No-key/no-GPU fallback: faster-whisper (CTranslate2, no torch). LAZY,
-    GUARDED import — if the running interpreter lacks faster-whisper, we log a
-    one-line install hint and return '' (ingest continues for everything else,
-    never crashes). ~850MB peak RAM, ~0.22x realtime on CPU as benchmarked."""
-    try:
-        from faster_whisper import WhisperModel
-    except Exception:
-        log("  ⚠️  faster-whisper not installed for this interpreter — audio/video "
-            "skipped. Install: pip install faster-whisper (no GPU/torch needed).")
-        return ""
-    try:
-        model = WhisperModel(_ASR_MODEL, device="cpu", compute_type=_ASR_COMPUTE)
-        segments, info = model.transcribe(str(wav), beam_size=1)
-        parts = [seg.text for seg in segments]
-        txt = " ".join(p.strip() for p in parts).strip()
-        if txt:
-            log(f"  🎙️  transcribed locally (faster-whisper {_ASR_MODEL}, "
-                f"lang={info.language}, {info.duration:.0f}s audio)")
-        return txt
-    except Exception as e:
-        log(f"  ⚠️  local ASR failed: {e}")
-        return ""
-
-
-def _transcribe_media(src: Path) -> str:
-    """Full transcription ladder for a LOCAL audio/video file:
-      ffmpeg → wav  →  (Deepgram if key)  →  (local faster-whisper)  →  ''.
-    Returns transcript text ('' if every rung unavailable — caller writes stub)."""
-    import tempfile
-    # Size cap so a giant upload can't wedge a noob's box.
-    try:
-        mb = src.stat().st_size / (1024 * 1024)
-        if mb > _MEDIA_MAX_MB:
-            log(f"  ⚠️  media {mb:.0f}MB exceeds cap {_MEDIA_MAX_MB}MB — skipped")
-            return ""
-    except Exception:
-        pass
-    with tempfile.TemporaryDirectory(prefix="asr_") as td:
-        wav = Path(td) / "audio.wav"
-        if not _extract_audio(src, wav):
-            log(f"  ⚠️  audio extraction failed for {src.name}")
-            return ""
-        txt = _transcribe_deepgram(wav)      # rung 2: key-gated fast path
-        if not txt:
-            txt = _transcribe_local(wav)     # rung 3: local fallback
-        return txt
-
-
-def _ytdlp_auth_flags() -> List[str]:
-    """Optional YouTube/site auth for yt-dlp, threaded into every yt-dlp call.
-    Datacenter IPs get bot-walled ("Sign in to confirm you're not a bot"); a
-    logged-in cookie set is the only reliable escape. OPT-IN via env — nothing
-    required, auto-used if set, silently skipped if not (degrade-gracefully):
-      YT_COOKIES_FILE         → path to a Netscape cookies.txt (exported once)
-      YT_COOKIES_FROM_BROWSER → e.g. 'chrome' / 'firefox' (reads a live session)
-    File takes precedence over browser if both are set. A stale/missing file is
-    ignored with a one-line warning rather than breaking the call."""
-    cfile = os.environ.get("YT_COOKIES_FILE", "").strip()
-    cbrow = os.environ.get("YT_COOKIES_FROM_BROWSER", "").strip()
-    if cfile:
-        if os.path.isfile(cfile):
-            return ["--cookies", cfile]
-        log(f"  ⚠️  YT_COOKIES_FILE set but not found: {cfile} — ignoring")
-    if cbrow:
-        return ["--cookies-from-browser", cbrow]
-    return []
-
-
-def _fetch_url_subtitles(url: str, td: str) -> str:
-    """Rung 1 of the URL ladder: try to pull an existing subtitle/caption track
-    (manual first, else auto-captions) via yt-dlp — ZERO transcription cost.
-    Returns cleaned plain text, or '' if none available. Best-effort."""
-    import shutil as _shutil, glob as _glob
-    if not _shutil.which("yt-dlp"):
-        return ""
-    base = os.path.join(td, "sub")
-    subprocess.run(
-        ["yt-dlp", *_ytdlp_auth_flags(),
-         "--skip-download", "--write-subs", "--write-auto-subs",
-         "--sub-langs", "en.*,id.*,.*", "--sub-format", "vtt/srt/best",
-         "-o", base, url],
-        capture_output=True, text=True, timeout=120)
-    subs = sorted(_glob.glob(base + "*.vtt") + _glob.glob(base + "*.srt"))
-    if not subs:
-        return ""
-    raw = Path(subs[0]).read_text(encoding="utf-8", errors="replace")
-    # Strip WebVTT/SRT timing + tags → dedup consecutive lines → plain text.
-    out_lines, seen = [], ""
-    for ln in raw.splitlines():
-        s = ln.strip()
-        if (not s or s == "WEBVTT" or "-->" in s or s.isdigit()
-                or s.startswith(("Kind:", "Language:", "NOTE"))):
-            continue
-        s = re.sub(r"<[^>]+>", "", s)  # inline <c> timing tags
-        if s and s != seen:
-            out_lines.append(s)
-            seen = s
-    return "\n".join(out_lines).strip()
-
-
-def _hosted_caption_api(url: str) -> Tuple[str, str]:
-    """Rung 0 (OPT-IN, PRIMARY when configured): a hosted transcript API that
-    runs on the vendor's own IPs/proxies, so it SIDESTEPS this-machine's
-    YouTube bot-wall entirely — the one thing local scraping can't beat on a
-    flagged/datacenter IP. Zero-setup by default (skipped if no key); becomes
-    the primary path the moment a key is present. Currently supports Supadata
-    (only free-tier vendor with an AI fallback + multi-platform: YT/TikTok/IG/X).
-    Enable via env:  SUPADATA_API_KEY=sk-...
-    Returns (title, transcript) or ('','') to fall through to the yt-dlp ladder.
-    Best-effort: any error → empty → next rung. Never raises."""
-    key = os.environ.get("SUPADATA_API_KEY", "").strip()
-    if not key:
-        return ("", "")
-    try:
-        import requests
-        r = requests.get(
-            "https://api.supadata.ai/v1/transcript",
-            params={"url": url, "text": "true"},
-            headers={"x-api-key": key},
-            timeout=90,
-        )
-        if r.status_code != 200:
-            log(f"  ⚠️  hosted caption API HTTP {r.status_code} — falling through to yt-dlp")
-            return ("", "")
-        data = r.json()
-        # Supadata returns {content: "..."} for text=true, or a segment list.
-        text = data.get("content") or data.get("text") or ""
-        if not text and isinstance(data.get("transcript"), list):
-            text = "\n".join(seg.get("text", "") for seg in data["transcript"])
-        text = (text or "").strip()
-        if text:
-            log(f"  🌐  hosted caption API returned {len(text)} chars (bypassed local IP)")
-            return (url, text)
-        return ("", "")
-    except Exception as e:
-        log(f"  ⚠️  hosted caption API error ({e}) — falling through to yt-dlp")
-        return ("", "")
-
-
-def _transcribe_url(url: str) -> Tuple[str, str]:
-    """URL transcription ladder for a stream link (YouTube/X/TikTok/Vimeo/...):
-      0. hosted caption API (OPT-IN via SUPADATA_API_KEY) — PRIMARY when set;
-         runs on vendor IPs so it beats a flagged/datacenter IP block
-      1. yt-dlp subtitle/caption grab (free, no ASR) — works on clean IPs
-      2. download audio via yt-dlp → Deepgram-if-key → local faster-whisper
-    Returns (title, transcript). transcript '' if every rung fails.
-    Reuses the SAME ffmpeg+ASR ladder as local media — no new dependency."""
-    import shutil as _shutil, tempfile, glob as _glob
-    # Rung 0: hosted API (opt-in). If it answers, we're done — no yt-dlp needed,
-    # no local IP exposure. This is the reliable primary on blocked IPs.
-    h_title, h_text = _hosted_caption_api(url)
-    if h_text:
-        return (h_title or url, h_text)
-    if not _shutil.which("yt-dlp"):
-        log("  ⚠️  yt-dlp not found and no SUPADATA_API_KEY set — cannot ingest URL.")
-        return (url, "")
-    # Best-effort title for the doc heading.
-    title = url
-    try:
-        r = subprocess.run(["yt-dlp", *_ytdlp_auth_flags(),
-                            "--skip-download", "--print", "title", url],
-                           capture_output=True, text=True, timeout=60)
-        if r.returncode == 0 and r.stdout.strip():
-            title = r.stdout.strip().splitlines()[0]
-    except Exception:
-        pass
-    with tempfile.TemporaryDirectory(prefix="url_") as td:
-        # Rung 1: subtitles (free).
-        sub = _fetch_url_subtitles(url, td)
-        if sub:
-            log(f"  📜  used existing captions (no ASR) for {title[:60]}")
-            return (title, sub)
-        # Rung 2/3: download audio, then Deepgram-if-key → local ASR.
-        abase = os.path.join(td, "audio")
-        dl = subprocess.run(
-            ["yt-dlp", *_ytdlp_auth_flags(),
-             "-x", "--audio-format", "mp3", "--no-playlist",
-             "-o", abase + ".%(ext)s", url],
-            capture_output=True, text=True, timeout=900)
-        got = sorted(_glob.glob(abase + ".*"))
-        if dl.returncode != 0 or not got:
-            _hint = ("" if _ytdlp_auth_flags() else
-                     " — set YT_COOKIES_FILE=/path/cookies.txt to bypass YouTube bot-wall")
-            log(f"  ⚠️  URL download failed (may need cookies/login){_hint}: {title[:60]}")
-            return (title, "")
-        return (title, _transcribe_media(Path(got[0])))
 
 
 # ── Entity + relation extraction ──────────────────────────────────────────────
@@ -876,6 +515,8 @@ import shutil
 
 # Extensions read directly as text (no conversion needed)
 _TEXT_EXTS = {'.md', '.markdown', '.txt', '.text'}
+# Extensions routed through pandoc → markdown
+_PANDOC_EXTS = {'.docx', '.doc', '.rtf', '.odt', '.html', '.htm', '.epub'}
 # Image extensions → routed straight through vision-OCR → markdown.
 # First-class ingest inputs: a user can drop a screenshot / photo / scanned page
 # and it gets read + embedded automatically, no manual step, no config toggle.
@@ -890,27 +531,6 @@ _OCR_PROMPT = (
     "reading order. Output ONLY the transcription/markdown, no preamble, no "
     "commentary."
 )
-# Extensions routed through pandoc → markdown
-_PANDOC_EXTS = {'.docx', '.doc', '.rtf', '.odt', '.html', '.htm', '.epub'}
-
-# Audio/video → transcribe (subtitle-first for URLs, else ASR) → markdown.
-# Fully automatic, dependency-light: reuses ffmpeg/yt-dlp (system) + a lazy,
-# GUARDED faster-whisper import as the no-key/no-GPU fallback. If nothing is
-# available the branch degrades gracefully (writes a stub + logs a hint) and
-# NEVER breaks the rest of ingest.
-_AUDIO_EXTS = {'.mp3', '.wav', '.m4a', '.flac', '.ogg', '.opus', '.aac', '.wma', '.aiff'}
-_VIDEO_EXTS = {'.mp4', '.mkv', '.mov', '.webm', '.avi', '.flv', '.wmv', '.m4v', '.mpeg', '.mpg', '.3gp'}
-# ZIP/archive → unpack → recurse each member back through the router.
-_ARCHIVE_EXTS = {'.zip'}
-
-# faster-whisper model + compute — noob-safe defaults (no GPU, no key, ~850MB
-# peak RAM, ~0.22x realtime on CPU as benchmarked). Overridable via env for
-# users who want a bigger/smaller model.
-_ASR_MODEL = os.environ.get("DINOMEM_ASR_MODEL", "base")
-_ASR_COMPUTE = os.environ.get("DINOMEM_ASR_COMPUTE", "int8")
-# Safety caps so a giant media file can't wedge a noob's box.
-_MEDIA_MAX_MB = int(os.environ.get("DINOMEM_MEDIA_MAX_MB", "500"))
-_ARCHIVE_MAX_MEMBERS = int(os.environ.get("DINOMEM_ARCHIVE_MAX_MEMBERS", "200"))
 
 def _slugify(name: str) -> str:
     s = re.sub(r'[^a-zA-Z0-9]+', '-', name.lower()).strip('-')
@@ -929,12 +549,6 @@ def _sniff_format(path: Path) -> str:
         return 'pandoc'
     if ext in _IMAGE_EXTS:
         return 'image'
-    if ext in _AUDIO_EXTS:
-        return 'audio'
-    if ext in _VIDEO_EXTS:
-        return 'video'
-    if ext in _ARCHIVE_EXTS:
-        return 'archive'
     # No (or unknown) extension → sniff magic bytes
     try:
         head = path.read_bytes()[:12]
@@ -943,32 +557,8 @@ def _sniff_format(path: Path) -> str:
     if head[:4] == b'%PDF':
         return 'pdf'
     if head[:4] == b'PK\x03\x04':
-        # zip container — could be a docx/odt/epub/xlsx (pandoc) OR a plain .zip
-        # archive to walk. Disambiguate by extension when present; a bare
-        # PK-header with a .zip (or no) extension → treat as archive to unpack.
-        if ext in _ARCHIVE_EXTS or ext == '':
-            return 'archive'
+        # zip container — docx/odt/epub/xlsx; pandoc handles the doc types
         return 'pandoc'
-    # Media magic bytes (extension-less inbound files from media/inbound/<uuid>)
-    if head[:3] == b'ID3' or head[:2] in (b'\xff\xfb', b'\xff\xf3', b'\xff\xf2'):  # MP3
-        return 'audio'
-    if head[:4] == b'RIFF' and head[8:12] == b'WAVE':  # WAV
-        return 'audio'
-    if head[:4] == b'OggS':                            # Ogg (audio or video)
-        return 'audio'
-    if head[:4] == b'fLaC':                            # FLAC
-        return 'audio'
-    if head[4:8] == b'ftyp':                           # MP4/MOV/M4A container
-        # ftyp brand distinguishes audio-only (M4A) from video (MP4/MOV); ffmpeg
-        # handles both the same way, so route to 'video' (audio strip works too).
-        brand = head[8:12] if len(head) >= 12 else b''
-        if brand[:3] in (b'M4A', b'M4B'):
-            return 'audio'
-        return 'video'
-    if head[:4] == b'\x1aE\xdf\xa3':                   # Matroska/WebM
-        return 'video'
-    if head[:3] == b'FLV':                             # FLV
-        return 'video'
     if head[:5].lower() == b'<html' or head[:9].lower() == b'<!doctype':
         return 'pandoc'
     # Image magic bytes (extension-less inbound files, e.g. media/inbound/<uuid>)
@@ -1016,7 +606,7 @@ def extract_to_markdown(src: Path) -> Path:
     if fmt == 'image':
         # First-class image ingest: OCR the image via the gateway vision model
         # (no GPU, no extra dep) and write the transcription as markdown. Fully
-        # automatic — a user just shares a screenshot/photo/scan and it lands in
+        # automatic — a user just drops a screenshot/photo/scan and it lands in
         # the KB. If OCR yields nothing, we still write a stub so the file is
         # tracked (and the failure is visible in the log) rather than silently
         # vanishing.
@@ -1077,26 +667,6 @@ def extract_to_markdown(src: Path) -> Path:
         if r.returncode != 0 or not out.exists():
             raise RuntimeError(f"pandoc failed: {r.stderr.strip()[:200]}")
         log(f"  extracted (pandoc): {src.name} → {out.name}")
-        return out
-
-    if fmt in ('audio', 'video'):
-        # First-class audio/video ingest: transcribe via the ladder
-        # (ffmpeg → Deepgram-if-key → local faster-whisper) and write the
-        # transcript as markdown. Fully automatic — a user shares an mp3/mp4 and
-        # it lands in the KB, searchable via docs_search. If no ASR rung is
-        # available we still write a stub so the file is tracked and the reason
-        # is visible in the log (never crashes ingest).
-        text = _transcribe_media(src)
-        title = src.stem.replace('_', ' ').replace('-', ' ').strip() or 'Recording'
-        kind = 'video' if fmt == 'video' else 'audio'
-        if text:
-            body = f"# {title}\n\n_({kind} transcript)_\n\n{text}\n"
-            log(f"  extracted ({kind} transcript): {src.name} → {out.name} ({len(text)} chars)")
-        else:
-            body = (f"# {title}\n\n_({kind} ingested but no transcript — no ASR "
-                    f"backend available; see log)_\n")
-            log(f"  ⚠️  {kind} transcript empty: {src.name} → {out.name} (stub written)")
-        out.write_text(body, encoding='utf-8')
         return out
 
     raise RuntimeError(f"unsupported/undetectable format: {src.name}")
@@ -1204,61 +774,10 @@ def ingest_files(paths: List[Path], db: Chroma, existing_hashes: Dict[str, str],
 
     return stats
 
-
-def _expand_archives(paths: List[Path]) -> List[Path]:
-    """Replace any .zip in `paths` with its extracted, ingestible members.
-    Each member is unpacked into docs/_unzipped/<zipslug>/ (so it lives under
-    DOCS_DIR and gets picked up + re-sniffed like any other file) and returned
-    as a normal ingest path. Non-ingestible members are skipped. Guards:
-      - path traversal (Zip Slip): members escaping the target dir are dropped.
-      - member count cap (_ARCHIVE_MAX_MEMBERS) so a zip-bomb can't wedge the box.
-    Best-effort: a broken zip logs a warning and is skipped, never crashes."""
-    import zipfile
-    _MEMBER_EXTS = (_TEXT_EXTS | {'.pdf'} | _PANDOC_EXTS | _IMAGE_EXTS
-                    | _AUDIO_EXTS | _VIDEO_EXTS)  # NOTE: no _ARCHIVE_EXTS — one level
-    out: List[Path] = []
-    for p in paths:
-        if p.suffix.lower() not in _ARCHIVE_EXTS:
-            out.append(p)
-            continue
-        dest = DOCS_DIR / "_unzipped" / _slugify(p.stem)
-        dest.mkdir(parents=True, exist_ok=True)
-        dest_resolved = str(dest.resolve())
-        try:
-            with zipfile.ZipFile(p) as zf:
-                members = [m for m in zf.namelist() if not m.endswith('/')]
-                if len(members) > _ARCHIVE_MAX_MEMBERS:
-                    log(f"  ⚠️  archive {p.name}: {len(members)} members exceeds cap "
-                        f"{_ARCHIVE_MAX_MEMBERS} — taking first {_ARCHIVE_MAX_MEMBERS}")
-                    members = members[:_ARCHIVE_MAX_MEMBERS]
-                extracted = 0
-                for m in members:
-                    ext = os.path.splitext(m)[1].lower()
-                    if ext not in _MEMBER_EXTS:
-                        continue  # skip non-ingestible members (exe, bin, nested zip)
-                    target = (dest / m).resolve()
-                    # Zip Slip guard: member must stay inside dest.
-                    if not str(target).startswith(dest_resolved + os.sep):
-                        log(f"  ⚠️  archive {p.name}: skipped unsafe path '{m}'")
-                        continue
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    with zf.open(m) as srcf, open(target, 'wb') as dstf:
-                        shutil.copyfileobj(srcf, dstf)
-                    out.append(target)
-                    extracted += 1
-            log(f"  📦 archive {p.name} → {extracted} ingestible member(s) unpacked")
-        except Exception as e:
-            log(f"  ⚠️  archive {p.name} skipped (unreadable zip): {e}")
-    return out
-
-
 # ── Main ──────────────────────────────────────────────────────────────────────
 def main():
     parser = argparse.ArgumentParser(description='Ingest long-form docs into vector DB')
     parser.add_argument('--file', type=Path, help='Ingest single file')
-    parser.add_argument('--url', type=str,
-                        help='Ingest a stream/video URL (YouTube/X/TikTok/Vimeo/...): '
-                             'subtitle-first, else transcribe via the ASR ladder')
     parser.add_argument('--dry-run', action='store_true', help='Show what would be ingested, write nothing')
     parser.add_argument('--skip-entity-extraction', action='store_true',
                         help='Skip LLM entity/relation extraction (faster, no graph update)')
@@ -1269,48 +788,27 @@ def main():
     if args.dry_run:
         log("DRY RUN — no writes")
 
-    # Init embeddings (shared resolver: model id + local-snapshot resolution +
-    # asymmetric query:/passage: prefixing all centralized in tools/_embed.py).
+    # Init embeddings
     log("Loading embeddings model...")
-    embeddings = get_embeddings()
+    embeddings = _PrefixedHFE(
+        model_name=LOCAL_MODEL_PATH,
+        model_kwargs={'device': 'cpu', 'local_files_only': _LOCAL_MODEL_RESOLVED},
+        encode_kwargs={'normalize_embeddings': True}
+    )
 
     # Init DB
     Path(DB_PATH).mkdir(parents=True, exist_ok=True)
     db = Chroma(
         persist_directory=DB_PATH,
         embedding_function=embeddings,
-        # Stamp the embedding model id so query paths can detect a model mismatch
-        # (model swap vs an old-model store => silent garbage). See _embed.warn_on_mismatch.
-        collection_metadata={
-            "description": "Long-form document store (structure-aware chunking)",
-            EMBED_MODEL_META_KEY: model_id(),
-        }
+        collection_metadata={"description": "Long-form document store (structure-aware chunking)"}
     )
 
     existing_hashes = get_existing_hashes(db)
     log(f"Existing DB: {len(existing_hashes)} source files")
 
     # Collect files to process
-    if getattr(args, 'url', None):
-        # URL ingest: transcribe (subtitle-first → ASR ladder) → write a markdown
-        # doc under docs/, then fall through to normal ingest of that one file.
-        DOCS_DIR.mkdir(parents=True, exist_ok=True)
-        title, text = _transcribe_url(args.url)
-        slug = _slugify(title if title and title != args.url else 'url-transcript')
-        out = DOCS_DIR / f"{slug}.md"
-        n = 2
-        while out.exists():
-            out = DOCS_DIR / f"{slug}-{n}.md"; n += 1
-        if text:
-            out.write_text(f"# {title}\n\n_(source: {args.url})_\n\n{text}\n",
-                           encoding='utf-8')
-            log(f"  extracted (URL transcript): {args.url} → {out.name} ({len(text)} chars)")
-        else:
-            out.write_text(f"# {title}\n\n_(source: {args.url} — no transcript "
-                           f"available; see log)_\n", encoding='utf-8')
-            log(f"  ⚠️  URL transcript empty: {args.url} → {out.name} (stub written)")
-        paths = [out]
-    elif args.file:
+    if args.file:
         if not args.file.exists():
             log(f"ERROR: file not found: {args.file}")
             sys.exit(1)
@@ -1318,28 +816,18 @@ def main():
     else:
         DOCS_DIR.mkdir(parents=True, exist_ok=True)
         # Pick up EVERY supported input, not just markdown: text, PDFs, Office
-        # docs, images (jpg/png/etc → vision-OCR), audio/video (mp3/mp4/etc →
-        # transcribe), and archives (.zip → walked, each member re-routed).
-        # Scanned/mixed PDFs get auto-OCR'd for their visual pages. Fully
-        # automatic — a user just shares any file and it ingests.
-        _INGEST_EXTS = (_TEXT_EXTS | {'.pdf'} | _PANDOC_EXTS | _IMAGE_EXTS
-                        | _AUDIO_EXTS | _VIDEO_EXTS | _ARCHIVE_EXTS)
+        # docs, AND images (jpg/png/etc). Images route through vision-OCR;
+        # scanned/mixed PDFs get auto-OCR'd for their visual pages. Fully
+        # automatic — a user just drops any file into docs/ and it ingests.
+        _INGEST_EXTS = _TEXT_EXTS | {'.pdf'} | _PANDOC_EXTS | _IMAGE_EXTS
         paths = sorted(
             p for p in DOCS_DIR.glob("**/*")
             if p.is_file() and p.suffix.lower() in _INGEST_EXTS
         )
         if not paths:
             log(f"No ingestible files found in {DOCS_DIR} "
-                f"(supported: text, pdf, office docs, images, audio, video, zip)")
+                f"(supported: text, pdf, office docs, images)")
             sys.exit(0)
-
-    # Expand any archives (.zip) in-place: unpack → each member becomes its own
-    # ingest path, re-routed through the same sniffer. Nested archives are
-    # unpacked one level (a zip-in-zip member is expanded on the next daily run
-    # once extracted). Capped by _ARCHIVE_MAX_MEMBERS so a zip-bomb can't wedge
-    # the box. Fully automatic — a user shares a .zip of docs and all readable
-    # members land in the KB.
-    paths = _expand_archives(paths)
 
     log(f"Files to check: {len(paths)}")
 

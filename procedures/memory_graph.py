@@ -2,7 +2,7 @@
 """
 memory_graph.py — Layer 2 "neuron" linker for agent memory.
 
-Reads the EXISTING embeddings in DINOMEM_AGENT_ID_PLACEHOLDER.sqlite (no embedding-provider calls)
+Reads the EXISTING embeddings in analyst.sqlite (no embedding-provider calls)
 and builds an association graph: every memory chunk linked to its closest
 neighbors by cosine similarity. Non-destructive — never touches memory/*.md.
 
@@ -75,6 +75,12 @@ try:
 except (ImportError, OSError):
     SPACY_AVAILABLE = False
 
+# Live memory index moved to the agent-scoped path with the NEW memory_index_* schema
+# (old /root/.openclaw/memory/analyst.sqlite is dead; main.sqlite/analysis.sqlite are
+# stale 0-row shells). _schema_adapter resolves both old and new table names, so pointing
+# here just works. Env override wins so installers/other agents can relocate it.
+_DB_DEFAULT = "/root/.openclaw/agents/analyst/agent/openclaw-agent.sqlite"
+# DB_PATH resolved just below, AFTER `import os as _os` (env override read there).
 # Output lives in kb/memory_neuron/ — a deliberate home that documents this is
 # the "neuron" association layer OVER the memory corpus.
 # IMPORTANT: it must NOT sit under memory/ (the memory indexer scans memory/
@@ -83,35 +89,14 @@ except (ImportError, OSError):
 # into any index (avoids the derived-data feedback loop).
 # Workspace resolution (priority): DINOMEM_WORKSPACE env var > install-time sed
 # substitution > self-locate from this file's location (safety net if sed was
-# skipped/failed).
+# skipped/failed). DB_PATH (sqlite) stays on sed — it is not self-locatable.
 import os as _os
-_WS_DEFAULT = "DINOMEM_WORKSPACE_PLACEHOLDER"
+DB_PATH = Path(_os.environ.get("DINOMEM_MEMORY_DB", _DB_DEFAULT))
+_WS_DEFAULT = "/root/.openclaw/workspace-analyst"
 if _WS_DEFAULT.startswith("DINOMEM_"):  # sed did not run
     _WS_DEFAULT = str(Path(__file__).resolve().parent.parent)
 _WS = Path(_os.environ.get("DINOMEM_WORKSPACE", _WS_DEFAULT))
 OUT_DIR = _WS / "kb/memory_neuron/l2_graph"
-
-# DB path resolution (priority): DINOMEM_MEMORY_DB env var > install-time sed
-# substitution > runtime layout-probe fallback. PRIMARY: install.sh asks
-# OpenClaw (`openclaw memory status` -> Store:) and bakes the REAL path here —
-# correct on any layout/agent-id. This runtime block only fires as a FALLBACK
-# when the sed was skipped (e.g. a git-pull update without re-running the
-# installer). It probes the two known OpenClaw layouts, modern first, so it
-# degrades to a real path on this box rather than a single wrong convention
-# guess. Env DINOMEM_MEMORY_DB always wins.
-_DB_DEFAULT = "DINOMEM_DB_PLACEHOLDER"
-if _DB_DEFAULT.startswith("DINOMEM_"):  # sed skipped — fall back to layout probe
-    _cfg_home = Path(_os.environ.get("OPENCLAW_CONFIG_PATH", "")).parent \
-        if _os.environ.get("OPENCLAW_CONFIG_PATH") \
-        else Path(_os.environ.get("OPENCLAW_DIR", str(Path.home() / ".openclaw")))
-    _agent = _os.environ.get("DINOMEM_AGENT_ID", "analyst")
-    _cands = [
-        _cfg_home / "agents" / _agent / "agent" / "openclaw-agent.sqlite",
-        _cfg_home / "memory" / f"{_agent}.sqlite",
-        _cfg_home / "memory" / "main.sqlite",
-    ]
-    _DB_DEFAULT = str(next((c for c in _cands if c.exists()), _cands[0]))
-DB_PATH = Path(_os.environ.get("DINOMEM_MEMORY_DB", _DB_DEFAULT))
 
 
 def compute_signature(db_path):
@@ -363,7 +348,14 @@ def extract_entity_nodes(memory_dir):
                     seen[key] = {"name": name, "type": etype, "mentions": 1}
             except Exception:
                 continue  # graceful: skip malformed lines
-    return sorted(seen.values(), key=lambda x: x["mentions"], reverse=True)
+    raw = sorted(seen.values(), key=lambda x: x["mentions"], reverse=True)
+    # P1 (2026-08-12): resolve surface-form variants into canonical entities (aliases[]).
+    # Fail-open: if the resolver import fails, fall back to raw surface forms (old behavior).
+    try:
+        from entity_resolver import resolve_entities  # noqa: E402
+        return resolve_entities(raw)
+    except Exception:
+        return raw
 
 
 def extract_relation_edges(memory_dir, nodes, entity_nodes=None):
@@ -375,12 +367,12 @@ def extract_relation_edges(memory_dir, nodes, entity_nodes=None):
     Unmatched subjects/objects are returned as forward references with node_idx=-1.
     Also runs spaCy SVO extraction if SPACY_AVAILABLE (confidence 0.6).
 
-    P2: relation endpoints resolve through ENTITY NAMES, not the chunk node_texts. Relation
-    subjects/objects are SHORT strings (e.g. a filename, a short label); they cannot reach the
-    MATCH_THRESHOLD SequenceMatcher ratio against a long `title+snippet` node_text, so matching
-    vs chunk-texts leaves every edge at a=-1/b=-1 (endpoint-less, unwalkable). We instead match
-    each endpoint against the SHORT entity NAMES, then map the winning entity to its
-    representative nodes[] index via `entity_nodes[i]["node_idx"]` (the backref build_graph
+    P2 (2026-08-12): endpoints resolve through ENTITY NAMES, not the 12k chunk node_texts.
+    Relation subjects/objects are SHORT strings (`check_projects.sh`, `API key`); they cannot
+    reach the 0.70 SequenceMatcher ratio against a 60-200 char `title+snippet` node_text, so
+    matching vs chunk-texts left EVERY edge at a=-1/b=-1 (endpoint-less, unwalkable). We instead
+    fuzzy-match each endpoint against the ~361 short entity NAMES, then map the winning entity to
+    its representative nodes[] index via `entity_nodes[i]["node_idx"]` (the backref build_graph
     stamps = the entity's best-matching chunk). This keeps a/b VALID nodes[] indices, so
     graph_search's existing reader traverses them unchanged. Fail-open: no entity_nodes / no
     node_idx -> fall back to the legacy chunk fuzzy scan (old a=-1 behavior, nothing regresses).
@@ -388,14 +380,10 @@ def extract_relation_edges(memory_dir, nodes, entity_nodes=None):
     from difflib import SequenceMatcher
     entity_nodes = entity_nodes or []
 
-    RELATION_RE = re.compile(
-        r'^\[relation\]\s*(.+?)\s*\u2192\s*(.+?)\s*\u2192\s*(.+?)\s*$'
-    )
-
-    # P1: resolve surface-form variants into canonical entities (aliases[]) so that
-    # backtick/quote/glob/whitespace variants of the same entity collapse to ONE node
-    # endpoint. Only the MATCH KEY is canonicalized; the raw subject/object text is still
-    # stored on the edge. Fail-open: if the resolver is unavailable -> identity (old behavior).
+    # P1 (2026-08-12): alias map so relation subject/object surface-form variants
+    # (`neuron` vs `dinomem-neuron`, backtick/glob variants) collapse to ONE canonical
+    # endpoint BEFORE fuzzy_match_node. Raw subject/object kept in the edge for provenance;
+    # only the MATCH KEY is canonicalized. Fail-open: no resolver -> identity (old behavior).
     try:
         from entity_resolver import build_alias_map, canonicalize as _canon  # noqa: E402
         _alias_map = build_alias_map(extract_entity_nodes(memory_dir))
@@ -404,32 +392,36 @@ def extract_relation_edges(memory_dir, nodes, entity_nodes=None):
         def _canon(t, m):  # noqa: E306
             return t
 
+    RELATION_RE = re.compile(
+        r'^\[relation\]\s*(.+?)\s*\u2192\s*(.+?)\s*\u2192\s*(.+?)\s*$'
+    )
+
     # Build lookup: node_idx -> combined text for fuzzy matching
     node_texts = []
     for n in nodes:
         node_texts.append((n["title"] + " " + n["snippet"]).lower())
 
-    # ── Length-bucket index (perf, byte-identical output) ──
-    #    fuzzy_match_node otherwise touches every node for each unique endpoint term
-    #    (O(terms × nodes)) -> a multi-minute CPU stall once the corpus grows to many
-    #    thousands of chunks. SequenceMatcher.ratio() has a hard length upper bound:
-    #    ratio <= 2*min(La,Lb)/(La+Lb). To clear MATCH_THRESHOLD a term of length L can
-    #    ONLY match node-texts whose compared length lies in a narrow band around L. Bucket
-    #    node indices by length once, then scan ONLY the feasible band per term. Every
-    #    skipped node is provably below threshold, so the argmax/score is unchanged.
-    #    Deterministic / T1 / $0 / no LLM/embed/network.
+    # ── Bottleneck #3 fix (2026-08-12, py-spy PROVEN): the memoize+prune loop still touched
+    #    all ~12k nodes for each of ~2446 unique endpoint terms (~29M SequenceMatcher setups) ->
+    #    the real 30-min hang. Add a LENGTH-BUCKET index. SequenceMatcher.ratio() has a hard
+    #    length upper bound: ratio <= 2*min(La,Lb)/(La+Lb). To clear MATCH_THRESHOLD=0.70 a term
+    #    of length L can ONLY match node-texts whose (capped) length lies in [0.54L, 1.86L]
+    #    (solving 2*min/(sum) >= 0.70). Bucket node indices by their capped length once, then per
+    #    term scan ONLY the feasible length band. Output is byte-identical (same argmax/score):
+    #    every skipped node is provably below threshold, so it could never have been the best.
     _MATCH_THRESHOLD = 0.70
+    # capped length = len(nt[:cut]); cut depends on the term, so bucket by RAW len and widen the
+    # band by the max cut slack (30) to stay conservative (never drop a feasible node).
     from collections import defaultdict as _dd
-    import bisect as _bisect
     _len_buckets = _dd(list)
     for _i, _nt in enumerate(node_texts):
         _len_buckets[len(_nt)].append(_i)
     _bucket_lengths = sorted(_len_buckets.keys())
+    import bisect as _bisect
 
     # ── Bottleneck #2 fix (2026-08-12): fuzzy_match_node was O(terms × nodes) pure-Python
-    #    SequenceMatcher.ratio() called ~4× per [relation] line across every md file -> multi-
-    #    minute silent CPU stall once the corpus grows past a few thousand chunks. Two
-    #    BYTE-IDENTICAL-OUTPUT accelerations:
+    #    SequenceMatcher.ratio() called ~4× per [relation] line across 12,138 md files -> multi-
+    #    minute silent CPU stall at 12k scale. Two BYTE-IDENTICAL-OUTPUT accelerations:
     #      1. MEMOIZE: the same subject/object terms recur constantly across files; cache the
     #         (idx, score) result per lowercased-term so each unique term is scored ONCE.
     #      2. CHEAP-BOUND PREFILTER: SequenceMatcher exposes real_quick_ratio() (length-only) and
@@ -450,16 +442,16 @@ def extract_relation_edges(memory_dir, nodes, entity_nodes=None):
         sm = SequenceMatcher(None, term_lower, "")
         best_idx, best_score = -1, 0.0
         # Length-feasible band. EFFECTIVE compared length of a node is eff = min(len(nt), cut).
-        # ratio upper bound vs a length-L term is 2*min(L,eff)/(L+eff), which is >= _MATCH_THRESHOLD
-        # only when eff >= L*r/(2-r). BUGFIX: the old band ALSO imposed an UPPER bound on RAW node
-        # length and pruned any node longer than it. That was wrong: a long node is capped to `cut`
-        # chars, so its eff = cut = L+30 (> L) is ALWAYS feasible -- the upper bound incorrectly
-        # excluded EVERY long chunk-text for a short term, returning -1 where the naive full scan
-        # finds a real best. Correct band keeps ONLY the lower bound (eff = min(rl,cut); since cut is
-        # always feasible, eff<lo iff rl<lo). Byte-identical to the naive scan.
+        # ratio upper bound vs a length-L term is 2*min(L,eff)/(L+eff), which is >=0.70 only when
+        # eff >= ~0.538*L. BUGFIX (2026-08-12): the old band ALSO imposed an UPPER bound
+        # hi=int(L/0.538)+1 on RAW node length and pruned any node longer than it. That was wrong:
+        # a long node is capped to `cut` chars, so its eff = cut = L+30 (> L > 0.538L) is ALWAYS
+        # feasible — the upper bound incorrectly excluded EVERY long chunk-text for short terms,
+        # returning -1 where the naive full scan finds a real best (verified: 8/8 short terms
+        # mismatched). Correct band keeps ONLY the lower bound (eff = min(rl,cut); since cut is
+        # always feasible, eff<lo iff rl<lo). Now byte-identical to the naive scan (verified 0/8).
         L = len(term_lower)
-        _r = _MATCH_THRESHOLD
-        lo = int(L * _r / (2 - _r))
+        lo = int(L * 0.538)                      # nodes shorter than this can never reach 0.70
         _lidx = _bisect.bisect_left(_bucket_lengths, lo)
         _candidate_idxs = []
         for _bl in _bucket_lengths[_lidx:]:
@@ -481,19 +473,46 @@ def extract_relation_edges(memory_dir, nodes, entity_nodes=None):
         _fuzzy_cache[term_lower] = result
         return result
 
-    def match_endpoint(term):
-        """Canonicalize the endpoint term, then fuzzy-match against nodes. Aliased surface
-        forms collapse to one node; identical (idx, score) to matching the raw term when the
-        resolver is unavailable."""
-        return fuzzy_match_node(_canon(term, _alias_map))
+    # ── P1 fix B (2026-08-12): O(1) canonical->node_idx map for KNOWN entities. ──
+    #    Root cause of the 30-min hang: P1 canonicalizes each subject/object BEFORE
+    #    fuzzy_match_node, and the canonical string is a DIFFERENT _fuzzy_cache key than the
+    #    raw term the pre-P1 code hit for free -> every canonicalized endpoint forced a fresh
+    #    full ~12k-node SequenceMatcher scan (2570 lines x 2 endpoints). The resolver already
+    #    knows every canonical entity's surface_forms; map each surface form to the node index
+    #    it fuzzy-matches to ONCE, then relation-endpoint matching is an O(1) dict hit for known
+    #    entities. fuzzy_match_node stays as the fallback for genuinely-unknown endpoints, so the
+    #    emitted edges are byte-identical to the naive scan for every matched endpoint.
+    #    Deterministic / T1 / $0. Fail-open: empty map (no resolver) -> pure fuzzy path (old behavior).
+    _canon_to_idx: dict = {}
+    try:
+        for ent in (extract_entity_nodes(memory_dir) or []):
+            for sf in ent.get("surface_forms", [ent.get("name", "")]):
+                canon = ent.get("name", sf)
+                key = (canon or "").lower().strip()
+                if not key or key in _canon_to_idx:
+                    continue
+                idx, score = fuzzy_match_node(canon)
+                if score >= 0.70:
+                    _canon_to_idx[key] = (idx, score)
+    except Exception:
+        _canon_to_idx = {}
 
-    # ── P2: entity-name endpoint resolver (the walkability fix) ──
+    def match_endpoint(term):
+        """Canonicalize term, then O(1) dict hit for known canonical entities; fuzzy fallback
+        only on miss. Byte-identical (idx, score) to the pre-fix canon->fuzzy path."""
+        canon = _canon(term, _alias_map)
+        hit = _canon_to_idx.get((canon or "").lower().strip())
+        if hit is not None:
+            return hit
+        return fuzzy_match_node(canon)
+
+    # ── P2 (2026-08-12): entity-name endpoint resolver (the walkability fix) ──
     #    Build (entity_name_lower -> representative nodes[] idx) from the node_idx backrefs
-    #    build_graph stamps on each entity_node. Also index by surface_forms so aliased variants
-    #    resolve. match_endpoint_entity fuzzy-matches the (canonicalized) term against the SHORT
-    #    entity names (not the chunk node_texts) and returns that entity's representative nodes[]
-    #    idx when score>=_MATCH_THRESHOLD. This is what turns a=-1/b=-1 into walkable endpoints.
-    #    Deterministic / T1 / $0. Fail-open: no entity map -> legacy chunk matcher (old behavior).
+    #    build_graph stamped on each entity_node. Also index by surface_forms so aliased
+    #    variants resolve. Then match_endpoint_entity fuzzy-matches the (canonicalized) term
+    #    against the SHORT entity names (~361, not 12k chunks) and returns that entity's
+    #    representative nodes[] idx when score>=_MATCH_THRESHOLD. This is what turns a=-1/b=-1
+    #    into real walkable endpoints. Deterministic / T1 / $0.
     _ent_name_to_nodeidx = {}
     _ent_names = []
     for _ent in entity_nodes:
@@ -508,9 +527,9 @@ def extract_relation_edges(memory_dir, nodes, entity_nodes=None):
     _ent_match_cache = {}
 
     def match_endpoint_entity(term):
-        """Resolve a relation endpoint to a representative nodes[] idx by matching the CANONICAL
-        term against short entity names. Returns (node_idx, score). Falls back to the legacy chunk
-        matcher (match_endpoint) only when no entity map is available."""
+        """Resolve a relation endpoint to a representative nodes[] idx by fuzzy-matching the
+        CANONICAL term against short entity names. Returns (node_idx, score). Falls back to the
+        legacy chunk matcher (match_endpoint) only when no entity map is available."""
         if not _ent_name_to_nodeidx:
             return match_endpoint(term)   # fail-open: legacy behavior (a=-1 as before)
         canon = (_canon(term, _alias_map) or "").lower().strip()
@@ -519,12 +538,14 @@ def extract_relation_edges(memory_dir, nodes, entity_nodes=None):
         cached = _ent_match_cache.get(canon)
         if cached is not None:
             return cached
-        exact = _ent_name_to_nodeidx.get(canon)   # exact-name O(1) hit first
+        # exact-name O(1) hit first
+        exact = _ent_name_to_nodeidx.get(canon)
         if exact is not None:
             res = (exact, 1.0)
             _ent_match_cache[canon] = res
             return res
-        best_name, best_score = None, 0.0        # else fuzzy over the SHORT entity-name list
+        # else fuzzy over the SHORT entity-name list (cheap: ~361 short strings)
+        best_name, best_score = None, 0.0
         sm = SequenceMatcher(None, canon, "")
         for nm in _ent_names:
             sm.set_seq2(nm)
@@ -550,7 +571,7 @@ def extract_relation_edges(memory_dir, nodes, entity_nodes=None):
     #   - VALID/EVENT time     -> the ONE clock neuron lacks (first_seen = when RECORDED, not when TRUE).
     #   - status / scope / source_memory_ids[] -> genuinely absent, add.
     # DETERMINISTIC / T1 / $0: filename + frontmatter reads only, no LLM/embed. Default-safe so the
-    # legacy edges + graph_search's a/b/confidence/label reader keep working untouched.
+    # 1890 legacy edges + graph_search's a/b/confidence/label reader keep working untouched.
     def _infer_scope(fname: str) -> str:
         """Privacy scope from source filename (proposal: scope enforced BEFORE retrieval;
         stamped at write time). Conservative default = owner (owner's own workspace)."""
@@ -626,17 +647,17 @@ def extract_relation_edges(memory_dir, nodes, entity_nodes=None):
             }))
 
     # --- Pass 2: spaCy SVO triples (optional, confidence 0.6) ---
-    # P3 QUALITY GATE: the SVO auto-miner may be dormant (spaCy not installed / prose yields no clean
-    # triples), but built-for-scale — when it activates or the corpus grows it WILL start mining
-    # triples from casual prose, and spaCy grabs spurious subject/verb/object (pronouns, stopwords,
-    # light/copula verbs like be/have/do/get) that would pollute the typed graph with low-signal
-    # edges. The gate below is a NO-OP while zero SVO edges are produced, and precision-filters
-    # automatically the moment they start. Deterministic / T1 / $0. Three cheap filters:
+    # P3 QUALITY GATE (2026-08-12): the SVO auto-miner is DORMANT today (spaCy not producing edges),
+    # but built-for-scale — when it activates or the corpus grows it WILL start mining triples from
+    # casual prose, and spaCy grabs spurious subject/verb/object (pronouns, stopwords, filler verbs
+    # like "be/have/do/get") that would pollute the typed graph with low-signal edges. The gate below
+    # is a NO-OP while zero SVO edges are produced, and precision-filters automatically the moment
+    # they start. Deterministic / T1 / $0. Three cheap filters:
     #   (1) verb blocklist — drop copula/light/aux verbs that carry no real relation.
-    #   (2) min endpoint length — drop 1-2 char / pronoun-ish endpoints.
-    #   (3) subject != object — drop degenerate self-loops.
-    # Endpoints still must BOTH resolve to real entity nodes (score>=0.70); this gate is an
-    # ADDITIONAL precision layer on top, never a loosening.
+    #   (2) min endpoint length — drop 1-2 char / pronoun-ish endpoints ("it", "he", "we", "a").
+    #   (3) subject!=object — drop degenerate self-loops.
+    # Endpoints still must BOTH resolve to real entity nodes (score>=0.70) as before — this gate is
+    # an ADDITIONAL precision layer on top, never a loosening.
     _SVO_VERB_BLOCKLIST = {
         "be", "have", "do", "get", "go", "make", "take", "come", "seem", "become",
         "say", "see", "know", "think", "want", "use", "look", "give", "tell", "call",
@@ -646,11 +667,11 @@ def extract_relation_edges(memory_dir, nodes, entity_nodes=None):
         s = (subj_text or "").strip()
         o = (obj_text or "").strip()
         v = (verb_text or "").strip().lower()
-        if len(s) < 3 or len(o) < 3:
+        if len(s) < 3 or len(o) < 3:            # (2) drop pronoun/stub endpoints
             return False
-        if v in _SVO_VERB_BLOCKLIST:
+        if v in _SVO_VERB_BLOCKLIST:            # (1) drop copula/light/aux verbs
             return False
-        if s.lower() == o.lower():
+        if s.lower() == o.lower():              # (3) drop self-loops
             return False
         return True
     def _svo_from_doc(doc, node):
@@ -754,10 +775,11 @@ def build_graph(chunks, topk, threshold, cross_file_only, mutual=False):
     # Unit-normalize every vector -> (n, d) matrix. Mirrors normalize(): a
     # zero-norm row stays all-zeros (cosine 0 with everything, so below any
     # positive threshold), exactly as the scalar path treated it.
-    # RESOURCE-AWARE: use float32 for the embedding matrix, not float64. The (n x d) matrix
-    # and every (B x n) similarity block are the peak allocations that OOM-kill small hosts;
-    # float32 HALVES both. Cosine similarity is unaffected at the ~1e-3 threshold granularity
-    # this graph uses (float32 carries ~7 significant digits); the emitted edge set is stable.
+    # RESOURCE-AWARE (2026-08-12): use float32 for the embedding matrix, not float64.
+    # The (n x d) matrix and every (B x n) similarity block are the peak allocations that
+    # OOM-kill small hosts; float32 HALVES both (12k x 384 x 8B ~= 37MB -> 18MB; and each
+    # sim block n*4B instead of n*8B). Cosine similarity is unaffected at the ~1e-3 threshold
+    # granularity this graph uses (float32 carries ~7 significant digits); edge set is stable.
     _FDT = np.float32
     M = np.asarray([c["vec"] for c in chunks], dtype=_FDT)
     norms = np.linalg.norm(M, axis=1, keepdims=True)
@@ -769,13 +791,13 @@ def build_graph(chunks, topk, threshold, cross_file_only, mutual=False):
     # ── RESOURCE-AWARE ROW-BATCHING (fixes the O(n^2)-RAM OOM) ──
     # The old path built the FULL n×n cosine matrix (S = Mn @ Mn.T) plus, for
     # cross-file, a SECOND n×n boolean mask — ~n^2*8 + n^2 bytes held at once.
-    # Fine at a few-thousand-chunk corpus (~tens of MB); past ~10k chunks that's
-    # >1 GB PER matrix and OOM-kills on small hosts. Installers run on wildly
-    # different hardware, so instead of assuming RAM is big enough we STREAM rows
-    # in blocks: each block computes only (B × n) similarities -> peak RAM O(B·n)
-    # not O(n²), producing a BYTE-IDENTICAL edge set (same pairs, sims, ranks,
-    # tie-breaks). Batch size auto-scales to available RAM (checks the hardware),
-    # override with env DINOMEM_GRAPH_BATCH=<rows> for tiny/huge hosts.
+    # Fine at the 3,017-chunk reference corpus (~73 MB); at 12k+ chunks that's
+    # >1.2 GB PER matrix and OOM-kills on small hosts (the corpus grew, the
+    # allocation was never re-checked). We now stream rows in blocks: each block
+    # computes only (B × n) similarities, so peak RAM is O(B·n) not O(n²), while
+    # producing a BYTE-IDENTICAL edge set (same pairs, sims, ranks, tie-breaks).
+    # Batch size auto-scales to available RAM (checks the hardware instead of
+    # assuming it's big enough) with a safe floor/ceiling.
     def _avail_bytes():
         try:  # linux: read MemAvailable, no psutil dep
             for ln in open("/proc/meminfo"):
@@ -783,14 +805,14 @@ def build_graph(chunks, topk, threshold, cross_file_only, mutual=False):
                     return int(ln.split()[1]) * 1024
         except Exception:
             pass
-        return 1 << 30  # conservative 1 GB fallback (non-Linux / unreadable)
+        return 1 << 30  # conservative 1 GB fallback
     bytes_per_row = n * 4  # one float32 similarity row (was float64 n*8)
     avail = _avail_bytes()
-    # RESOURCE-AWARE BUDGET: scale the fraction of free RAM we grab to how much is ACTUALLY
-    # free, so a memory-pressured host goes SLOWER (smaller blocks, more iterations) instead of
-    # grabbing 25% blindly and getting OOM-killed. Under ~1.5 GB free -> 10% (tiny blocks, crawl
-    # but survive); under ~3 GB -> 18%; otherwise 25%. Plus a hard 512 MB cap per block so a huge
-    # host can't allocate a giant temp either. Env DINOMEM_GRAPH_BATCH=<rows> overrides.
+    # RESOURCE-AWARE BUDGET (2026-08-12): scale the fraction of free RAM we grab to how
+    # much is ACTUALLY free, so a memory-pressured host goes SLOWER (smaller blocks, more
+    # iterations) instead of grabbing 25% blindly and getting OOM-killed. Under ~1.5 GB free
+    # -> 10% (tiny blocks, crawl but survive); under ~3 GB -> 18%; otherwise 25%. Also a hard
+    # 512 MB cap per block so a huge host can't accidentally allocate a giant temp either.
     if avail < (1500 << 20):
         frac, note = 0.10, "LOW-MEM: crawling (10% budget)"
     elif avail < (3 << 30):
@@ -799,6 +821,8 @@ def build_graph(chunks, topk, threshold, cross_file_only, mutual=False):
         frac, note = 0.25, "ample mem (25% budget)"
     budget = min(int(avail * frac), 512 << 20)  # <=512MB per block, hard cap
     batch = max(32, min(2048, budget // max(bytes_per_row, 1)))
+    # Explicit override (installers on tiny/huge hosts, or tests forcing block
+    # boundaries): DINOMEM_GRAPH_BATCH=<rows>. Clamped to [1, n].
     _ov = _os.environ.get("DINOMEM_GRAPH_BATCH")
     if _ov:
         try:
@@ -820,7 +844,8 @@ def build_graph(chunks, topk, threshold, cross_file_only, mutual=False):
     for start in range(0, n, batch):
         stop = min(start + batch, n)
         Sb = Mn[start:stop] @ Mn.T  # (b, n) block — the only large temp
-        for r in range(stop - start):  # self-pairs: exclude column i in row (start+r)
+        # self-pairs: row r (global i=start+r) excludes column i
+        for r in range(stop - start):
             Sb[r, start + r] = -np.inf
         if cross_file_only:  # same-path pairs -> -inf (never selected), block-local
             Sb[paths[start:stop][:, None] == paths[None, :]] = -np.inf
@@ -851,6 +876,7 @@ def build_graph(chunks, topk, threshold, cross_file_only, mutual=False):
                 continue
             inv = [1.0 / r for r in (rank_of[i].get(j), rank_of[j].get(i)) if r]
             rank_strength = sum(inv) / len(inv) if inv else 0.0
+            # raw cosine for the kept pair: prefer whichever endpoint stashed it.
             sim = sim_of[i].get(j, sim_of[j].get(i))
             edges[(a, b)] = {"sim": float(sim), "rank_strength": round(rank_strength, 4)}
     return edges
@@ -887,51 +913,6 @@ def main():
              "runs, it runs the EXACT algorithm (no fidelity change).",
     )
     args = ap.parse_args()
-
-    # Absent-source guard: the L2 graph reads the OpenClaw NATIVE memory index
-    # (sqlite, built by the gateway's memorySearch pipeline). That DB can be
-    # absent in two VERY different situations, which must NOT be conflated:
-    #
-    #   (a) LEGIT-EMPTY (day-0 real user): no memory has been recorded/indexed
-    #       yet. There is genuinely nothing to graph. Degrade gracefully: write
-    #       an empty-but-valid graph and exit 0.
-    #
-    #   (b) REAL FAILURE (e.g. a benchmark lab, or a broken indexer): memory
-    #       ITEMS EXIST on disk (memory/*_insight_*.md etc.) but the native index
-    #       was never built, so the graph would be spuriously empty. Silently
-    #       emitting an empty graph here would UNDER-REPORT the graph leg (in an
-    #       eval, it makes the neuron arm look like base). That is a lie in the
-    #       wrong direction — so FAIL LOUD instead, forcing the caller to build
-    #       the index (or ablate the stage explicitly).
-    #
-    # Distinguish by whether indexable memory items exist on disk.
-    if not DB_PATH.exists():
-        _mem_dir = _WS / "memory"
-        _item_globs = ("*_insight_*.md", "*_entity_*.md", "*_relation_*.md",
-                       "*_preference_*.md", "*_correction_*.md", "*_decision_*.md",
-                       "*_operational_*.md", "_pin_*.md", "_note_*.md")
-        _has_items = any(
-            next(_mem_dir.glob(g), None) is not None for g in _item_globs
-        ) if _mem_dir.exists() else False
-        if _has_items:
-            # (b) real failure — do not mask it.
-            sys.exit(
-                f"memory_graph: native index absent ({DB_PATH}) but memory items "
-                f"exist under {_mem_dir} — the index was never built. Refusing to "
-                f"emit a spuriously-empty graph (would under-report the graph leg). "
-                f"Build the native memory index first, or ablate this stage.")
-        # (a) legit-empty day-0 — degrade gracefully.
-        OUT_DIR.mkdir(parents=True, exist_ok=True)
-        out_json = OUT_DIR / "memory_graph.json"
-        if not out_json.exists():
-            out_json.write_text(
-                json.dumps({"nodes": {}, "edges": [],
-                            "generated": datetime.now().strftime("%Y-%m-%d %H:%M"),
-                            "note": "native memory index absent, no memory items — empty graph"},
-                           indent=2),
-                encoding="utf-8")
-        print(f"⏭️  native memory index absent ({DB_PATH}) and no memory items — empty graph, skipping build")
-        return
 
     # Skip rebuild when the indexed memory content hasn't changed (avoids
     # wasteful runs every 15-min orchestrator cycle).
@@ -1040,7 +1021,7 @@ def main():
         write_forward_refs_md(forward_refs, FORWARD_REFS_FILE, now)
 
     # Entity nodes from explicit [entity] lines + entity→chunk edges.
-    # NOTE: built BEFORE relation edges — P2 needs each entity's representative nodes[] idx
+    # NOTE: built BEFORE relation edges now — P2 needs each entity's representative nodes[] idx
     # (node_idx backref) so extract_relation_edges can resolve short entity-name endpoints to a
     # VALID nodes[] index (graph_search walks nodes[], not entity_nodes[]).
     memory_dir = _WS / "memory"
@@ -1053,19 +1034,22 @@ def main():
             for n in nodes
         ]
         # P2: node_idx backref via SUBSTRING CONTAINMENT, not ratio. An entity NAME is a tiny
-        # fraction of a long title+snippet, so SequenceMatcher.ratio() tops out well below
-        # threshold -> ratio can NEVER pick a representative chunk. Containment is the right
-        # relation: the representative chunk is one whose text CONTAINS the entity name. Pick the
-        # highest-degree containing chunk (most central mention); -1 if the name never appears
-        # verbatim (honestly unmatchable -> those relation endpoints stay a=-1 as before).
+        # fraction of a 60-200 char title+snippet, so SequenceMatcher.ratio() tops out well below
+        # threshold (measured: `Project Advancer` maxes 0.516) -> ratio can NEVER pick a
+        # representative chunk. Containment is the right relation: the representative chunk is one
+        # whose text CONTAINS the entity name. Pick the highest-degree containing chunk (most
+        # connected = most central mention); -1 if the name never appears verbatim (honestly
+        # unmatchable, ~214/361 by measurement — those relation endpoints stay a=-1 as before).
         # entity_edges kept on the OLD ratio>=0.75 rule so that legacy consumer is unchanged.
         for ent in entity_nodes:
             name_lower = ent["name"].lower()
             containing = [i for i, nt in enumerate(node_texts) if name_lower in nt]
             if containing:
+                # highest-degree containing chunk = most central representative
                 ent["node_idx"] = max(containing, key=lambda i: nodes[i].get("degree", 0))
             else:
                 ent["node_idx"] = -1
+            # legacy entity_edges (unchanged behavior): ratio>=0.75 refs
             for idx, nt in enumerate(node_texts):
                 score = SequenceMatcher(None, name_lower, nt[:len(name_lower) + 30]).ratio()
                 if score >= 0.75:
@@ -1077,7 +1061,8 @@ def main():
                     })
 
     # Relation edges from explicit [relation] lines + spaCy SVO.
-    # P2: endpoints resolve through entity NAMES -> entity.node_idx (valid nodes[] index).
+    # P2: endpoints resolve through entity NAMES -> entity.node_idx (valid nodes[] index),
+    # so pass the node_idx-backreffed entity_nodes in.
     relation_edges = extract_relation_edges(memory_dir, nodes, entity_nodes)
 
     _graph_payload = {

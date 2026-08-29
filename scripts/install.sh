@@ -24,8 +24,16 @@
 set -euo pipefail
 
 SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Shared instance-discovery lib (single-agent / multi-agent / multi-gateway aware).
+# Fallback-safe: if absent or on a non-systemd host, selection returns "default"
+# mode and the installer keeps its existing single-config behavior.
+if [ -f "$SKILL_DIR/lib/discover_instances.sh" ]; then
+  # shellcheck source=/dev/null
+  . "$SKILL_DIR/lib/discover_instances.sh"
+fi
 WS="${OPENCLAW_WORKSPACE:-$HOME/.openclaw/workspace}"
 AGENT_ID=""
+INSTANCE_ID=""   # --instance <agent-id>: scripted single-instance target (skips prompt)
 DO_CRON=1
 FORCE=0
 NO_AUTO_BASE=0
@@ -44,6 +52,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --workspace)      WS="$2"; shift 2 ;;
     --agent-id)       AGENT_ID="$2"; shift 2 ;;
+    --instance)       INSTANCE_ID="$2"; shift 2 ;;
     --no-cron)        DO_CRON=0; shift ;;
     --repair-cron)    REPAIR_CRON=1; DO_CRON=1; NO_AUTO_BASE=1; LICENSE_AGREED=1; shift ;;
     --force)          FORCE=1; shift ;;
@@ -223,7 +232,14 @@ SUDO=""; [ "$(id -u)" -ne 0 ] && command -v sudo >/dev/null 2>&1 && SUDO="sudo"
 # installer (silently killed -> 'exited nonzero', no error). Wrap in a hard timeout.
 openclaw_running() {
   command -v openclaw >/dev/null 2>&1 || return 1
-  timeout 10 openclaw status >/dev/null 2>&1
+  # Probe the TARGET instance, not the default: when a multi-instance selection set
+  # OPENCLAW_STATE_DIR, honor it so we don't false-report "not running" against the
+  # wrong gateway. Empty -> default instance (back-compat, single-agent hosts).
+  if [ -n "${OPENCLAW_STATE_DIR:-}" ]; then
+    OPENCLAW_STATE_DIR="$OPENCLAW_STATE_DIR" timeout 10 openclaw status >/dev/null 2>&1
+  else
+    timeout 10 openclaw status >/dev/null 2>&1
+  fi
 }
 
 # resolve_memory_db <agent_id> <openclaw_dir>: print the REAL sqlite DB path for
@@ -272,6 +288,41 @@ if [ -z "$AGENT_ID" ]; then
 fi
 
 OPENCLAW_DIR="$(dirname "$WS")"
+
+# multi-instance selection (single-agent / multi-agent / multi-gateway aware).
+# Discover OpenClaw instances from systemd and pick the target BEFORE installing
+# base or patching any config. 0 found -> unchanged. 1 -> auto. >=2 -> one prompt
+# (numbers + 'A) all'); --instance <id> skips the prompt for scripted installs.
+# "all" re-execs THIS installer once per instance. Fallback-safe: if the lib
+# didn't load, select_openclaw_instance is undefined and we skip to legacy path.
+if command -v select_openclaw_instance >/dev/null 2>&1 && [ -z "${DINOMEM_INSTANCE_RESOLVED:-}" ]; then
+  if ! select_openclaw_instance ${INSTANCE_ID:+--instance "$INSTANCE_ID"}; then
+    fail "Could not resolve which OpenClaw instance to install into. Re-run with --instance <agent-id>."
+  fi
+  case "${DINOMEM_SEL_MODE:-default}" in
+    all)
+      ok "Installing into ALL discovered OpenClaw instances"
+      _self="${BASH_SOURCE[0]}"
+      while IFS=$'\t' read -r _aid _sdir _cfg _port; do
+        [ -n "$_aid" ] || continue
+        hr "instance: $_aid"
+        DINOMEM_INSTANCE_RESOLVED=1 bash "$_self" --instance "$_aid" --workspace "$WS" \
+          ${LICENSE_AGREED:+--agree} ${DRY_RUN:+--dry-run} \
+          || warn "install into '$_aid' exited nonzero — continuing with the rest"
+      done <<< "$DINOMEM_SEL_ALL_ROWS"
+      ok "All-instances install complete."
+      exit 0
+      ;;
+    one)
+      AGENT_ID="${DINOMEM_SEL_AGENT_ID:-$AGENT_ID}"
+      AGENT_ID_SOURCE="instance"
+      [ -n "${DINOMEM_SEL_CONFIG:-}" ] && export OPENCLAW_CONFIG="$DINOMEM_SEL_CONFIG"
+      [ -n "${DINOMEM_SEL_STATE_DIR:-}" ] && export OPENCLAW_STATE_DIR="$DINOMEM_SEL_STATE_DIR"
+      ok "Target OpenClaw instance: $AGENT_ID (config: ${DINOMEM_SEL_CONFIG:-default}${DINOMEM_SEL_PORT:+, port $DINOMEM_SEL_PORT})"
+      ;;
+    default) : ;;
+  esac
+fi
 
 # ── dinomem base: helper + installer (always run — see block below) ──────────
 # neuron is a strict extension of the dinomem base. Base marker files
