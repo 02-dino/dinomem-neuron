@@ -2525,6 +2525,12 @@ DINOMEM_BODY=$(cat <<'DINOMEM_NEURON_AGENTS_BODY'
   "what does CODE-SYMBOL X do AND why does it exist" (code structure + the design decision behind it, one block) → hybrid_recall (CODE leg auto-fires on function/class/calls/imports/inherits queries; fuses code_query file:line hits WITH the memory/graph 'why'). Killer feature: neither plain code-search nor plain memory alone answers it.
     # hybrid_recall fuses docs_search + session_search + graph_search + code_query legs; run memory_search natively and pass its hits via --external-hits to fold them in.
     # M3 natural-language query rule applies (avoid code identifiers/exact strings).
+
+## recursive_search_routing
+  # Upgrades base recursive_search_discipline: neuron ships the right tools, so route AWAY from grep for the two cases where a better tool exists.
+  transcript trees (agent/session/kb conversation history) -> session_search (indexed archived transcripts), NOT grep. Grep on transcripts is the wrong tool AND floods context.
+  code structure of own source (what calls X | X calls what | class hierarchy | where a fn is defined | edge path A->B) -> tools/code_query.py (explain|path|query) FIRST; grep only as fallback. Graph stale/empty -> procedures/code_graph.py --path <root> to build/refresh.
+  everything else recursive: base recursive_search_discipline still applies (scoped rg + timeout, never bare grep -r over huge roots).
 DINOMEM_NEURON_AGENTS_BODY
 )
 BLOCK="$BEGIN
