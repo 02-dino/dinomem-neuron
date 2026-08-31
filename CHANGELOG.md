@@ -11,6 +11,8 @@ All notable changes to dinomem-neuron are documented here.
 - **`recursive_search_routing` neuron block.** Recursive searches are now auto-routed to the right tool instead of a blanket grep: transcript/session-history trees go to `session_search` (indexed), own-source code-structure questions go to `code_query` FIRST, and everything else keeps the scoped-`rg` + timeout discipline. Layered on top of the base `recursive_search_discipline` (never bare `grep -r` over huge roots).
 ### Fixed
 - **Installer adopts bare pre-tag dinomem crons on upgrade.** Closes a double-registration hole where envless `procedures/<script>.py` cron lines could be re-registered on upgrade; the false-delete guard is preserved.
+### Note (multi-agent boxes)
+- **Heavy crons stagger + serialize across agents.** If you run more than one agent on the same machine, dinomem's heavy background jobs (embedding/ingest/synthesis) no longer all fire at the same moment — they route through a shared runner so they take turns instead of stampeding the box at once. (Landed in recent releases; calling it out explicitly here since multi-agent users benefit most.)
 
 ---
 
