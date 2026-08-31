@@ -4,6 +4,16 @@ All notable changes to dinomem-neuron are documented here.
 
 ---
 
+## 1.18.1 — 2026-08-31
+
+**Smarter recursive-search routing + installer cron-adoption fix.**
+### Changed / Hardened
+- **`recursive_search_routing` neuron block.** Recursive searches are now auto-routed to the right tool instead of a blanket grep: transcript/session-history trees go to `session_search` (indexed), own-source code-structure questions go to `code_query` FIRST, and everything else keeps the scoped-`rg` + timeout discipline. Layered on top of the base `recursive_search_discipline` (never bare `grep -r` over huge roots).
+### Fixed
+- **Installer adopts bare pre-tag dinomem crons on upgrade.** Closes a double-registration hole where envless `procedures/<script>.py` cron lines could be re-registered on upgrade; the false-delete guard is preserved.
+
+---
+
 ## 1.18.0 — 2026-08-29
 
 **Synthesis-from-documents, code-structure navigation, bi-temporal fact graph, and memory-authority hardening — the accumulated capability release since v1.9.1.**
