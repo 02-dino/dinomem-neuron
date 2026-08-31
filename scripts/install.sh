@@ -1144,7 +1144,16 @@ upsert_cron() {
       {
         line=$0
         if (line ~ /# dinomem-managed:/) { print line; next }
-        dino_sig = (index(line,"dinomem_run.sh")>0 || line ~ /DINOMEM_[A-Z_]+=/)
+        # dino_sig: is THIS line an installer-owned dinomem cron (safe to adopt+replace)?
+        #  (a) the dinomem_run.sh wrapper, OR (b) a DINOMEM_* env the installer bakes,
+        #  OR (c) a bare `procedures/<KNOWN-DINOMEM-SCRIPT>.py` call. (c) closes the
+        #  upgrade-DOUBLE hole: a pre-tag cron with NEITHER wrapper NOR env (e.g.
+        #  cleanup_startup_daily = `cd $WS && python3 procedures/...`, or
+        #  auto_session_reset when owner-id did not resolve at old install time) used
+        #  to escape adoption -> the staggered upgrade appended a 2nd copy instead of
+        #  replacing. A user hand-written cron never calls procedures/<these exact
+        #  dinomem scripts>, so the false-delete guard is preserved.
+        dino_sig = (index(line,"dinomem_run.sh")>0 || line ~ /DINOMEM_[A-Z_]+=/ || line ~ /procedures\/(auto_session_reset|memory_cleanup|memory_review|cleanup_startup_daily|workspace_backup|weekly_stats|memory_graph|memory_synthesis|contradiction_check|confidence_engine|memory_promote|generate_topic_index|docs_ingest|code_graph|code_anchors|_retrieval_log)\.py/)
         if (index(line, ws)>0 && dino_sig && index(line, kw)>0) { print line " " tag }
         else { print line }
       }' | crontab -
@@ -1197,11 +1206,38 @@ if [ "$DO_CRON" = 1 ]; then
     ok "cron reasoning thinking: $DINOMEM_REASONING_THINKING"
   fi
 
-  # memory_graph — daily at 3:00 UTC (L2, no LLM — pure graph linking)
+  # ── Multi-agent cron STAGGER (thundering-herd guard) ────────────────────────
+  # WHY: neuron's crontab lanes (L2 03:00, L3 03:30, L4 Sun 04:00, RAG 04:00,
+  # code_graph 04:10, rlog 04:15) were the SAME wall-clock minute for every agent.
+  # On a host running N dinomem agents against ONE gateway that bunches N heavy
+  # jobs (embedding + LLM + sqlite) into the same instant -> RSS spike + event-loop
+  # stall (observed: 6 agents -> memory pressure + multi-second gateway freezes).
+  # The heavy-llm/heavy-embed flocks SERIALIZE execution, but the *scheduling* still
+  # woke every agent at once. FIX: deterministic per-agent minute offset from the
+  # agent id (stable, zero-coordination — each install computes its own slot; no
+  # shared state), spreading each recurring job so agents interleave. Byte-identical
+  # helper to base install.sh. Single-agent hosts unaffected (offset just shifts).
+  _stagger() {  # _stagger <mod>  (uses AGENT_ID)
+    local mod="$1" h
+    h=$(printf '%s' "${AGENT_ID:-default}" | (md5sum 2>/dev/null || md5 2>/dev/null) | tr -dc '0-9a-f' | head -c 8)
+    [ -n "$h" ] || h=0
+    printf '%s\n' $(( 0x${h:-0} % mod ))
+  }
+  _SMIN=$(_stagger 60)   # 0..59 — per-agent minute offset for the daily/weekly lanes
+  ok "cron stagger: agent '${AGENT_ID:-default}' -> neuron daily lanes shifted +${_SMIN}m within their hour"
+  # Base minutes for each lane + per-agent offset (%60 keeps it inside the hour band).
+  _L2_MIN=$(( (0  + _SMIN) % 60 ))   # L2 graph      (base :00, hour 3)
+  _L3_MIN=$(( (30 + _SMIN) % 60 ))   # L3 synthesis  (base :30, hour 3)
+  _L4_MIN=$(( (0  + _SMIN) % 60 ))   # L4 promote    (base :00, hour 4, Sun)
+  _RAG_MIN=$(( (0 + _SMIN) % 60 ))   # RAG ingest    (base :00, hour 4)
+  _CG_MIN=$(( (10 + _SMIN) % 60 ))   # code_graph    (base :10, hour 4)
+  _RL_MIN=$(( (15 + _SMIN) % 60 ))   # rlog rollup   (base :15, hour 4)
+
+  # memory_graph — daily ~03:xx UTC (L2, no LLM — pure graph linking), staggered
   # MULTI-AGENT SERIALIZATION: heavy-embed class (embedding/CPU-heavy, no LLM)
   # acquires a host-wide flock so at most one agent's embed job runs at a time.
-  GRAPH_CRON="0 3 * * * DINOMEM_AGENT_ID=$AGENT_ID bash $WS/scripts/dinomem_run.sh heavy-embed $WS python3 procedures/memory_graph.py >> logs/memory_graph.log 2>&1"
-  upsert_cron "memory_graph.py" "dinomem-neuron: L2 graph linking" "$GRAPH_CRON" "memory_graph cron (daily 3:00 UTC)"
+  GRAPH_CRON="$_L2_MIN 3 * * * DINOMEM_AGENT_ID=$AGENT_ID bash $WS/scripts/dinomem_run.sh heavy-embed $WS python3 procedures/memory_graph.py >> logs/memory_graph.log 2>&1"
+  upsert_cron "memory_graph.py" "dinomem-neuron: L2 graph linking" "$GRAPH_CRON" "memory_graph cron (daily 03:${_L2_MIN} UTC, staggered)"
 
   # memory_synthesis + contradiction_check — daily at 3:30 UTC (L3, reasoning=True)
   # confidence_engine (P1 #1, no-LLM calibration) runs AFTER synthesis writes
@@ -1213,19 +1249,19 @@ if [ "$DO_CRON" = 1 ]; then
   # dinomem_run.sh wraps all three; they share one lock acquisition (flock is held for the
   # duration of the subshell, not re-acquired per-script — safe for a chained pipeline).
   SYNTH_CHAIN="${REASON_ENV}python3 procedures/memory_synthesis.py >> logs/memory_synthesis.log 2>&1 && ${REASON_ENV}python3 procedures/contradiction_check.py >> logs/contradiction_check.log 2>&1 && python3 procedures/confidence_engine.py >> logs/confidence_engine.log 2>&1"
-  SYNTH_CRON="30 3 * * * DINOMEM_AGENT_ID=$AGENT_ID bash $WS/scripts/dinomem_run.sh heavy-llm $WS bash -c \"$SYNTH_CHAIN\""
+  SYNTH_CRON="$_L3_MIN 3 * * * DINOMEM_AGENT_ID=$AGENT_ID bash $WS/scripts/dinomem_run.sh heavy-llm $WS bash -c \"$SYNTH_CHAIN\""
   upsert_cron "memory_synthesis.py" "dinomem-neuron: L3 synthesis + contradiction check + calibration" "$SYNTH_CRON" "memory_synthesis + contradiction_check + confidence_engine cron (daily 3:30 UTC)"
 
   # memory_promote (no LLM) + generate_topic_index (cheap LLM) — weekly Sun 4:00 UTC (L4)
   # MULTI-AGENT SERIALIZATION: heavy-llm class (generate_topic_index calls LLM).
   PROMOTE_CHAIN="python3 procedures/memory_promote.py >> logs/memory_promote.log 2>&1 && ${CHEAP_ENV}python3 procedures/generate_topic_index.py >> logs/topic_index.log 2>&1"
-  PROMOTE_CRON="0 4 * * 0 DINOMEM_AGENT_ID=$AGENT_ID bash $WS/scripts/dinomem_run.sh heavy-llm $WS bash -c \"$PROMOTE_CHAIN\""
-  upsert_cron "memory_promote.py" "dinomem-neuron: L4 promotion + topic index (weekly)" "$PROMOTE_CRON" "memory_promote + generate_topic_index cron (weekly Sunday 4:00 UTC)"
+  PROMOTE_CRON="$_L4_MIN 4 * * 0 DINOMEM_AGENT_ID=$AGENT_ID bash $WS/scripts/dinomem_run.sh heavy-llm $WS bash -c \"$PROMOTE_CHAIN\""
+  upsert_cron "memory_promote.py" "dinomem-neuron: L4 promotion + topic index (weekly)" "$PROMOTE_CRON" "memory_promote + generate_topic_index cron (weekly Sunday 04:${_L4_MIN} UTC, staggered)"
 
   # docs_ingest — daily at 4:00 UTC (RAG long docs, no-reasoning)
   # MULTI-AGENT SERIALIZATION: heavy-embed class (embedding-heavy, no LLM).
-  DOCS_CRON="0 4 * * * DINOMEM_AGENT_ID=$AGENT_ID bash $WS/scripts/dinomem_run.sh heavy-embed $WS ${CHEAP_ENV}python3 procedures/docs_ingest.py >> logs/docs_ingest.log 2>&1"
-  upsert_cron "docs_ingest.py" "dinomem-neuron: RAG docs re-ingest (daily)" "$DOCS_CRON" "docs_ingest cron (daily 4:00 UTC)"
+  DOCS_CRON="$_RAG_MIN 4 * * * DINOMEM_AGENT_ID=$AGENT_ID bash $WS/scripts/dinomem_run.sh heavy-embed $WS ${CHEAP_ENV}python3 procedures/docs_ingest.py >> logs/docs_ingest.log 2>&1"
+  upsert_cron "docs_ingest.py" "dinomem-neuron: RAG docs re-ingest (daily)" "$DOCS_CRON" "docs_ingest cron (daily 04:${_RAG_MIN} UTC, staggered)"
   # session_ingest is triggered automatically by auto_session_reset.py (every 15 min)
   # No separate cron needed.
 
@@ -1235,14 +1271,14 @@ if [ "$DO_CRON" = 1 ]; then
   # that indexes install.sh heredoc / cron-payload behavioral labels the AST can't
   # see. Both fail-soft (tree-sitter missing -> code_graph offline; anchors is pure
   # stdlib grep). Piggybacked in one cron entry (&&): structure first, anchors after.
-  CODEGRAPH_CRON="10 4 * * * cd $WS && python3 procedures/code_graph.py --path $WS >> logs/code_graph_refresh.log 2>&1 && python3 procedures/code_anchors.py --path $WS >> logs/code_graph_refresh.log 2>&1"
-  upsert_cron "code_graph.py --path" "dinomem-neuron: code-structure graph + prompt-anchor refresh (daily)" "$CODEGRAPH_CRON" "code_graph_refresh cron (daily 4:10 UTC)"
+  CODEGRAPH_CRON="$_CG_MIN 4 * * * cd $WS && python3 procedures/code_graph.py --path $WS >> logs/code_graph_refresh.log 2>&1 && python3 procedures/code_anchors.py --path $WS >> logs/code_graph_refresh.log 2>&1"
+  upsert_cron "code_graph.py --path" "dinomem-neuron: code-structure graph + prompt-anchor refresh (daily)" "$CODEGRAPH_CRON" "code_graph_refresh cron (daily 04:${_CG_MIN} UTC, staggered)"
 
   # retrieval_log rollup — daily at 4:15 UTC (no LLM, pure stdlib): compresses
   # dailies older than 30d into monthly rollups + prunes raw, refreshes health.json
   # (routing-quality snapshot: calls/fallback-rate/empty-rate per retrieval tool).
-  RLOG_CRON="15 4 * * * cd $WS && python3 procedures/_retrieval_log.py --workspace $WS --rollup >> logs/retrieval_log_rollup.log 2>&1"
-  upsert_cron "_retrieval_log.py --rollup" "dinomem-neuron: retrieval-log rollup + health snapshot (daily)" "$RLOG_CRON" "retrieval_log rollup cron (daily 4:15 UTC)"
+  RLOG_CRON="$_RL_MIN 4 * * * cd $WS && python3 procedures/_retrieval_log.py --workspace $WS --rollup >> logs/retrieval_log_rollup.log 2>&1"
+  upsert_cron "_retrieval_log.py --rollup" "dinomem-neuron: retrieval-log rollup + health snapshot (daily)" "$RLOG_CRON" "retrieval_log rollup cron (daily 04:${_RL_MIN} UTC, staggered)"
 
   # ── shared investigate-first principle (DRY: one source, referenced by the
   #    building crons Advancer + Improver). The Ideator already embodies it as its
