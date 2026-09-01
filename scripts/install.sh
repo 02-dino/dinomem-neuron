@@ -314,8 +314,15 @@ if command -v select_openclaw_instance >/dev/null 2>&1 && [ -z "${DINOMEM_INSTAN
       exit 0
       ;;
     one)
-      AGENT_ID="${DINOMEM_SEL_AGENT_ID:-$AGENT_ID}"
-      AGENT_ID_SOURCE="instance"
+      # Do NOT let the discovered-instance id clobber an EXPLICIT --agent-id
+      # (AGENT_ID_SOURCE=flag). On a multi-agent gateway the instance resolves to
+      # ONE gateway id shared by many agents; overwriting here would collapse every
+      # agent onto the same _stagger(AGENT_ID) offset -> cron collision (the exact
+      # thing stagger exists to prevent). Flag-sourced id is authoritative.
+      if [ "$AGENT_ID_SOURCE" != "flag" ]; then
+        AGENT_ID="${DINOMEM_SEL_AGENT_ID:-$AGENT_ID}"
+        AGENT_ID_SOURCE="instance"
+      fi
       [ -n "${DINOMEM_SEL_CONFIG:-}" ] && export OPENCLAW_CONFIG="$DINOMEM_SEL_CONFIG"
       [ -n "${DINOMEM_SEL_STATE_DIR:-}" ] && export OPENCLAW_STATE_DIR="$DINOMEM_SEL_STATE_DIR"
       ok "Target OpenClaw instance: $AGENT_ID (config: ${DINOMEM_SEL_CONFIG:-default}${DINOMEM_SEL_PORT:+, port $DINOMEM_SEL_PORT})"
@@ -375,7 +382,14 @@ auto_install_base() {
   ok "running dinomem base installer (non-interactive)"
   # Base install is dependency provisioning, not the neuron license gate — run it
   # unattended. Omit --no-cron: we WANT the base crons registered.
-  bash "$base_install" --workspace "$WS" --agent-id "$AGENT_ID" ${LICENSE_AGREED:+--agree} || { warn "dinomem base installer exited nonzero"; return 1; }
+  # Forward the resolved instance to the base installer. On a multi-instance host
+  # the base installer runs its OWN discovery and would re-hit the ambiguity abort
+  # if we don't tell it which instance we already picked. INSTANCE_ID holds the
+  # --instance the user passed (or the auto-picked one). --agent-id carries the
+  # real agent identity (authoritative for stagger, decoupled from the gateway id).
+  bash "$base_install" --workspace "$WS" --agent-id "$AGENT_ID" \
+    ${INSTANCE_ID:+--instance "$INSTANCE_ID"} ${LICENSE_AGREED:+--agree} \
+    || { warn "dinomem base installer exited nonzero"; return 1; }
   return 0
 }
 
