@@ -298,12 +298,14 @@ scripts — dinomem base's (`extract_memory`, `memory_review`) **and** neuron's 
 (`memory_promote`, `generate_topic_index`). Only L3 (`memory_synthesis`,
 `contradiction_check`) ignores it. See
 [dinomem → Model selection](https://github.com/02-dino/dinomem#model-selection).
-These flags live in `extract_memory.call_llm`, which neuron imports — so dinomem
-base **v1.2.0+ is required**. neuron's installer enforces this floor. The catch:
-most people install base **first**, sometimes an older one. On base below 1.2.0
-the `reasoning=True` flag is *accepted but silently ignored* (no thinking budget,
-no error) — reasoning quality quietly degrades. If neuron's installer warns that
-your base is too old, run `dinomem/scripts/update.sh` before using neuron.
+These flags live in `extract_memory.call_llm`, which neuron imports — so neuron
+needs a base new enough to have reasoning/thinking routing in `call_llm`. Rather
+than trust a hardcoded version number (which can drift from the actual code),
+neuron's installer **git-pulls + installs the latest base on every run** before
+installing itself — so the required base is simply *whatever the base repo ships
+today*, always current. If that base install/refresh **fails** (offline, no git)
+and no usable base is already present, the installer **hard-fails** rather than
+silently running on a stale base. No manual version floor to keep in sync.
 
 ---
 

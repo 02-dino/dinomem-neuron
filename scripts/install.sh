@@ -395,10 +395,18 @@ auto_install_base() {
 HAD_BASE_BEFORE=0
 if base_installed; then HAD_BASE_BEFORE=1; fi
 
+# BASE_SYNC_OK: set to 1 ONLY when the base was freshly (re)installed to latest
+# this run (auto_install_base succeeded), OR when --no-auto-base is used on an
+# already-present base (explicit opt-out). It is NOT set on a failed refresh that
+# fell back to a stale existing base. The dependency check further down keys off
+# this flag, so "base exists" alone is never mistaken for "base is current" —
+# critical for the UPDATE path, where a silently-failed refresh must not pass.
+BASE_SYNC_OK=0
 if [ "$NO_AUTO_BASE" = 1 ]; then
   # Opt-out of auto-base: never touch the base. But it MUST already exist.
   base_installed || fail "dinomem base not found in $WS and --no-auto-base set. Install it first: $DINOMEM_BASE_REPO"
   ok "dinomem base present (--no-auto-base: skipping base install/refresh)"
+  BASE_SYNC_OK=1
 else
   # Guess-guard applies ONLY to FRESH provisioning. When the base is MISSING and
   # the agent id is only a guess (no --agent-id, non-conventional workspace),
@@ -423,6 +431,7 @@ else
   if auto_install_base; then
     base_installed || fail "dinomem base markers missing after install (in $WS/procedures/). Install blocked."
     ok "dinomem base $([ "$HAD_BASE_BEFORE" = 1 ] && echo refreshed || echo provisioned)"
+    BASE_SYNC_OK=1
   else
     # Install/refresh failed. If base was ALREADY present, degrade to a warning
     # and continue with the existing base (don't break neuron over a failed
@@ -556,59 +565,24 @@ elif [ ! -w "$WS" ]; then
 else
   ok "Workspace writable: $WS"
 fi
-# dinomem base must be installed + version check.
-# Floor is 1.2.0: that's where base's call_llm gained reasoning/thinking routing
-# (--thinking + --model). neuron's reasoning scripts (synthesis/contradiction/
-# promote) pass reasoning=True; on older base the flag is accepted but ignored
-# (silently degraded — no thinking budget). Enforce the floor so install order
-# (base first, often an old base) can't quietly weaken reasoning quality.
-DINOMEM_MIN_VERSION="1.2.0"
-# By this point the top-of-script dependency gate has guaranteed the base is
-# present (or auto-installed it, or hard-failed). This is a defensive re-check
-# plus the VERSION floor enforcement.
+# dinomem base dependency check.
+# The required base is "whatever the base repo ships today", enforced by the
+# top-of-script dependency gate that git-pulls + installs the LATEST base on
+# every run — NOT by a hardcoded version number (which drifts from the actual
+# code the moment someone forgets to bump a manual VERSION file). So we key off
+# BASE_SYNC_OK: was the base actually (re)installed-to-latest THIS run? A bare
+# "base exists" is deliberately NOT enough here — on the UPDATE path a base can
+# exist yet be stale because its refresh silently failed (offline). BASE_SYNC_OK
+# is 1 only when auto_install_base SUCCEEDED (or --no-auto-base opt-out on a
+# present base). reasoning/thinking routing in base call_llm rides along for
+# free because a successfully-synced base is the current one.
 if ! base_installed; then
-  fail "dinomem base markers missing (session_reset.py/extract_memory.py). Install blocked."
+  fail "dinomem base markers missing (session_reset.py/extract_memory.py) after dependency gate. Install blocked."
+elif [ "$BASE_SYNC_OK" != 1 ]; then
+  fail "dinomem base is present but was NOT synced to latest this run (base install/refresh failed — offline or no git). neuron needs a current base for reasoning/thinking routing in call_llm. Fix connectivity then re-run, or refresh manually:
+    bash dinomem/scripts/install.sh --workspace $WS --agent-id $AGENT_ID"
 else
-  ok "dinomem base detected"
-  # Check VERSION file
-  DINOMEM_VERSION_FILE="$(dirname "$WS")/dinomem/VERSION"
-  if [ ! -f "$DINOMEM_VERSION_FILE" ]; then
-    # Try SKILL_DIR sibling
-    DINOMEM_VERSION_FILE="$(dirname "$SKILL_DIR")/dinomem/VERSION"
-  fi
-  # Simple semver compare (major.minor.patch): true when $1 >= $2.
-  # Sort both ascending; if the smaller line equals $2, then $1 >= $2.
-  version_gte() {
-    [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | head -n1)" = "$2" ]
-  }
-  if [ -f "$DINOMEM_VERSION_FILE" ]; then
-    DINOMEM_VERSION=$(cat "$DINOMEM_VERSION_FILE" | tr -d '[:space:]')
-    if version_gte "$DINOMEM_VERSION" "$DINOMEM_MIN_VERSION"; then
-      ok "dinomem version $DINOMEM_VERSION (>= $DINOMEM_MIN_VERSION required)"
-    else
-      warn "dinomem version $DINOMEM_VERSION is below minimum required $DINOMEM_MIN_VERSION — attempting auto-update."
-      DINOMEM_UPDATE="$(dirname "$DINOMEM_VERSION_FILE")/scripts/update.sh"
-      if [ "$NO_AUTO_BASE" != 1 ] && [ -f "$DINOMEM_UPDATE" ]; then
-        bash "$DINOMEM_UPDATE" --workspace "$WS" --agent-id "$AGENT_ID" ${LICENSE_AGREED:+--agree} \
-          || warn "dinomem base update.sh exited nonzero"
-        DINOMEM_VERSION=$(cat "$DINOMEM_VERSION_FILE" 2>/dev/null | tr -d '[:space:]')
-      elif [ "$NO_AUTO_BASE" != 1 ]; then
-        # No update.sh in this base checkout — refresh the clone and rerun base install.
-        auto_install_base || warn "dinomem base auto-update failed"
-        DINOMEM_VERSION=$(cat "$DINOMEM_VERSION_FILE" 2>/dev/null | tr -d '[:space:]')
-      fi
-      # Re-check the floor — if STILL below, BLOCK.
-      if version_gte "${DINOMEM_VERSION:-0.0.0}" "$DINOMEM_MIN_VERSION"; then
-        ok "dinomem version $DINOMEM_VERSION (>= $DINOMEM_MIN_VERSION required, updated)"
-      else
-        fail "dinomem version ${DINOMEM_VERSION:-unknown} is below required $DINOMEM_MIN_VERSION and could not be auto-updated. Update it manually:
-    bash dinomem/scripts/update.sh --workspace $WS --agent-id $AGENT_ID
-  then re-run this neuron installer. Install blocked."
-      fi
-    fi
-  else
-    warn "dinomem VERSION file not found — cannot verify version floor ($DINOMEM_MIN_VERSION). Proceeding, but reasoning scripts may be silently degraded on an old base."
-  fi
+  ok "dinomem base synced to latest this run"
 fi
 # Existing neuron data
 if [ -d "$WS/kb/memory_neuron" ] && [ "$(ls -A "$WS/kb/memory_neuron" 2>/dev/null)" ]; then
