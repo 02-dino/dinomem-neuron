@@ -42,6 +42,12 @@ NO_AUTO_BASE=0
 # flows straight to the cron registration + gate + self-check. Safe to re-run any
 # time a fresh install left the Advancer/Improver/Deleter/Gate lanes unregistered.
 REPAIR_CRON=0
+# Topology-aware auto-restart (mirrors base). Neuron runs base FIRST then copies
+# its own files, so the restart must happen at NEURON's end, not inside the base
+# sub-call — base is therefore always invoked with --no-restart, and neuron owns
+# the single final _maybe_restart (helper lives in the shared discover lib).
+#   --restart force | --no-restart suppress | (default) auto = single-agent only.
+AUTO_RESTART=auto   # auto | always | never
 # Neuron has no --dry-run flag of its own, but the bootstrap-cap patch below
 # references $DRY_RUN; under `set -u` an undefined var aborts the whole install.
 # Default it to 0 (no dry-run) so real installs don't crash at that phase.
@@ -55,6 +61,8 @@ while [ $# -gt 0 ]; do
     --instance)       INSTANCE_ID="$2"; shift 2 ;;
     --no-cron)        DO_CRON=0; shift ;;
     --repair-cron)    REPAIR_CRON=1; DO_CRON=1; NO_AUTO_BASE=1; LICENSE_AGREED=1; shift ;;
+    --restart)         AUTO_RESTART=always; shift ;;
+    --no-restart)      AUTO_RESTART=never; shift ;;
     --force)          FORCE=1; shift ;;
     --agree)          LICENSE_AGREED=1; shift ;;
     --no-auto-base)   NO_AUTO_BASE=1; shift ;;
@@ -393,9 +401,12 @@ auto_install_base() {
   # opt-out (and the multi-agent per-workspace default) only takes effect if the
   # base sub-call sees the flag. Without this, `neuron install --no-git-snapshot`
   # would silently still run the base snapshot install.
+  # --no-restart ALWAYS: neuron isn't done yet (it copies its overrides AFTER base
+  # returns), so a base restart here would load a half-installed state. Neuron does
+  # the single topology-aware restart at its own end instead.
   bash "$base_install" --workspace "$WS" --agent-id "$AGENT_ID" \
     ${INSTANCE_ID:+--instance "$INSTANCE_ID"} ${LICENSE_AGREED:+--agree} \
-    ${NO_GIT_SNAPSHOT:+--no-git-snapshot} \
+    ${NO_GIT_SNAPSHOT:+--no-git-snapshot} --no-restart \
     || { warn "dinomem base installer exited nonzero"; return 1; }
   return 0
 }
@@ -3638,4 +3649,14 @@ echo "  Undo: bash $SKILL_DIR/scripts/uninstall.sh --workspace $WS --agent-id $A
 # under `set -euo pipefail` any of their non-zero statuses would otherwise fall
 # off the end as the script's exit code — silently failing a good install in a
 # headless sandbox. Pin success explicitly.
+
+# Topology-aware restart (single-agent auto | multi-agent print | --restart force).
+# Guarded: the helper lives in the shared discover lib, which is sourced only if
+# present — fall back to the plain restart nag if it wasn't (old lib / non-systemd).
+if command -v _maybe_restart >/dev/null 2>&1; then
+  _maybe_restart
+else
+  echo "  → Restart OpenClaw to apply:  openclaw gateway restart"
+fi
+
 exit 0
