@@ -2595,7 +2595,15 @@ DINOMEM_BODY=$(cat <<'DINOMEM_NEURON_AGENTS_BODY'
   long doc / file shared / "remember this doc" → docs_ingest ; csv|json|parquet dataset → data_register ; code tree to navigate (this repo's own source — calls/callers/hierarchy/where-defined) OR code_query stale/empty → procedures/code_graph.py --path <root> (AST, zero-LLM, git-incremental) to BUILD/REFRESH the graph first
   what CHANGED in memory (adds/merges/deletes) → read memory/.diffs/ ; which retrieval tool ran / routing quality → kb/retrieval_log/
   # --- FUZZY recall (the one door) ---
-  fact | decision | preference | todo | meaning | passage | recent convo (<7d) | relational (why/led-to/affects/trace) → hybrid_recall
+  # ENFORCED, not advisory: the dinomem-recall-gate plugin (Tier C, neuron-only) now
+  # ROUTES a raw memory_search reflex to hybrid_recall -- soft-nudge on the first
+  # direct reach this turn, HARD-BLOCK on repeat. memory_search is NOT in the neuron
+  # recallTools set anymore (it's the gated raw tool); hybrid_recall IS the door and
+  # satisfies recall. EXEMPT: once hybrid_recall has run this turn, memory_search is
+  # allowed (hybrid_recall calls it internally via --external-hits). So: reach for the
+  # DOOR (hybrid_recall) for semantic recall; only touch raw memory_search AFTER the
+  # door has opened this turn, or for a deliberate single native lookup you re-issue past the nudge.
+  fact | decision | preference | todo | meaning | passage | recent convo (<7d) | relational (why/led-to/affects/trace) → hybrid_recall  [gate-enforced: raw memory_search is routed here]
   "what does CODE-SYMBOL X do AND why does it exist" (code structure + the design decision behind it, one block) → hybrid_recall (CODE leg auto-fires on function/class/calls/imports/inherits queries; fuses code_query file:line hits WITH the memory/graph 'why'). Killer feature: neither plain code-search nor plain memory alone answers it.
     # hybrid_recall fuses docs_search + session_search + graph_search + code_query legs; run memory_search natively and pass its hits via --external-hits to fold them in.
     # M3 natural-language query rule applies (avoid code identifiers/exact strings).
@@ -3339,6 +3347,32 @@ if not isinstance(entry, dict):
 if entry.get("enabled") is not True:
     entry["enabled"] = True
     changed.append(f"plugins.entries.{PID}.enabled -> true")
+
+# NEURON TIER C: route the raw memory_search reflex to the fuzzy door (hybrid_recall).
+# The engine reads plugins.entries[PID].config (NOT the plugin.json schema defaults),
+# so the neuron-tier values MUST be written here to take effect live.
+#   - routeEnforce=true: soft-nudge memory_search->hybrid_recall once, hard-block on repeat.
+#   - recallTools MUST DROP memory_search: under Tier C it's the gatedTool, not a
+#     recall-satisfier; if left in recallTools the recall-latch fires before Tier C
+#     sees it and the route gate is dead. hybrid_recall is the door and satisfies recall.
+enconf = entry.get("config")
+if not isinstance(enconf, dict):
+    enconf = {}
+    entry["config"] = enconf
+NEURON_RECALL_TOOLS = ["hybrid_recall", "memory_get", "graph_search",
+                       "session_search", "docs_search", "data_query"]
+if enconf.get("routeEnforce") is not True:
+    enconf["routeEnforce"] = True
+    changed.append(f"plugins.entries.{PID}.config.routeEnforce -> true (TierC)")
+if enconf.get("routeTool") != "hybrid_recall":
+    enconf["routeTool"] = "hybrid_recall"
+    changed.append(f"plugins.entries.{PID}.config.routeTool -> hybrid_recall")
+if enconf.get("gatedTool") != "memory_search":
+    enconf["gatedTool"] = "memory_search"
+    changed.append(f"plugins.entries.{PID}.config.gatedTool -> memory_search")
+if enconf.get("recallTools") != NEURON_RECALL_TOOLS:
+    enconf["recallTools"] = NEURON_RECALL_TOOLS
+    changed.append(f"plugins.entries.{PID}.config.recallTools -> neuron-tier (memory_search dropped, hybrid_recall door)")
 
 if changed and os.environ.get("DINOMEM_DRY_RUN") == "1":
     for c in changed:
