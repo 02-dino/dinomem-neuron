@@ -58,6 +58,8 @@ while [ $# -gt 0 ]; do
     --force)          FORCE=1; shift ;;
     --agree)          LICENSE_AGREED=1; shift ;;
     --no-auto-base)   NO_AUTO_BASE=1; shift ;;
+    --no-git-snapshot) NO_GIT_SNAPSHOT=1; shift ;;
+    --git-snapshot)   NO_GIT_SNAPSHOT=0; shift ;;
     --dry-run)        DRY_RUN=1; shift ;;
     -h|--help)        grep -E '^#( |$)' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
@@ -387,8 +389,13 @@ auto_install_base() {
   # if we don't tell it which instance we already picked. INSTANCE_ID holds the
   # --instance the user passed (or the auto-picked one). --agent-id carries the
   # real agent identity (authoritative for stagger, decoupled from the gateway id).
+  # Forward --no-git-snapshot too: git-autosnapshot is a BASE feature, so the
+  # opt-out (and the multi-agent per-workspace default) only takes effect if the
+  # base sub-call sees the flag. Without this, `neuron install --no-git-snapshot`
+  # would silently still run the base snapshot install.
   bash "$base_install" --workspace "$WS" --agent-id "$AGENT_ID" \
     ${INSTANCE_ID:+--instance "$INSTANCE_ID"} ${LICENSE_AGREED:+--agree} \
+    ${NO_GIT_SNAPSHOT:+--no-git-snapshot} \
     || { warn "dinomem base installer exited nonzero"; return 1; }
   return 0
 }
