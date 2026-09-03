@@ -3704,6 +3704,35 @@ echo ""
 echo "  License: Proprietary — unauthorized redistribution prohibited. https://t.me/dinotlgrm"
 echo "  Undo: bash $SKILL_DIR/scripts/uninstall.sh --workspace $WS --agent-id $AGENT_ID"
 
+# ── Placeholder-leftover safety net (self-healing) ───────────────────────────
+# WHY: _apply_subst resolves DINOMEM_*_PLACEHOLDER at copy time, but a file can
+# slip through unresolved if it was installed by an OLDER installer (before that
+# file joined the copy set) or via a path that bypassed _apply_subst. A single
+# unresolved DINOMEM_AGENT_SESSIONS_PLACEHOLDER in session_reset.py silently
+# BREAKS the auto-reset cron for that agent (path points nowhere -> crash every
+# run) and stays invisible until sessions stop resetting. One authoritative sweep
+# here at the end: find any installed *.py/*.sh under the managed dirs that still
+# carries a DINOMEM_*_PLACEHOLDER, resolve the known tokens in place, and report.
+# Idempotent, self-healing, and loud.
+if [ "${DRY_RUN:-0}" = 0 ]; then
+  _ph_healed=0
+  while IFS= read -r -d '' _phf; do
+    if grep -q 'DINOMEM_[A-Z_]*_PLACEHOLDER' "$_phf" 2>/dev/null; then
+      cp "$_phf" "$_phf.phtmp.$$" 2>/dev/null || continue
+      _apply_subst "$_phf.phtmp.$$" 2>/dev/null && mv "$_phf.phtmp.$$" "$_phf" || rm -f "$_phf.phtmp.$$"
+      if grep -q 'DINOMEM_[A-Z_]*_PLACEHOLDER' "$_phf" 2>/dev/null; then
+        warn "placeholder-heal: $_phf still has an UNRESOLVED token (not covered by _apply_subst) — inspect manually"
+      else
+        warn "placeholder-heal: resolved leftover token(s) in ${_phf#$WS/}"
+        _ph_healed=$((_ph_healed+1))
+      fi
+    fi
+  done < <(find "$WS/procedures" "$WS/tools" "$WS/scripts" -type f \( -name '*.py' -o -name '*.sh' \) ! -name '*.bak*' -print0 2>/dev/null)
+  if [ "$_ph_healed" -gt 0 ]; then
+    warn "placeholder-heal: patched $_ph_healed installed file(s) that shipped with unresolved DINOMEM_*_PLACEHOLDER tokens (older-installer straggler). Clean now."
+  fi
+fi
+
 # Reaching the done-banner == a successful install. All GENUINE hard-fail paths
 # above exit 1 explicitly BEFORE here (required-cron gap, base-not-found, license,
 # etc). Past this point only cosmetic status echoes / diagnostic probes run, and
