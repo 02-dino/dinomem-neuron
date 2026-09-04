@@ -126,13 +126,23 @@ hr()   { printf '\033[1m== %s ==\033[0m\n' "$*"; }
 wire_managed_block() {
   local _file="$1" _begin="$2" _end="$3" _block="$4" _label="$5"
   touch "$_file"
-  if grep -qF "$_begin" "$_file" 2>/dev/null; then
+  # Fire the strip path if EITHER marker is present (orphan BEGIN-without-END or
+  # END-without-BEGIN both need cleaning, not just a complete span).
+  if grep -qF "$_begin" "$_file" 2>/dev/null || grep -qF "$_end" "$_file" 2>/dev/null; then
     local _tmp; _tmp="$(mktemp)"
+    # Orphan-aware strip: BUFFER from a BEGIN until its END; on a real END discard
+    # the whole buffered block. A second BEGIN while buffering => prior BEGIN was an
+    # orphan -> FLUSH its lines back (keep content; the lone BEGIN marker itself is
+    # dropped by grep -vxF). EOF still buffering = trailing orphan -> flush too.
+    # WHY: the old skip-flag awk set skip=1 at BEGIN and never reset without an END,
+    # silently DELETING every line after an orphan BEGIN (data loss). Pinned by a
+    # 4-case test (orphan / clean-refresh / double-BEGIN / fresh).
     awk -v b="$_begin" -v e="$_end" '
-      index($0,b){skip=1}
-      !skip{print}
-      index($0,e){skip=0}
-    ' "$_file" > "$_tmp"
+      index($0,b){ if(buffering){for(i=1;i<=n;i++)print buf[i]} buffering=1; n=0; buf[++n]=$0; next }
+      buffering{ buf[++n]=$0; if(index($0,e)){buffering=0;n=0} next }
+      {print}
+      END{ if(buffering) for(i=1;i<=n;i++) print buf[i] }
+    ' "$_file" | grep -vxF "$_begin" > "$_tmp"
     awk 'NF{last=NR} {lines[NR]=$0} END{for(i=1;i<=last;i++) print lines[i]}' "$_tmp" > "$_file"
     rm -f "$_tmp"
     printf '\n%s\n' "$_block" >> "$_file"
@@ -392,6 +402,16 @@ auto_install_base() {
   # install.sh (legacy cron API) and broke registration. We now HARD-SYNC:
   # fetch the remote tip and reset --hard to it, so "base already exists" can
   # never mean "base is stale". Failure to sync a REQUIRED dependency is loud.
+  # P2 anti-race: parallel neuron installs (multi-agent host) all fetch/reset/clone
+  # the SAME shared $clone_dir — concurrent git ops corrupt its index/.git (real
+  # incident: 9-way parallel run hit index.lock contention). Serialize the whole
+  # git block on a lockfile next to the clone. FD 7 (config uses 8, swap 9 — keep
+  # distinct). Fail-open if flock is missing. Held only for the git sync below.
+  local _base_lock="${TMPDIR:-/tmp}/dinomem-base-git.lock"
+  if command -v flock >/dev/null 2>&1; then
+    exec 7>"$_base_lock" 2>/dev/null || true
+    flock -w 180 7 2>/dev/null || warn "another install is syncing the dinomem base — proceeding without lock after 180s"
+  fi
   if [ -d "$clone_dir/.git" ]; then
     ok "dinomem base repo present at $clone_dir — hard-syncing to origin/$base_branch (latest)"
     # unshallow if it was a --depth 1 clone (so reset --hard has real history);
@@ -413,6 +433,10 @@ auto_install_base() {
     git clone --depth 1 --branch "$base_branch" "$DINOMEM_BASE_REPO" "$clone_dir" >/dev/null 2>&1 \
       || { warn "git clone failed: $DINOMEM_BASE_REPO"; return 1; }
     ok "base cloned -> $(git -C "$clone_dir" rev-parse --short HEAD 2>/dev/null)"
+  fi
+  # P2: release the base-git lock (sync done, safe to run base installer unlocked).
+  if command -v flock >/dev/null 2>&1; then
+    flock -u 7 2>/dev/null || true; exec 7>&- 2>/dev/null || true
   fi
   base_install="$clone_dir/scripts/install.sh"
   [ -f "$base_install" ] || { warn "base install.sh not found at $base_install"; return 1; }
@@ -575,13 +599,31 @@ pip_install() {
   # langchain-chroma (and other deps) to fail on first attempt, forcing manual
   # re-runs during buyer installs. Second attempt of each pass adds
   # --break-system-packages for PEP 668 (externally-managed) environments.
-  local _try
+  # P4 anti-hang: each attempt is wrapped in `timeout` so a stuck download (dead
+  # mirror, hung TLS) can't freeze the whole install indefinitely (the old stall
+  # bug: no timeout => the sequential multi-agent loop never reached later agents).
+  # DINOMEM_PIP_TIMEOUT_S tunable (default 300s/attempt). Falls back to un-timeout'd
+  # pip only if `timeout` is absent on the host.
+  local _try _to="${DINOMEM_PIP_TIMEOUT_S:-300}" _tcmd=""
+  command -v timeout >/dev/null 2>&1 && _tcmd="timeout $_to"
   for _try in 1 2 3; do
-    "$PY" -m pip install -q "$@" 2>/dev/null && return 0
-    "$PY" -m pip install -q --break-system-packages "$@" 2>/dev/null && return 0
+    $_tcmd "$PY" -m pip install -q "$@" 2>/dev/null && return 0
+    $_tcmd "$PY" -m pip install -q --break-system-packages "$@" 2>/dev/null && return 0
     [ "$_try" -lt 3 ] && sleep $(( _try * 3 ))
   done
   return 1
+}
+# P4 REQUIRED-dep helper: skip-if-already-importable, else install, else HARD FAIL.
+# WHY: these are DEPENDENCIES, not options — without them the named feature is DEAD
+# (langchain=>recall, duckdb=>data_query, tree_sitter=>code_graph, spacy=>relation
+# mining). The old `&& ok || warn` shipped a silently half-dead install as green.
+# Skip-if-installed keeps re-runs fast (no torch/spacy re-download). Args: import-name
+# pip-spec... ; the human feature label is derived from the pip spec for the fail msg.
+require_pydep() {
+  local _imp="$1"; shift
+  if py_can_import "$_imp"; then ok "$_imp (already installed)"; return 0; fi
+  if pip_install "$@" && py_can_import "$_imp"; then ok "$_imp"; return 0; fi
+  fail "REQUIRED dependency '$_imp' could not be installed (tried: $*). dinomem needs it; a feature depending on it would be silently dead. Fix pip/connectivity and re-run."
 }
 # ── System resource check (warn-only; base already pulled the TEI image) ─────
 # Neuron adds daily L2 graph build + L3 synthesis. Recommended floor:
@@ -764,9 +806,7 @@ if [ "$REPAIR_CRON" = 0 ]; then
 
 # ── 0) Python dependencies ───────────────────────────────────────────────────
 hr "Python dependencies"
-py_can_import langchain_chroma && skip "langchain-chroma (installed)" || (
-  pip_install langchain-chroma && ok "langchain-chroma" || warn "langchain-chroma install failed"
-)
+  require_pydep langchain_chroma langchain-chroma
 # CPU-only torch BEFORE langchain-huggingface. WHY: langchain-huggingface pulls
 # sentence-transformers -> torch, and PyPI's DEFAULT torch is the CUDA build
 # (+cuXXX, ~1.2 GiB + up to ~2.7 GiB of unused nvidia/* CUDA libs) even on a
@@ -786,33 +826,37 @@ else
       skip "torch already CPU-only ($_torch_build)" ;;
     "")
       # torch absent -> install CPU wheel so langchain-huggingface won't pull CUDA.
+      # P4: torch MUST be the CPU build (owner decision). CPU-wheel install failing
+      # is a HARD FAIL — do NOT silently let langchain drag in the CUDA build.
       pip_install torch --index-url https://download.pytorch.org/whl/cpu \
         && ok "torch (CPU-only) installed" \
-        || warn "torch CPU install failed — langchain-huggingface may pull the CUDA build (works but heavier). Fix: $PY -m pip install torch --index-url https://download.pytorch.org/whl/cpu" ;;
+        || fail "REQUIRED: torch CPU build install failed. dinomem needs the CPU wheel (CUDA build is dead weight + OOM risk on a CPU box). Fix pip/connectivity: $PY -m pip install torch --index-url https://download.pytorch.org/whl/cpu  — then re-run." ;;
     *)
       # torch present but CUDA/other build -> swap in place to CPU (reclaims nvidia libs).
+      # P4: torch present but NOT the CPU build -> swapping to CPU is REQUIRED, not
+      # optional. If the swap fails, HARD FAIL rather than run the CUDA build.
       pip_install --force-reinstall torch --index-url https://download.pytorch.org/whl/cpu \
         && ok "torch switched to CPU-only (was $_torch_build) — reclaimed unused CUDA libs" \
-        || warn "could not switch torch to CPU (have $_torch_build) — still works, just heavier. Fix: $PY -m pip install --force-reinstall torch --index-url https://download.pytorch.org/whl/cpu" ;;
+        || fail "REQUIRED: torch must be the CPU build but the swap from $_torch_build failed. Fix: $PY -m pip install --force-reinstall torch --index-url https://download.pytorch.org/whl/cpu  — then re-run." ;;
   esac
 fi
 py_can_import langchain_huggingface && skip "langchain-huggingface (installed)" || (
-  pip_install langchain-huggingface && ok "langchain-huggingface" || warn "langchain-huggingface install failed"
+  require_pydep langchain_huggingface langchain-huggingface
 )
 py_can_import langchain_core && skip "langchain-core (installed)" || (
-  pip_install langchain-core && ok "langchain-core" || warn "langchain-core install failed"
+  require_pydep langchain_core langchain-core
 )
 py_can_import numpy && skip "numpy (installed)" || (
-  pip_install numpy && ok "numpy" || warn "numpy install failed"
+  require_pydep numpy numpy
 )
 py_can_import pandas && skip "pandas (installed)" || (
-  pip_install pandas && ok "pandas" || warn "pandas install failed"
+  require_pydep pandas pandas
 )
 py_can_import duckdb && skip "duckdb (installed)" || (
-  pip_install duckdb && ok "duckdb" || warn "duckdb install failed — data_query / structured-data feature OFFLINE (semantic tools unaffected; loud recap below)"
+  require_pydep duckdb duckdb
 )
 py_can_import yaml && skip "pyyaml (installed)" || (
-  pip_install pyyaml && ok "pyyaml" || warn "pyyaml install failed"
+  require_pydep yaml pyyaml
 )
 # ── tree-sitter (code-graph layer) — fail-soft, mirrors duckdb ────────────────
 # procedures/code_graph.py builds a ZERO-LLM code-structure graph (AST via
@@ -3642,6 +3686,44 @@ if [ "$REPAIR_CRON" = 1 ]; then
   echo "  Required crons registered/verified for agent: $AGENT_ID"
   echo "  Restart OpenClaw to activate:  openclaw gateway restart"
   exit 0
+fi
+
+# ── P3 final self-check (no fake success) ────────────────────────────────────
+# Before declaring success, ASSERT the install is actually sound: (1) marker
+# integrity (BEGIN==END==1 for both dinomem + dinomem-neuron blocks in AGENTS.md,
+# and the neuron TOOLS.md block), (2) every REQUIRED dep imports, (3) an embedding
+# endpoint answers. Any miss => list it and exit 1. WHY: the old flow warned on a
+# broken piece then still printed "✔ installed", so a half-dead install looked
+# green. This is the single authoritative gate. Skipped under DRY_RUN.
+if [ "$DRY_RUN" != 1 ]; then
+  _sc_fail=""
+  _marker_pair() { # $1=file $2=begin-needle $3=end-needle $4=label
+    local _b _e
+    _b=$(grep -cF "$2" "$1" 2>/dev/null || echo 0)
+    _e=$(grep -cF "$3" "$1" 2>/dev/null || echo 0)
+    [ "$_b" = 1 ] && [ "$_e" = 1 ] || _sc_fail="${_sc_fail}\n    �’ marker $4: BEGIN=$_b END=$_e (want 1/1) in $1"
+  }
+  _marker_pair "$WS/AGENTS.md" "BEGIN:dinomem (managed" "<!-- END:dinomem -->" "dinomem(base)"
+  _marker_pair "$WS/AGENTS.md" "BEGIN:dinomem-neuron" "<!-- END:dinomem-neuron -->" "dinomem-neuron"
+  _marker_pair "$WS/TOOLS.md" "BEGIN:dinomem-neuron" "END:dinomem-neuron" "TOOLS.md-neuron"
+  # REQUIRED deps must import (mirrors P4 REQUIRED tier; a warn-only miss here would
+  # let a silently-dead feature ship green).
+  for _mod in langchain_chroma langchain_huggingface numpy pandas duckdb yaml tree_sitter spacy; do
+    python3 -c "import $_mod" >/dev/null 2>&1 || _sc_fail="${_sc_fail}\n    ✗ REQUIRED python dep not importable: $_mod"
+  done
+  python3 -c "import torch" >/dev/null 2>&1 || _sc_fail="${_sc_fail}\n    ✗ REQUIRED python dep not importable: torch"
+  # embedding endpoint must answer (memory/recall is dead without it).
+  _embed_url="${DINOMEM_EMBED_URL:-http://localhost:8080}"
+  curl -fsS -m 5 "${_embed_url%/}/health" >/dev/null 2>&1 \
+    || curl -fsS -m 5 "${_embed_url%/v1/embeddings}/health" >/dev/null 2>&1 \
+    || _sc_fail="${_sc_fail}\n    ✗ embedding endpoint not answering ($_embed_url) — memory_search/recall will be dead"
+  if [ -n "$_sc_fail" ]; then
+    hr "self-check FAILED"
+    printf '  \033[31m[fail]\033[0m install is NOT sound:%b\n' "$_sc_fail"
+    printf '  Fix the above and re-run. (Not printing a success banner over a broken install.)\n'
+    exit 1
+  fi
+  ok "self-check passed (markers 1/1, required deps import, embedding endpoint live)"
 fi
 
 hr "done"
