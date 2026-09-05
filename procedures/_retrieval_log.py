@@ -38,6 +38,7 @@ CLI (inspector):
   python3 _retrieval_log.py --rollup [--retention-days N]
 """
 import os
+import re
 import sys
 import json
 import glob
@@ -98,8 +99,15 @@ def _norm_scores(scores):
 
 def log_retrieval(workspace, tool, query, k=None, result_uris=None,
                   top_scores=None, fallback_used=False, latency_ms=None,
-                  extra=None, log_fn=None):
-    """Append ONE retrieval event to today's JSONL. Fail-open: never raises."""
+                  extra=None, log_fn=None, source="tool"):
+    """Append ONE retrieval event to today's JSONL. Fail-open: never raises.
+
+    `source` distinguishes WHERE the call came from so reports don't read as
+    analyst-biased: "tool" = an explicit dinomem python retrieval tool
+    (hybrid_recall/session_search/...), "native" = an OpenClaw gateway memory
+    tool (memory_search/memory_get) captured by the dinomem-retrieval-log plugin.
+    Default "tool" keeps every existing caller backward-compatible.
+    """
     _lf = log_fn or (lambda m: None)
     try:
         d = _log_dir(workspace)
@@ -109,6 +117,7 @@ def log_retrieval(workspace, tool, query, k=None, result_uris=None,
         rec = {
             "ts": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
             "tool": str(tool),
+            "source": str(source or "tool"),
             "query": _clip_query(query),
             "k": k,
             "n_results": len(_norm_uris(result_uris)),
@@ -297,9 +306,41 @@ def _cli(argv):
     ap.add_argument("--health", action="store_true", help="print health.json")
     ap.add_argument("--rollup", action="store_true", help="run rollup+prune now")
     ap.add_argument("--retention-days", type=int, default=RAW_RETENTION_DAYS)
+    # --- record path: append ONE event from outside Python (the TS plugin shells
+    #     here fire-and-forget so native memory_search/get land in the SAME log via
+    #     the SAME writer — no forked JSONL schema). All record args are optional. ---
+    ap.add_argument("--record", action="store_true",
+                    help="append one retrieval event (for the native-recall plugin)")
+    ap.add_argument("--query", help="record: the query text")
+    ap.add_argument("--k", type=int, help="record: requested k")
+    ap.add_argument("--n-results", type=int, help="record: result count (native has no uris)")
+    ap.add_argument("--result-uris", help="record: comma/newline-separated uris")
+    ap.add_argument("--source", default="tool", help="record: native|tool (default tool)")
+    ap.add_argument("--extra-json", help="record: small json-object of extra fields")
     a = ap.parse_args(argv)
     ws = a.workspace
     d = _log_dir(ws)
+
+    if a.record:
+        uris = None
+        if a.result_uris:
+            uris = [u for u in re.split(r"[,\n]", a.result_uris) if u.strip()]
+        # native tools expose a COUNT but not the uri list -> synthesize N blanks so
+        # n_results is correct without inventing fake uris.
+        elif a.n_results:
+            uris = [""] * max(0, a.n_results)
+        extra = None
+        if a.extra_json:
+            try:
+                parsed = json.loads(a.extra_json)
+                if isinstance(parsed, dict):
+                    extra = parsed
+            except Exception:
+                pass
+        ok = log_retrieval(ws, a.tool or "native", a.query or "", k=a.k,
+                           result_uris=uris, source=a.source, extra=extra)
+        print(json.dumps({"ok": bool(ok)}))
+        return 0 if ok else 1
 
     if a.rollup:
         r = rollup(ws, retention_days=a.retention_days, log_fn=print)
