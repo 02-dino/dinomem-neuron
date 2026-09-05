@@ -519,6 +519,23 @@ else
     warn "dinomem base not detected in $WS — installing it now (required dependency, agent id: $AGENT_ID [$AGENT_ID_SOURCE])"
   fi
 
+  # NEURON-BLOCK CRASH-SNAPSHOT (atomicity guard). WHY: the base installer runs
+  # HERE (early) and rewrites AGENTS.md's base block; the neuron block is only
+  # (re)written ~2200 lines later, past 27 pip installs + slow openclaw probes.
+  # A run SIGKILLed/timed-out in that window leaves the base block written but the
+  # neuron block GONE (confirmed root cause of the cs half-install). Snapshot the
+  # existing neuron block now so the final restore-guard can put it back if a
+  # PRIOR crashed run already dropped it and this run's neuron-write also can't
+  # complete. Cheap: a single sed extract to a temp file, cleaned at exit.
+  NEURON_SNAPSHOT=""
+  if [ -f "$WS/AGENTS.md" ] && grep -qF 'BEGIN:dinomem-neuron' "$WS/AGENTS.md" 2>/dev/null; then
+    NEURON_SNAPSHOT="$(mktemp)"
+    sed -n '/<!-- BEGIN:dinomem-neuron/,/<!-- END:dinomem-neuron -->/p' "$WS/AGENTS.md" > "$NEURON_SNAPSHOT" 2>/dev/null
+    grep -qF 'END:dinomem-neuron' "$NEURON_SNAPSHOT" 2>/dev/null \
+      && trap 'rm -f "$NEURON_SNAPSHOT"' EXIT \
+      || { rm -f "$NEURON_SNAPSHOT"; NEURON_SNAPSHOT=""; }  # only keep a COMPLETE span
+  fi
+
   if auto_install_base; then
     base_installed || fail "dinomem base markers missing after install (in $WS/procedures/). Install blocked."
     ok "dinomem base $([ "$HAD_BASE_BEFORE" = 1 ] && echo refreshed || echo provisioned)"
@@ -2720,6 +2737,19 @@ $DINOMEM_BODY
 $END"
 
 wire_managed_block "$AGENTS" "$BEGIN" "$END" "$BLOCK" "AGENTS.md"
+
+# NEURON-BLOCK RESTORE-GUARD (pairs with the crash-snapshot above). WHY: the
+# normal path just wrote the neuron block, so this is a no-op. But if a PRIOR run
+# crashed mid-window (base block written, neuron block dropped) AND this run's
+# neuron write above somehow didn't land (interrupted grep/awk, disk), the block
+# would still be missing. Restore it from the snapshot so a half-install
+# self-heals on the next run instead of shipping a base-only AGENTS.md. Idempotent:
+# only fires when the block is genuinely absent after the write.
+if [ -n "${NEURON_SNAPSHOT:-}" ] && [ -s "$NEURON_SNAPSHOT" ] \
+   && ! grep -qF 'BEGIN:dinomem-neuron' "$AGENTS" 2>/dev/null; then
+  printf '\n%s\n' "$(cat "$NEURON_SNAPSHOT")" >> "$AGENTS"
+  warn "neuron block was missing after write (prior crashed install?) — restored from crash-snapshot"
+fi
 
 # ── Wire TOOLS.md ────────────────────────────────────────────────────────────
 # AGENTS.md carries the WHEN/policy (session_deep_recall). TOOLS.md carries the
