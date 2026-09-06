@@ -1394,7 +1394,12 @@ if [ "$DO_CRON" = 1 ]; then
   # that indexes install.sh heredoc / cron-payload behavioral labels the AST can't
   # see. Both fail-soft (tree-sitter missing -> code_graph offline; anchors is pure
   # stdlib grep). Piggybacked in one cron entry (&&): structure first, anchors after.
-  CODEGRAPH_CRON="$_CG_MIN 4 * * * cd $WS && python3 procedures/code_graph.py --path $WS >> logs/code_graph_refresh.log 2>&1 && python3 procedures/code_anchors.py --path $WS >> logs/code_graph_refresh.log 2>&1"
+  # timeout 1740 (29min) self-bounds each step BELOW the gateway's default 600s
+  # command-cron wall-clock cap: the first full AST build on a large repo can
+  # exceed 10min (observed 691s), tripping the ceiling and leaving consecutiveErrors
+  # climbing forever. 1740s sits under the 30min isolated-cron watchdog and gives
+  # huge headroom; git-incremental runs after the first are cheap either way.
+  CODEGRAPH_CRON="$_CG_MIN 4 * * * cd $WS && timeout 1740 python3 procedures/code_graph.py --path $WS >> logs/code_graph_refresh.log 2>&1 && timeout 1740 python3 procedures/code_anchors.py --path $WS >> logs/code_graph_refresh.log 2>&1"
   upsert_cron "code_graph.py --path" "dinomem-neuron: code-structure graph + prompt-anchor refresh (daily)" "$CODEGRAPH_CRON" "code_graph_refresh cron (daily 04:${_CG_MIN} UTC, staggered)"
 
   # retrieval_log rollup — daily at 4:15 UTC (no LLM, pure stdlib): compresses
