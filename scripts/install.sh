@@ -463,11 +463,28 @@ auto_install_base() {
   # --no-restart ALWAYS: neuron isn't done yet (it copies its overrides AFTER base
   # returns), so a base restart here would load a half-installed state. Neuron does
   # the single topology-aware restart at its own end instead.
-  bash "$base_install" --workspace "$WS" --agent-id "$AGENT_ID" \
+  # BLIP-TOLERANT SUCCESS GATE. WHY: the base sub-installer git-synced the base CODE
+  # to latest above (the ONLY thing neuron actually depends on for call_llm routing).
+  # Its LATER phases (openclaw config-patch / hook-enable) are gateway-dependent and
+  # exit nonzero on a transient gateway blip -- a state orthogonal to "is the base
+  # code current". The old `|| return 1` conflated the two, so ONE brief gateway blip
+  # during the base sub-run hard-failed the ENTIRE neuron install even though the base
+  # was perfectly synced (confirmed root cause of the ads/cs install never completing
+  # on a blippy box). Fix: if the sub-installer exits nonzero, DON'T abort blindly --
+  # re-verify the real dependency (base markers present in $WS). Present => downgrade
+  # to a warning and continue (the gateway-only steps re-run idempotently later /
+  # via --repair-cron). Genuinely absent => the base truly failed, so still abort.
+  if bash "$base_install" --workspace "$WS" --agent-id "$AGENT_ID" \
     ${INSTANCE_ID:+--instance "$INSTANCE_ID"} ${LICENSE_AGREED:+--agree} \
-    ${NO_GIT_SNAPSHOT:+--no-git-snapshot} --no-restart \
-    || { warn "dinomem base installer exited nonzero"; return 1; }
-  return 0
+    ${NO_GIT_SNAPSHOT:+--no-git-snapshot} --no-restart; then
+    return 0
+  fi
+  if base_installed; then
+    warn "dinomem base installer exited nonzero, but base code IS present + synced (likely a transient gateway blip in its config/hook phase) — continuing; gateway-only steps re-run idempotently (or via --repair-cron)"
+    return 0
+  fi
+  warn "dinomem base installer exited nonzero AND base markers are missing — base genuinely failed"
+  return 1
 }
 
 # ── ALWAYS install/refresh dinomem base FIRST (dependency + auto-update) ──────
@@ -519,22 +536,38 @@ else
     warn "dinomem base not detected in $WS — installing it now (required dependency, agent id: $AGENT_ID [$AGENT_ID_SOURCE])"
   fi
 
-  # NEURON-BLOCK CRASH-SNAPSHOT (atomicity guard). WHY: the base installer runs
-  # HERE (early) and rewrites AGENTS.md's base block; the neuron block is only
-  # (re)written ~2200 lines later, past 27 pip installs + slow openclaw probes.
-  # A run SIGKILLed/timed-out in that window leaves the base block written but the
-  # neuron block GONE (confirmed root cause of the cs half-install). Snapshot the
-  # existing neuron block now so the final restore-guard can put it back if a
-  # PRIOR crashed run already dropped it and this run's neuron-write also can't
-  # complete. Cheap: a single sed extract to a temp file, cleaned at exit.
-  NEURON_SNAPSHOT=""
-  if [ -f "$WS/AGENTS.md" ] && grep -qF 'BEGIN:dinomem-neuron' "$WS/AGENTS.md" 2>/dev/null; then
-    NEURON_SNAPSHOT="$(mktemp)"
-    sed -n '/<!-- BEGIN:dinomem-neuron/,/<!-- END:dinomem-neuron -->/p' "$WS/AGENTS.md" > "$NEURON_SNAPSHOT" 2>/dev/null
-    grep -qF 'END:dinomem-neuron' "$NEURON_SNAPSHOT" 2>/dev/null \
-      && trap 'rm -f "$NEURON_SNAPSHOT"' EXIT \
-      || { rm -f "$NEURON_SNAPSHOT"; NEURON_SNAPSHOT=""; }  # only keep a COMPLETE span
+  # AGENTS.md WHOLE-FILE TRANSACTION (Fix 2: atomic across the base->neuron seam).
+  # WHY: the base installer runs HERE (early) and rewrites AGENTS.md's base block;
+  # the neuron block is only (re)written ~2200 lines later, past 27 pip installs +
+  # slow openclaw probes. A run SIGKILLed/timed-out/blipped ANYWHERE in that window
+  # (or mid base-write itself) previously left a half-written or GUTTED AGENTS.md
+  # (base written / neuron gone -- or base gone too: the confirmed cs + ads
+  # half-install root cause). The old guard only snapshotted the neuron *block* and
+  # could not undo a base-side gutting. Fix: snapshot the ENTIRE original AGENTS.md
+  # NOW and arm an EXIT trap that restores it verbatim if the run dies before the
+  # final wire+verify clears the trap (see AGENTS_TXN_DONE below). Any interruption
+  # in the whole seam -> original file back, never a gutted one. Cheap: one cp, one
+  # trap, cleared on success.
+  AGENTS_TXN_SNAPSHOT=""
+  AGENTS_TXN_DONE=0
+  if [ -f "$WS/AGENTS.md" ]; then
+    AGENTS_TXN_SNAPSHOT="$(mktemp)"
+    cp "$WS/AGENTS.md" "$AGENTS_TXN_SNAPSHOT" 2>/dev/null \
+      || { rm -f "$AGENTS_TXN_SNAPSHOT"; AGENTS_TXN_SNAPSHOT=""; }
   fi
+  # Restore-on-abort: fires on ANY exit while the txn is still open. On clean
+  # success AGENTS_TXN_DONE=1 makes this a no-op that just cleans the temp file.
+  _agents_txn_restore() {
+    local _rc=$?
+    if [ -n "${AGENTS_TXN_SNAPSHOT:-}" ] && [ -s "$AGENTS_TXN_SNAPSHOT" ]; then
+      if [ "${AGENTS_TXN_DONE:-0}" != 1 ]; then
+        cp "$AGENTS_TXN_SNAPSHOT" "$WS/AGENTS.md" 2>/dev/null \
+          && warn "install aborted mid-run (rc=$_rc) — restored original AGENTS.md (no gutted/half-written file left)"
+      fi
+      rm -f "$AGENTS_TXN_SNAPSHOT"
+    fi
+  }
+  trap _agents_txn_restore EXIT
 
   if auto_install_base; then
     base_installed || fail "dinomem base markers missing after install (in $WS/procedures/). Install blocked."
@@ -3006,6 +3039,20 @@ if [ -n "${NEURON_SNAPSHOT:-}" ] && [ -s "$NEURON_SNAPSHOT" ] \
    && ! grep -qF 'BEGIN:dinomem-neuron' "$AGENTS" 2>/dev/null; then
   printf '\n%s\n' "$(cat "$NEURON_SNAPSHOT")" >> "$AGENTS"
   warn "neuron block was missing after write (prior crashed install?) — restored from crash-snapshot"
+fi
+
+# AGENTS.md TRANSACTION COMMIT (Fix 2). Both blocks are now (re)written above. Only
+# now is it safe to clear the whole-file restore trap armed before auto_install_base:
+# verify the file actually carries BOTH a base and a neuron block, and only then set
+# AGENTS_TXN_DONE=1 so the EXIT trap becomes a no-op cleanup. If EITHER block is
+# somehow still absent (write raced/failed), we leave the trap ARMED so the original
+# is restored on exit rather than shipping a half-written file. WHY here (not later):
+# everything past this point is verify/report -- the destructive writes are done.
+if grep -qF 'BEGIN:dinomem (managed' "$AGENTS" 2>/dev/null \
+   && grep -qF 'BEGIN:dinomem-neuron' "$AGENTS" 2>/dev/null; then
+  AGENTS_TXN_DONE=1
+else
+  warn "AGENTS.md missing a base or neuron block after wiring — leaving restore-trap armed (original will be restored on exit)"
 fi
 
 # ── Wire TOOLS.md ────────────────────────────────────────────────────────────
