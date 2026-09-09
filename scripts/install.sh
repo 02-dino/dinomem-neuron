@@ -561,8 +561,25 @@ else
     local _rc=$?
     if [ -n "${AGENTS_TXN_SNAPSHOT:-}" ] && [ -s "$AGENTS_TXN_SNAPSHOT" ]; then
       if [ "${AGENTS_TXN_DONE:-0}" != 1 ]; then
-        cp "$AGENTS_TXN_SNAPSHOT" "$WS/AGENTS.md" 2>/dev/null \
-          && warn "install aborted mid-run (rc=$_rc) — restored original AGENTS.md (no gutted/half-written file left)"
+        # HEALTHY-FILE GUARD: the trap is armed BEFORE auto_install_base, but the
+        # base+neuron blocks are written well before AGENTS_TXN_DONE=1 (which sits
+        # past the copy/verify phases). If the run is interrupted/SIGTERM'd AFTER
+        # both blocks landed but BEFORE that flag (e.g. mid "Copying scripts", or
+        # an external scope teardown — all observed with rc=0), the old code blindly
+        # restored the PRE-BASE snapshot and REVERTED a perfectly-wired AGENTS.md
+        # back to a block-less file (confirmed root cause of sales/sosmed/modul
+        # losing their dinomem blocks on the 2026-09 re-install). Fix: only restore
+        # when the CURRENT file is actually gutted/half-written (missing EITHER
+        # block). If it already carries BOTH a base and a neuron block, it is
+        # healthy — leave it, never clobber good content over an unrelated abort.
+        if [ -f "$WS/AGENTS.md" ] \
+           && grep -qF 'BEGIN:dinomem (managed' "$WS/AGENTS.md" 2>/dev/null \
+           && grep -qF 'BEGIN:dinomem-neuron' "$WS/AGENTS.md" 2>/dev/null; then
+          warn "install exited early (rc=$_rc) but AGENTS.md already carries both dinomem+neuron blocks — keeping the wired file (no needless restore)"
+        else
+          cp "$AGENTS_TXN_SNAPSHOT" "$WS/AGENTS.md" 2>/dev/null \
+            && warn "install aborted mid-run (rc=$_rc) — restored original AGENTS.md (no gutted/half-written file left)"
+        fi
       fi
       rm -f "$AGENTS_TXN_SNAPSHOT"
     fi
