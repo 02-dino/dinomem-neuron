@@ -2000,12 +2000,26 @@ def _head_sha(root):
         return None
 
 
+# Empirically measured (2026-09-19): tree-sitter's JSON grammar is NOT
+# linear-time on large single files — a 6.2MB JSON parsed in ~3.5s, a 45MB
+# JSON effectively hung (>120s, no output). A cache/log JSON that balloons
+# past this cap would silently wedge an entire code_graph run (no partial
+# output since stdout is buffered until process exit) with NO signal beyond
+# a bare `timeout`-killed exit code. Cap applies to ALL langs (cheap, no lang
+# is worth parsing a monster generated/vendored blob) so future grammars
+# inherit the same protection for free instead of needing a per-lang guard.
+_MAX_PARSE_BYTES = 2 * 1024 * 1024  # 2MB
+
 def _parse_one(ap, rel, lang, errors):
-    """Parse a single file -> (rel, defs, refs) or None on error (recorded)."""
+    """Parse a single file -> (rel, defs, refs) or None on error/skip (recorded)."""
     parser_fn = PARSERS.get(lang)
     if parser_fn is None:
         return None
     try:
+        size = os.path.getsize(ap)
+        if size > _MAX_PARSE_BYTES:
+            errors.append({"file": rel, "error": f"skipped: {size} bytes > {_MAX_PARSE_BYTES} cap (oversized generated/cache file, not source)"})
+            return None
         parser = _ts_get_parser(lang)
         with open(ap, "rb") as fh:
             src = fh.read()
