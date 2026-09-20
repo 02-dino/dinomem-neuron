@@ -2448,7 +2448,7 @@ for cname in CANON:
             print("  \033[32m[ok]\033[0m   deduped '%s' — removed duplicate %s (kept newest)" % (cname, did[:8]))
 PYEOF
 if true; then
-  python3 - <<PYEOF
+  DINOMEM_AGENT_ID="$AGENT_ID" python3 - <<PYEOF
 import subprocess, json, os
 try:
     _CLI_T = max(45, int(__import__('os').environ.get('DINOMEM_CLI_TIMEOUT_S', '60')))
