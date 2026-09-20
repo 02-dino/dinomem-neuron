@@ -31,3 +31,6 @@ kb/code_graph/
 # Internal operator scripts (buyer watermark/leak tracer — never ship)
 scripts/make_release.sh
 scripts/trace_release.sh
+
+# installer backups (local only)
+scripts/install.sh.bak-*
