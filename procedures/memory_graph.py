@@ -91,6 +91,26 @@ _DB_DEFAULT = "/root/.openclaw/agents/analyst/agent/openclaw-agent.sqlite"
 # substitution > self-locate from this file's location (safety net if sed was
 # skipped/failed). DB_PATH (sqlite) stays on sed — it is not self-locatable.
 import os as _os
+# BUG#6 (2026-09-21): _DB_DEFAULT above is a baked literal ANALYST sqlite path that
+# an install-time sed is supposed to rewrite per agent. When that sed does not fire,
+# EVERY agent reads ANALYST's memory DB and writes a graph of analyst's memory into
+# its own workspace (9/9 agents produced byte-identical 4820-node graphs). Same shape
+# as #3/#4/#5: the corrective code existed but never fired on the live path.
+# FIX: self-locate from the agent id at RUNTIME; treat the baked value as last resort.
+def _self_locate_db(_baked):
+    """Resolve THIS agent's memory sqlite without trusting install-time sed."""
+    _aid = (_os.environ.get("DINOMEM_AGENT_ID", "") or "").strip()
+    if not _aid:  # workspace dir name is authoritative: .../workspace-<agent>
+        _n = Path(__file__).resolve().parent.parent.name
+        _aid = _n[len("workspace-"):] if _n.startswith("workspace-") else ""
+    if _aid:
+        for _root in ("/root/.openclaw", str(Path.home() / ".openclaw")):
+            _c = Path(_root) / "agents" / _aid / "agent" / "openclaw-agent.sqlite"
+            if _c.is_file():
+                return str(_c)
+    return _baked  # fail-open: keep baked path rather than crash
+if _DB_DEFAULT.startswith("DINOMEM_") or "/agents/analyst/" in _DB_DEFAULT:
+    _DB_DEFAULT = _self_locate_db(_DB_DEFAULT)
 DB_PATH = Path(_os.environ.get("DINOMEM_MEMORY_DB", _DB_DEFAULT))
 _WS_DEFAULT = "DINOMEM_WORKSPACE_PLACEHOLDER"
 if _WS_DEFAULT.startswith("DINOMEM_"):  # sed did not run
