@@ -2530,11 +2530,55 @@ def _cron_add_argv(job):
 
 WS = "$WS"
 idsdir = WS + "/.cron_ids"
-def readid(name):
+def _live_jobs():
+    # one cached fetch of the live job table (id -> job) for cache validation
+    global __LIVE
     try:
-        return open(idsdir + "/" + name).read().strip()
+        return __LIVE
+    except NameError:
+        pass
+    __LIVE = {}
+    try:
+        lr = subprocess.run(['openclaw', 'cron', 'list', '--all', '--json'],
+                            capture_output=True, text=True, timeout=_CLI_T)
+        if lr.returncode == 0:
+            data = json.loads(lr.stdout)
+            jl = data if isinstance(data, list) else (data.get('jobs') if isinstance(data.get('jobs'), list) else (data.get('jobs') or {}).get('jobs', []))
+            __LIVE = {j.get('id'): j for j in (jl or []) if j.get('id')}
+    except Exception:
+        __LIVE = {}
+    return __LIVE
+
+def readid(name):
+    # fix#BUG5: the .cron_ids cache was trusted blindly. Pre-BUG3 installs looked
+    # workers up by bare name, so agent A could cache agent B's (or an unscoped)
+    # job id. Deleting B's job then left A's gate wired to a dangling id, and the
+    # lane silently never ran. Validate: the cached id must still EXIST and must
+    # not belong to a different agent. Otherwise drop it and re-register.
+    try:
+        _v = open(idsdir + "/" + name).read().strip()
     except Exception:
         return ""
+    if not _v:
+        return ""
+    live = _live_jobs()
+    if not live:
+        return _v  # gateway unreachable: fail-open, don't nuke a good cache
+    j = live.get(_v)
+    if j is None:
+        print("  \033[33m[warn]\033[0m stale cron id cache '%s' -> %s (job gone); re-registering" % (name, _v[:8]))
+        try: _os.remove(idsdir + "/" + name)
+        except Exception: pass
+        return ""
+    _mine = (_os.environ.get('DINOMEM_AGENT_ID','') or '').strip().lower()
+    _its  = (j.get('agentId') or '')
+    _its  = _its.strip().lower() if isinstance(_its, str) else ''
+    if _mine and _its and _its != _mine:
+        print("  \033[33m[warn]\033[0m cron id cache '%s' -> %s owned by '%s'; re-registering" % (name, _v[:8], _its))
+        try: _os.remove(idsdir + "/" + name)
+        except Exception: pass
+        return ""
+    return _v
 adv = readid("advancer"); imp = readid("improver"); dele = readid("deleter")
 dnr = readid("daily_note_review")  # optional lane; '' if not yet registered
 idea = readid("brainstorm_ideator")  # neuron ideator lane; '' if not yet registered
