@@ -32,7 +32,7 @@ from pathlib import Path
 _SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(_SCRIPT_DIR))
 
-_WS_DEFAULT = "/root/.openclaw/workspace-analyst"
+_WS_DEFAULT = "DINOMEM_WORKSPACE_PLACEHOLDER"
 if _WS_DEFAULT.startswith("DINOMEM_"):
     _WS_DEFAULT = str(_SCRIPT_DIR.parent)
 WS = Path(os.environ.get("DINOMEM_WORKSPACE", _WS_DEFAULT))

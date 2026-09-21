@@ -42,7 +42,7 @@ import os
 import sys
 from pathlib import Path
 
-_WS_DEFAULT = "/root/.openclaw/workspace-analyst"
+_WS_DEFAULT = "DINOMEM_WORKSPACE_PLACEHOLDER"
 if _WS_DEFAULT.startswith("DINOMEM_"):
     _WS_DEFAULT = str(Path(__file__).resolve().parent.parent)
 WS = Path(os.environ.get("DINOMEM_WORKSPACE", _WS_DEFAULT))

@@ -70,7 +70,7 @@ from pathlib import Path
 # ── Workspace resolution (priority): DINOMEM_WORKSPACE env > install-time sed >
 #    self-locate. Mirrors contradiction_check.py so the neuron install path is
 #    identical and a moved/partial install still resolves.
-_WS_DEFAULT = "/root/.openclaw/workspace-analyst"
+_WS_DEFAULT = "DINOMEM_WORKSPACE_PLACEHOLDER"
 if _WS_DEFAULT.startswith("DINOMEM_"):  # sed did not run (manual/partial copy)
     _WS_DEFAULT = str(Path(__file__).resolve().parent.parent)
 WS = Path(os.environ.get("DINOMEM_WORKSPACE", _WS_DEFAULT))

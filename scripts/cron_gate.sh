@@ -25,7 +25,7 @@
 # alerts; per-lane failures are logged, not fatal).
 set -uo pipefail
 
-WS="${OPENCLAW_WORKSPACE:-/root/.openclaw/workspace-analyst}"
+WS="${OPENCLAW_WORKSPACE:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 SCRIPTS="$WS/scripts"
 
 # git drift-context helper. Best-effort; sourcing is guarded so a missing/broken

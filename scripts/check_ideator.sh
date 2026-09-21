@@ -28,7 +28,7 @@
 # Portable: workspace from $OPENCLAW_WORKSPACE (falls back to analyst home).
 set -euo pipefail
 
-WS="${OPENCLAW_WORKSPACE:-/root/.openclaw/workspace-analyst}"
+WS="${OPENCLAW_WORKSPACE:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 MEM="$WS/memory"
 [ -d "$MEM" ] || exit 1
 

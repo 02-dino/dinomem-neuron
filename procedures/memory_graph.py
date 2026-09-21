@@ -92,7 +92,7 @@ _DB_DEFAULT = "/root/.openclaw/agents/analyst/agent/openclaw-agent.sqlite"
 # skipped/failed). DB_PATH (sqlite) stays on sed — it is not self-locatable.
 import os as _os
 DB_PATH = Path(_os.environ.get("DINOMEM_MEMORY_DB", _DB_DEFAULT))
-_WS_DEFAULT = "/root/.openclaw/workspace-analyst"
+_WS_DEFAULT = "DINOMEM_WORKSPACE_PLACEHOLDER"
 if _WS_DEFAULT.startswith("DINOMEM_"):  # sed did not run
     _WS_DEFAULT = str(Path(__file__).resolve().parent.parent)
 _WS = Path(_os.environ.get("DINOMEM_WORKSPACE", _WS_DEFAULT))
