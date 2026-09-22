@@ -84,10 +84,16 @@ def _build_tei_embeddings():
         from langchain_community.embeddings import OpenAIEmbeddings as _OAI
 
         class _TEILCEmbeddings(_OAI):
-            def embed_documents(self, texts):
+            def embed_documents(self, texts):  # tei-batch-chunk-v1
                 if _PREFIX_ENABLED:
                     texts = [_PASSAGE_PREFIX + t for t in texts]
-                return super().embed_documents(texts)
+                try:
+                    from tei_batch_chunk import embed_documents_batched
+                except ImportError:
+                    from tools.tei_batch_chunk import embed_documents_batched
+                return embed_documents_batched(
+                    texts, lambda batch: super(_TEILCEmbeddings, self).embed_documents(batch)
+                )
             def embed_query(self, text: str):
                 if _PREFIX_ENABLED:
                     text = _QUERY_PREFIX + text
@@ -115,10 +121,14 @@ def _build_tei_embeddings():
             return [x["embedding"] for x in sorted(data["data"], key=lambda x: x["index"])]
         def embed_query(self, text: str):
             return self._post([(_QUERY_PREFIX if _PREFIX_ENABLED else "") + text])[0]
-        def embed_documents(self, texts):
+        def embed_documents(self, texts):  # tei-batch-chunk-v1
             if _PREFIX_ENABLED:
                 texts = [_PASSAGE_PREFIX + t for t in texts]
-            return self._post(texts)
+            try:
+                from tei_batch_chunk import embed_documents_batched
+            except ImportError:
+                from tools.tei_batch_chunk import embed_documents_batched
+            return embed_documents_batched(texts, self._post)
 
     return _TEIStdlibEmbeddings()
 
