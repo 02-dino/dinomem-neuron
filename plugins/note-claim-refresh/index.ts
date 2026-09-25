@@ -6,23 +6,36 @@ import * as path from "node:path";
 // dinomem-neuron: Note Claim Refresh
 // ----------------------------------
 // Keeps a live-session note claim fresh for as long as the session is ACTIVELY
-// DOING ANYTHING — not only while it happens to be editing the claimed note.
+// WORKING IN THE SAME WORKSPACE as the claimed note.
 //
-// WHY THE BROADENED TRIGGER: the shared claim protocol lets the Advancer /
-// Improver / Deleter crons back off a fresh `live-session-*` claim (120-min
-// window). The original hook only refreshed on edit/write to a memory/_note_*.md.
-// But a live session can legitimately hold a claim on note X while spending an
-// hour doing exec/git/read/other-file work (e.g. building a repo the note tracks).
-// No note edit -> no refresh -> the claim aged past 120 min -> a cron reclaimed a
-// note a human was still actively working (observed 2026-07-10). The real liveness
-// signal is "the session is doing SOMETHING", so we now refresh on ANY tool call.
+// WHY THE BROADENED TRIGGER (original caf5242 rationale, preserved):
+// A live session can legitimately hold a claim on note X while spending an
+// hour doing exec/git/read/other-file work (e.g. building a repo the note
+// tracks). No note edit -> no refresh -> claim aged past 120 min -> a cron
+// reclaimed a note a human was still actively working (observed 2026-07-10).
 //
-// Fires on after_tool_call for every tool. A per-agent time throttle keeps it to
-// at most one refresh per REFRESH_EVERY_MS, so scanning stays negligible. Each
-// refresh scans memory/_note_*.md for notes claimed by THIS session and bumps
-// their claimed_at via claim_note.sh (which self-guards: exit 3 / no-op if the
-// note is not ours). Fire-and-forget, detached; never blocks or mutates the tool
-// result. If no live claim exists, the scan finds nothing and does nothing.
+// WHY WE SCOPE IT BACK DOWN (fix, 2026-09-25):
+// The caf5242 broadening used "any tool call by this agentId" as the liveness
+// signal. That's too wide: it refreshes ALL notes claimed by live-session-<id>
+// even when the tool call belongs to a completely unrelated chat session on the
+// same agent (e.g. a market-analysis chat while a project note sits claimed
+// from a previous session). Effect: claimed_at never expires -> Advancer always
+// skips the note -> zero project advancement while the agent is active at all.
+//
+// FIX: two-tier liveness signal:
+//   Tier 1 (STRONG): the tool call touches a path inside the same workspace
+//     as the claimed note (read/write/exec with a path arg under ws/). This is
+//     the real "I'm working on this project" signal. Refresh unconditionally
+//     (up to REFRESH_EVERY_MS throttle).
+//   Tier 2 (WEAK / grace): no workspace-path signal in this tool call, but
+//     the claim is still very fresh (< GRACE_NO_PATH_MS since claimed_at).
+//     Refresh once more to cover the gap between claim-write and the first
+//     real path-touching tool call. After the grace window, no path signal =
+//     no refresh = claim expires naturally, Advancer can pick it up.
+//
+// Throttle key is now sessionKey (not agentId) so two concurrent sessions on
+// the same agent don't share a throttle bucket and accidentally suppress each
+// other's refreshes.
 //
 // IDENTITY: the runtime hands plugins a sessionKey like `agent:<id>:<channel>:...`
 // (see sibling hooks). We derive agentId from it (fallback ctx.agentId) and build
@@ -44,13 +57,18 @@ function agentIdFromSessionKey(sk: unknown): string | undefined {
   return m ? m[1] : undefined;
 }
 
-// Refresh at most this often per agent. Well under the 120-min live-session
-// window, so a claim can never lapse while the session keeps working, yet we do
-// not spawn a scan on every single tool call.
+// Refresh at most this often per session. Well under the 120-min live-session
+// window, so a claim can never lapse while the session keeps working.
 const REFRESH_EVERY_MS = 5 * 60 * 1000; // 5 minutes
 
-// Last-refresh timestamp per agentId (module-scoped; process-lifetime memo).
-const lastRefreshByAgent = new Map<string, number>();
+// After this many ms since claimed_at, a tool call with NO workspace-path
+// signal will no longer refresh the claim. Keeps the grace window tight so
+// unrelated chats don't hold claims open indefinitely.
+const GRACE_NO_PATH_MS = 30 * 60 * 1000; // 30 minutes
+
+// Last-refresh timestamp per sessionKey (module-scoped; process-lifetime memo).
+// Keyed by sessionKey (not agentId) so concurrent sessions don't share buckets.
+const lastRefreshBySession = new Map<string, number>();
 
 // First candidate whose scripts/claim_note.sh and memory/ both exist on disk.
 function resolveWorkspace(
@@ -71,8 +89,8 @@ function resolveWorkspace(
   return undefined;
 }
 
-// Return absolute paths of _note_*.md files currently claimed by `claimant`.
-// Cheap-ish: reads only the frontmatter of each note file, NOT the whole body.
+// Return absolute paths of _note_*.md files currently claimed by `claimant`,
+// along with their claimed_at timestamp (parsed from frontmatter).
 //
 // BUG FIX (2026-07-10): the original version capped the read at a fixed 2048
 // bytes. That's fine for simple fenced (---/---) notes where claimed_by sits
@@ -88,7 +106,13 @@ function resolveWorkspace(
 // frontmatter terminator (closing `---` for fenced, first blank line for
 // bare), so we scan exactly the frontmatter, not an arbitrary byte count.
 const FRONTMATTER_SCAN_MAX = 32 * 1024; // generous cap; still cheap vs a full read
-function notesClaimedBy(memDir: string, claimant: string): string[] {
+
+interface ClaimedNote {
+  notePath: string;
+  claimedAt: Date | undefined; // parsed from frontmatter; undefined if missing/unparseable
+}
+
+function notesClaimedBy(memDir: string, claimant: string): ClaimedNote[] {
   let entries: string[];
   try {
     entries = fs.readdirSync(memDir);
@@ -96,7 +120,7 @@ function notesClaimedBy(memDir: string, claimant: string): string[] {
     return [];
   }
   const needle = `claimed_by: ${claimant}`;
-  const out: string[] = [];
+  const out: ClaimedNote[] = [];
   for (const name of entries) {
     if (!name.startsWith("_note_") || !name.endsWith(".md")) continue;
     const full = path.join(memDir, name);
@@ -118,7 +142,16 @@ function notesClaimedBy(memDir: string, claimant: string): string[] {
           if (blankIdx !== -1) frontmatterEnd = blankIdx + 1;
         }
         const head = lines.slice(0, frontmatterEnd).join("\n");
-        if (head.includes(needle)) out.push(full);
+        if (!head.includes(needle)) continue;
+
+        // Parse claimed_at from frontmatter for the grace-window check.
+        let claimedAt: Date | undefined;
+        const caMatch = /^claimed_at:\s*(.+)$/m.exec(head);
+        if (caMatch) {
+          const d = new Date(caMatch[1].trim());
+          if (!isNaN(d.getTime())) claimedAt = d;
+        }
+        out.push({ notePath: full, claimedAt });
       } finally {
         fs.closeSync(fd);
       }
@@ -127,6 +160,46 @@ function notesClaimedBy(memDir: string, claimant: string): string[] {
     }
   }
   return out;
+}
+
+// Extract all string-valued path-like arguments from a tool call event.
+// We look at common argument shapes: positional strings, named path/file/
+// command fields, and nested objects one level deep. This is best-effort;
+// false negatives just fall back to the grace-window tier.
+function extractPathArgs(event: any): string[] {
+  const args = event?.args ?? event?.input ?? event?.arguments ?? {};
+  const paths: string[] = [];
+  const visit = (v: unknown) => {
+    if (typeof v === "string" && v.length > 1 && (v.startsWith("/") || v.includes("/"))) {
+      paths.push(v);
+    }
+  };
+  if (typeof args === "string") {
+    visit(args);
+  } else if (Array.isArray(args)) {
+    for (const a of args) visit(a);
+  } else if (args && typeof args === "object") {
+    for (const [k, v] of Object.entries(args)) {
+      if (typeof v === "string") {
+        visit(v);
+      } else if (
+        typeof v === "object" &&
+        v !== null &&
+        !Array.isArray(v) &&
+        ["path", "file", "command", "input", "cwd", "workdir"].includes(k)
+      ) {
+        // one level deep for known path-bearing keys
+        for (const vv of Object.values(v as object)) visit(vv);
+      }
+    }
+  }
+  return paths;
+}
+
+// Returns true if any of the extracted path args falls inside `wsRoot`.
+function toolCallTouchesWorkspace(pathArgs: string[], wsRoot: string): boolean {
+  const norm = wsRoot.endsWith("/") ? wsRoot : wsRoot + "/";
+  return pathArgs.some((p) => p.startsWith(norm) || p === wsRoot);
 }
 
 export default definePluginEntry({
@@ -138,15 +211,19 @@ export default definePluginEntry({
       async (event: any, ctx: any) => {
         try {
           // 1) claimant = live-session-<agentId> (agentId from sessionKey or ctx)
+          const sessionKey =
+            ctx?.sessionKey ?? event?.sessionKey ?? ctx?.session ?? event?.session;
           const agentId =
-            agentIdFromSessionKey(ctx?.sessionKey ?? event?.sessionKey) ??
+            agentIdFromSessionKey(sessionKey) ??
             (typeof ctx?.agentId === "string" ? ctx.agentId : undefined);
           if (!agentId) return;
           const claimant = `live-session-${agentId}`;
 
-          // 2) time throttle — at most one refresh per REFRESH_EVERY_MS per agent
+          // 2) time throttle — at most one refresh per REFRESH_EVERY_MS per session
+          //    (keyed by sessionKey so concurrent sessions don't share buckets)
+          const throttleKey = typeof sessionKey === "string" ? sessionKey : agentId;
           const now = Date.now();
-          const last = lastRefreshByAgent.get(agentId) ?? 0;
+          const last = lastRefreshBySession.get(throttleKey) ?? 0;
           if (now - last < REFRESH_EVERY_MS) return;
 
           // 3) resolve workspace dynamically (no hardcoded path)
@@ -164,22 +241,53 @@ export default definePluginEntry({
           ]);
           if (!resolved) return; // no claim_note.sh + memory/ anywhere -> nothing to do
 
-          const { script, memDir } = resolved;
+          const { ws, script, memDir } = resolved;
 
           // 4) find notes THIS session currently holds; nothing held -> nothing to do
           const held = notesClaimedBy(memDir, claimant);
           if (held.length === 0) {
-            // still stamp the throttle so we don't re-scan on every tool call
-            lastRefreshByAgent.set(agentId, now);
+            lastRefreshBySession.set(throttleKey, now);
             return;
           }
 
-          // 5) mark throttle BEFORE spawning so concurrent tool calls don't pile up
-          lastRefreshByAgent.set(agentId, now);
+          // 5) path-signal check: does this tool call touch the workspace?
+          //    Tier 1 (STRONG): path arg inside ws/ -> refresh this note.
+          //    Tier 2 (WEAK/grace): no path signal but claim is very fresh
+          //      (< GRACE_NO_PATH_MS since claimed_at) -> refresh once more.
+          //    Otherwise: no refresh -> claim expires naturally.
+          const pathArgs = extractPathArgs(event);
+          const hasWorkspacePath = toolCallTouchesWorkspace(pathArgs, ws);
 
-          // 6) fire-and-forget detached refresh for each held note; refresh self-
-          //    guards (exit 3 / no-op if not ours), so this is always safe.
-          for (const notePath of held) {
+          const toRefresh: string[] = [];
+          for (const { notePath, claimedAt } of held) {
+            if (hasWorkspacePath) {
+              // Tier 1: strong signal — always refresh
+              toRefresh.push(notePath);
+            } else if (claimedAt !== undefined) {
+              // Tier 2: grace window — refresh only if claim is still very fresh
+              const claimAgeMs = now - claimedAt.getTime();
+              if (claimAgeMs < GRACE_NO_PATH_MS) {
+                toRefresh.push(notePath);
+              }
+              // else: claim is old and no workspace activity -> let it expire
+            } else {
+              // claimed_at unparseable -> conservative: apply grace (don't block)
+              toRefresh.push(notePath);
+            }
+          }
+
+          if (toRefresh.length === 0) {
+            // nothing to refresh this tick; still stamp throttle
+            lastRefreshBySession.set(throttleKey, now);
+            return;
+          }
+
+          // 6) mark throttle BEFORE spawning so concurrent tool calls don't pile up
+          lastRefreshBySession.set(throttleKey, now);
+
+          // 7) fire-and-forget detached refresh for each qualifying note; refresh
+          //    self-guards (exit 3 / no-op if not ours), so this is always safe.
+          for (const notePath of toRefresh) {
             const child = spawn(
               "bash",
               [script, "refresh", notePath, claimant],
