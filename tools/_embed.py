@@ -24,6 +24,15 @@ degrade cleanly (exit 3) leaving the exact-SQL path completely unaffected.
 import os
 import pathlib
 
+# Cap CPU threads for any local (non-TEI) torch-backed model load — multi-agent
+# host, N agents falling back to local load at once would thread-storm the box
+# otherwise. Must run before torch/langchain_huggingface import. See
+# _torch_cap.py for the single-source-of-truth rationale + override env.
+try:
+    from tools import _torch_cap  # noqa: F401
+except ImportError:
+    import _torch_cap  # noqa: F401
+
 # Single source of truth. Swap via env DINOMEM_EMBED_MODEL for a different model.
 _MODEL_ID = os.environ.get("DINOMEM_EMBED_MODEL", "intfloat/multilingual-e5-small")
 

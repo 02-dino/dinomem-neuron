@@ -41,6 +41,13 @@ try:
 except ImportError:
     from cache_utils import cached
 
+# Cap CPU threads for local torch model loads (multi-agent host) — must run
+# before langchain_huggingface import. See tools/_torch_cap.py.
+try:
+    from tools import _torch_cap  # noqa: F401
+except ImportError:
+    import _torch_cap  # noqa: F401
+
 from langchain_chroma import Chroma
 from langchain_huggingface import HuggingFaceEmbeddings
 

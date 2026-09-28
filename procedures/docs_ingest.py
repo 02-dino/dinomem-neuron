@@ -35,6 +35,16 @@ from datetime import datetime
 from typing import List, Dict, Tuple, Optional
 
 import pandas as pd
+
+# Cap CPU threads for local torch model loads (multi-agent host) — must run
+# before langchain_huggingface import. See tools/_torch_cap.py.
+import sys as _sys_embed
+_sys_embed.path.insert(0, str(Path(__file__).parent.parent / "tools"))
+try:
+    from tools import _torch_cap  # noqa: F401
+except ImportError:
+    import _torch_cap  # noqa: F401
+
 from langchain_chroma import Chroma
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_core.documents import Document
