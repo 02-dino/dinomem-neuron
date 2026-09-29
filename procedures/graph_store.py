@@ -106,8 +106,25 @@ class SqliteBackend:
         parent = os.path.dirname(db_path)
         if parent:
             os.makedirs(parent, exist_ok=True)
-        self.conn = sqlite3.connect(db_path)
+        # WHY busy_timeout: on big graphs (200M-400M+ code graphs) a rebuild writer
+        # and a concurrent code_query reader collide. sqlite's DEFAULT busy handler
+        # gives up IMMEDIATELY ("database is locked") instead of waiting, which the
+        # caller then surfaces as a generic timeout/failure. Waiting is almost always
+        # correct here: the competing txn is short (a read) or is the rebuild itself.
+        # Override via DINOMEM_SQLITE_TIMEOUT_S for pathological boxes.
+        _timeout_s = float(os.environ.get("DINOMEM_SQLITE_TIMEOUT_S", "60"))
+        self.conn = sqlite3.connect(db_path, timeout=_timeout_s)
         self.conn.row_factory = sqlite3.Row
+        # Belt-and-suspenders: connect(timeout=) covers the Python-side busy handler,
+        # PRAGMA busy_timeout covers statements issued on this connection.
+        self.conn.execute(f"PRAGMA busy_timeout = {int(_timeout_s * 1000)}")
+        # WAL lets readers (code_query) proceed while a rebuild writes, instead of
+        # blocking on the single write lock. fail-soft: some filesystems (NFS, some
+        # overlayfs) reject WAL -- a rollback-journal DB still works, just less concurrent.
+        try:
+            self.conn.execute("PRAGMA journal_mode = WAL")
+        except sqlite3.Error:
+            pass
         self._ensure_schema()
 
     # ---- schema -------------------------------------------------------------
