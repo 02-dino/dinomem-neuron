@@ -1472,7 +1472,21 @@ if [ "$DO_CRON" = 1 ]; then
   # exceed 10min (observed 691s), tripping the ceiling and leaving consecutiveErrors
   # climbing forever. 1740s sits under the 30min isolated-cron watchdog and gives
   # huge headroom; git-incremental runs after the first are cheap either way.
-  CODEGRAPH_CRON="$_CG_MIN 4 * * * cd $WS && timeout 1740 python3 procedures/code_graph.py --path $WS >> logs/code_graph_refresh.log 2>&1 && timeout 1740 python3 procedures/code_anchors.py --path $WS >> logs/code_graph_refresh.log 2>&1"
+  # MULTI-AGENT SERIALIZATION (added 2026-09-30): heavy-embed class — code_graph is
+  # CPU/AST-heavy with no LLM, which is exactly what heavy-embed guards. WHY THIS WAS
+  # A BUG: code_graph was the ONLY heavy lane running BARE (no dinomem_run.sh), while
+  # L2/L3/L4/RAG all flock. _stagger gives each agent a deterministic minute, but with
+  # N agents over 60 slots collisions are INHERENT (birthday paradox — observed live:
+  # cs/editor/sales all landed on :39 from three different md5s, 2513200349 /
+  # 1525587389 / 2664465329 all == 29 mod 60). A better hash does NOT fix that; the
+  # designed mitigation is the flock, which every other lane already had. Three
+  # concurrent AST rebuilds on one box = CPU thrash + sqlite lock contention.
+  # RUNAWAY BACKSTOP: outer `timeout 7200` sits ABOVE the 5400s flock wait
+  # (DINOMEM_LOCK_TIMEOUT_SECS) so a legitimately-queued run is never killed while
+  # waiting its turn — same rationale as the L2/L3 lanes. Inner per-step `timeout 1740`
+  # is kept as the per-script bound.
+  CODEGRAPH_CHAIN="timeout 1740 python3 procedures/code_graph.py --path $WS >> logs/code_graph_refresh.log 2>&1 && timeout 1740 python3 procedures/code_anchors.py --path $WS >> logs/code_graph_refresh.log 2>&1"
+  CODEGRAPH_CRON="$_CG_MIN 4 * * * cd $WS && DINOMEM_AGENT_ID=$AGENT_ID timeout 7200 bash $WS/scripts/dinomem_run.sh heavy-embed $WS bash -c \"$CODEGRAPH_CHAIN\""
   upsert_cron "code_graph.py --path" "dinomem-neuron: code-structure graph + prompt-anchor refresh (daily)" "$CODEGRAPH_CRON" "code_graph_refresh cron (daily 04:${_CG_MIN} UTC, staggered)"
 
   # retrieval_log rollup — daily at 4:15 UTC (no LLM, pure stdlib): compresses
