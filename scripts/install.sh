@@ -1257,7 +1257,7 @@ if [ -d "$SKILL_DIR/hooks/dinomem-open-notes" ]; then
   hr "Open-notes hook (neuron superset: open-note manifest + session_search recall)"
   copy_dir_upgradeable "$SKILL_DIR/hooks/dinomem-open-notes" "$WS/hooks/dinomem-open-notes" "hooks/dinomem-open-notes/ (neuron superset)"
   if openclaw_running; then
-    openclaw hooks enable dinomem-open-notes >/dev/null 2>&1 \
+    timeout "${DINOMEM_PROBE_TIMEOUT_S:-45}" openclaw hooks enable dinomem-open-notes >/dev/null 2>&1 \
       && ok "dinomem-open-notes hook enabled (restart OpenClaw to activate)" \
       || warn "openclaw hooks enable failed — run manually: openclaw hooks enable dinomem-open-notes"
   else
@@ -1283,13 +1283,21 @@ fi
 # ── Wire copied neuron skills into agent allowlist ───────────────────────────
 # Skills in <workspace>/skills are auto-discovered, but agents with an explicit
 # skills allowlist will EXCLUDE them unless listed. Add the IDs we just shipped.
+# Exit 2 = wire_skills refused a destructive write (agent unresolved + defaults
+# unset); that is a config/arg problem the operator must fix, so HARD FAIL
+# instead of warning past it and reporting a green install with dead skills.
 if command -v python3 >/dev/null 2>&1; then
   python3 "$SKILL_DIR/scripts/wire_skills.py" \
     --workspace "$WS" \
     --agent-id "$AGENT_ID" \
     --skills-dir "$SKILL_DIR/skills" \
-    $( [ "${DRY_RUN:-0}" = 1 ] && printf -- '--dry-run' ) \
-    || warn "skill allowlist wiring failed; skills may be excluded"
+    $( [ "${DRY_RUN:-0}" = 1 ] && printf -- '--dry-run' )
+  _ws_rc=$?
+  if [ "$_ws_rc" = 2 ]; then
+    fail "skill allowlist wiring REFUSED (see above): agent '$AGENT_ID' unresolved and agents.defaults.skills unset. Fix --agent-id or register the agent, then re-run."
+  elif [ "$_ws_rc" != 0 ]; then
+    warn "skill allowlist wiring failed (rc=$_ws_rc); skills may be excluded"
+  fi
 else
   warn "python3 not found; skill allowlist wiring skipped"
 fi
@@ -4406,7 +4414,10 @@ if openclaw_running; then
   # sandbox / benchmark lab with no real gateway or hooks config) would become
   # the SCRIPT'S final exit status and make a fully-successful install report
   # failure (silent, since the diagnostics go to stdout). Never let it.
-  _elig="$(openclaw hooks check --json 2>/dev/null | "$PY" -c "import json,sys;
+  # Timeout for the same reason openclaw_running has one: the hooks CLI has been
+  # measured hanging >85s on a busy multi-agent box, and an untimed probe here
+  # stalls the whole install (the P1-P5 "silent stall" class).
+  _elig="$(timeout "${DINOMEM_PROBE_TIMEOUT_S:-45}" openclaw hooks check --json 2>/dev/null | "$PY" -c "import json,sys;
 try:
   d=json.load(sys.stdin); print('yes' if 'dinomem-open-notes' in d.get('hooks',{}).get('eligible',[]) else 'no')
 except Exception: print('unknown')" 2>/dev/null)" || true
@@ -4427,7 +4438,7 @@ except Exception: print('unknown')" 2>/dev/null)" || true
       else
         echo "  [warn] global-fallback hook owned by a different agent ($(cat "$_hmk" 2>/dev/null)); not overwriting"
       fi
-      openclaw hooks enable dinomem-open-notes >/dev/null 2>&1 || true
+      timeout "${DINOMEM_PROBE_TIMEOUT_S:-45}" openclaw hooks enable dinomem-open-notes >/dev/null 2>&1 || true
       sc_warn "dinomem-open-notes not eligible from $WS/hooks/ — copied to global $_ghd/ + re-enabled; RESTART OpenClaw, then verify: openclaw hooks check --json"
     else
       sc_warn "dinomem-open-notes not eligible and source missing — check the install"
