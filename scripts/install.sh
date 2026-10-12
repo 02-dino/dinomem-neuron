@@ -113,6 +113,7 @@ skip() { printf '  \033[33m[skip]\033[0m %s\n' "$*"; }
 warn() { printf '  \033[33m[warn]\033[0m %s\n' "$*"; }
 fail() { printf '  \033[31m[fail]\033[0m %s\n' "$*"; exit 1; }
 hr()   { printf '\033[1m== %s ==\033[0m\n' "$*"; }
+plan() { printf '  \033[36m[plan]\033[0m %s\n' "$*"; }
 # wire_managed_block FILE BEGIN END BLOCK LABEL — idempotent UNCONDITIONAL upsert of
 # one managed marker span. WHY it exists: AGENTS.md and TOOLS.md both carry a neuron
 # managed block; the old skip-unless-force wiring meant an upgrade SILENTLY kept a
@@ -1334,7 +1335,14 @@ upsert_cron() {
   # and not already tagged. A user's hand-written `cd $WS && python3
   # procedures/<script>` has NEITHER wrapper nor DINOMEM_ env, so it is NOT adopted
   # and NOT clobbered. This is the false-delete guard.
-  if [ -n "${WS:-}" ]; then
+  # DRY_RUN guard: phase 1 ends in `| crontab -`, i.e. it WRITES. Phase 2 checks
+  # DRY_RUN before every write, but phase 1 never did, so --dry-run silently
+  # mutated the live crontab. Measured in BASE 2026-10-12: a --repair-cron
+  # --dry-run for agent kttal changed the crontab md5 while printing "Preview
+  # only — nothing was written". Same bug shipped here in neuron, unfixed until
+  # now. A dry run that writes is worse than no dry run: it is the one command
+  # an operator trusts before touching an 827-line crontab.
+  if [ -n "${WS:-}" ] && [ "${DRY_RUN:-0}" != 1 ]; then
     crontab -l 2>/dev/null | awk -v ws="$WS" -v kw="$keyword" -v tag="$tag" '
       {
         line=$0
@@ -1361,9 +1369,11 @@ upsert_cron() {
   if [ "$existing" = "$managed_line" ]; then
     skip "$label (exists, up to date)"
   elif [ -n "$existing" ]; then
+    if [ "${DRY_RUN:-0}" = 1 ]; then plan "update cron: $label"; return; fi
     { crontab -l 2>/dev/null | grep -vE "$scope"; echo "# $comment"; echo "$managed_line"; } | crontab -
     ok "$label (updated)"
   else
+    if [ "${DRY_RUN:-0}" = 1 ]; then plan "register cron: $label"; return; fi
     { crontab -l 2>/dev/null; echo "# $comment"; echo "$managed_line"; } | crontab -
     ok "$label (registered)"
   fi
@@ -3382,6 +3392,30 @@ upsert_gated(job, "daily_note_review", "daily_note_review", "$WS/.cron_ids", "GA
 PYEOF
 fi  # end DO_CRON guard (hoisted from after project_advancer; --no-cron now skips ALL cron installs, INVESTIGATE_FIRST stays in scope)
 
+# RESOLVE OPENCLAW_JSON BEFORE the guard (read-only).
+# WHY: the post-install self-check sits OUTSIDE the repair-cron guard and reads
+# $OPENCLAW_JSON. With the guard in place, --repair-cron skipped the assignment
+# and `set -u` aborted the self-check with "OPENCLAW_JSON: unbound variable"
+# (caught by a --repair-cron --dry-run on kaka689, 2026-10-12). Resolution only,
+# no stub seeding and no writes — the full CONFIG-ISOLATION path (incl. seeding)
+# still runs inside the guard on a normal install and simply re-assigns this.
+if [ -n "${OPENCLAW_CONFIG:-}" ]; then
+  OPENCLAW_JSON="$OPENCLAW_CONFIG"
+else
+  OPENCLAW_JSON="$HOME/.openclaw/openclaw.json"
+  [ -f "$OPENCLAW_JSON" ] || OPENCLAW_JSON="$OPENCLAW_DIR/openclaw.json"
+fi
+
+# ── REPAIR-CRON GUARD (content + config + plugins) ──────────────────────────
+# --repair-cron means "re-register ONLY the crons". Everything from here to the
+# self-check is CONTENT, not cron: managed AGENTS.md + TOOLS.md block rewrites,
+# openclaw.json bootstrap caps, the two note-claim hook plugins, and the
+# recall-gate neuron-tier override. Verified zero cron registrations inside this
+# region, so fencing it cannot skip a cron lane. The self-check + cron gate stay
+# OUTSIDE (they must still report/repair). Mirrors the base-installer guard
+# shipped in dinomem v1.24.1.
+if [ "$REPAIR_CRON" = 0 ]; then
+
 # ── Wire AGENTS.md ───────────────────────────────────────────────────────────
 hr "AGENTS.md"
 AGENTS="$WS/AGENTS.md"
@@ -4279,6 +4313,9 @@ with open(path, "w") as f:
 print("  \033[32m[ok]\033[0m   cron.failureAlert.enabled=false (cron failures no longer spam the chat channel)")
 PYEOF
 fi
+
+
+fi  # end REPAIR-CRON GUARD (content + config + plugins)
 
 echo
 # ── (B) Post-install self-check summary ──────────────────────────────────────
