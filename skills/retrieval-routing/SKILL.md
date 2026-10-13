@@ -26,6 +26,7 @@ fires the right legs, fuses, dedups, reranks, and compiles with provenance.
 | **META** what changed in memory (adds/merges/deletes) | read `memory/.diffs/` (newest JSON) |
 | **META** which retrieval tool ran · routing quality | `kb/retrieval_log/` (`_retrieval_log.py --list`/`--health`) |
 | **FUZZY** fact · decision · preference · todo · meaning · passage · recent convo (<7d) · relational (why/led-to/affects/trace) | **`hybrid_recall`** (the one door) |
+| **PEER** what do I know about *the person I am talking to right now* · "inget apa soal gue" · "we discussed this before" (said by a non-owner) | `peer_recall` (native tool) — **NEVER** fused; scope is server-side, takes no target |
 
 **Using `hybrid_recall`:** `python3 tools/hybrid_recall.py "<natural-language
 query>" [--intent-hint fact|recent|semantic|relational] [--k 5] [--json]`. It
@@ -64,6 +65,28 @@ The discriminators below describe **what `hybrid_recall` routes to under the hoo
   `--cluster-drill` to enter via topic cluster then descend, and `--trajectory`
   to see the score-path (why a node surfaced). Skip when relation_edges aren't
   populated yet; fall back to `memory_search`.
+- **`peer_recall` is the PEER door, and it is not interchangeable with `memory_search`.**
+  It answers exactly one question: *what do I already know about the person in this
+  conversation?* Reach for it when the user refers to earlier conversations with you
+  ("inget apa soal gue", "we talked about this", "you know my preferences").
+  Three properties that decide the routing:
+  - **It takes no target.** Scope is derived SERVER-SIDE from `sessionKey`
+    (`agent:<id>:<platform>:direct:<peerId>`). Neither the model nor the user can choose
+    whose record is read, so there is no "peer" argument to pass — only an optional
+    `query` substring that filters the record already scoped to that peer.
+  - **Non-direct lanes get nothing, by design.** Group / subagent / cron lanes have no
+    `:direct:` segment, so it returns *"no single-peer scope for this session"*. That is
+    the correct answer, not a failure — do not retry it elsewhere or route around it.
+  - **It is the ONLY recall door a non-owner has.** `memory_search` / `memory_get` /
+    `session_search` / `docs_search` / `graph_search` are all denied to non-owners by
+    dinotrust (they read the whole internal corpus: owner DMs, `_pin_` infra, every peer's
+    rep). `peer_recall` is allowlisted precisely because it can only ever return the
+    caller's own record. So in a non-owner lane: peer question → `peer_recall`, never
+    `memory_search`.
+  Owner lanes may use either; prefer `peer_recall` when the question is about the
+  *interlocutor* and `memory_search`/`hybrid_recall` when it is about work, decisions, or
+  the system itself. Empty result ≠ broken: a peer with no derived rep yet legitimately
+  returns *"no stored record yet for peer:<platform>:<id>"*.
 - **`memory/.diffs/` is the memory audit log** (one JSON per extraction run:
   adds/updates/deletes with before/after). Route meta-questions about *memory
   itself* here — “what changed / was merged / was deleted recently” — not to
