@@ -30,10 +30,14 @@ fires the right legs, fuses, dedups, reranks, and compiles with provenance.
 
 **Using `hybrid_recall`:** `python3 tools/hybrid_recall.py "<natural-language
 query>" [--intent-hint fact|recent|semantic|relational] [--k 5] [--json]`. It
-fuses `docs_search` + `session_search` + `graph_search` internally. To fold in
-native `memory_search` (which is a native tool-call with no CLI, so the script
-can't invoke it): **run `memory_search` yourself first, then pass its hits** via
-`--external-hits <json-file|->`. The tool dedups by content across legs, counts
+fuses `docs_search` + `session_search` + `graph_search` + `memory_native`
+internally. `memory_native` reads the SAME OpenClaw memory index (SQLite FTS5 +
+384-dim vectors) DIRECTLY, so the memory leg no longer depends on the native
+`memory_search` tool being healthy — recall survives a memory_search timeout.
+You MAY still fold in native `memory_search` hits (it is a native tool-call with
+no CLI, so the script can't invoke it): run `memory_search` yourself first, then
+pass its hits via `--external-hits <json-file|->`. That is now additive, not
+required. The tool dedups by content across legs, counts
 cross-leg corroboration, and reranks by normalized-sim + evidence + recency −
 redundancy. Every call logs to `kb/retrieval_log/`.
 

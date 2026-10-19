@@ -3502,7 +3502,10 @@ DINOMEM_BODY=$(cat <<'DINOMEM_NEURON_AGENTS_BODY'
   # door has opened this turn, or for a deliberate single native lookup you re-issue past the nudge.
   fact | decision | preference | todo | meaning | passage | recent convo (<7d) | relational (why/led-to/affects/trace) → hybrid_recall  [gate-enforced: raw memory_search is routed here]
   "what does CODE-SYMBOL X do AND why does it exist" (code structure + the design decision behind it, one block) → hybrid_recall (CODE leg auto-fires on function/class/calls/imports/inherits queries; fuses code_query file:line hits WITH the memory/graph 'why'). Killer feature: neither plain code-search nor plain memory alone answers it.
-    # hybrid_recall fuses docs_search + session_search + graph_search + code_query legs; run memory_search natively and pass its hits via --external-hits to fold them in.
+    # hybrid_recall fuses docs_search + session_search + graph_search + code_query +
+    # memory_native (reads the SAME OpenClaw memory index DIRECTLY, so recall survives a
+    # memory_search outage and needs no --external-hits). Passing native memory_search hits
+    # via --external-hits still works and is additive, but is no longer required.
     # M3 natural-language query rule applies (avoid code identifiers/exact strings).
 
 ## recursive_search_routing

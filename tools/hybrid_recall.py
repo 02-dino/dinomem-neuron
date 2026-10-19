@@ -47,18 +47,23 @@ PY = sys.executable or "python3"
 # data_query / exec (exact) are intentionally ABSENT: they are an upstream fork,
 # not a fuzzy leg. memory_search is represented by external hits (folded in).
 # ---------------------------------------------------------------------------
+# memory_native sits BESIDE memory_external on every memory-bearing intent: the
+# native tool and the direct index reader fail INDEPENDENTLY, so running both is
+# what makes the memory leg survive a memory_search outage. Fusion dedup collapses
+# the overlap when both are healthy, so the cost of the pair is ~one leg.
 INTENTS = {
-    "fact":       ["memory_external", "graph_search"],
-    "recent":     ["session_search"],
-    "semantic":   ["docs_search"],
-    "relational": ["graph_search", "memory_external"],
+    "fact":       ["memory_external", "memory_native", "graph_search"],
+    "recent":     ["session_search", "memory_native"],
+    "semantic":   ["docs_search", "memory_native"],
+    "relational": ["graph_search", "memory_external", "memory_native"],
     # KILLER FEATURE: "what does X do AND why does it exist" = code STRUCTURE leg
     # (what calls X / X calls / inherits, file:line) FUSED with the memory legs
     # (the design decision that created X). Neither Graphify (no memory) nor plain
     # dinomem (no code) can answer this alone.
-    "code":       ["code_query", "memory_external", "graph_search"],
+    "code":       ["code_query", "memory_external", "memory_native", "graph_search"],
 }
-DEFAULT_LEGS = ["memory_external", "docs_search", "session_search", "graph_search"]
+DEFAULT_LEGS = ["memory_external", "memory_native", "docs_search",
+                "session_search", "graph_search"]
 
 
 def classify(query: str, hint: str | None) -> list[str]:
@@ -235,12 +240,36 @@ def leg_memory_external(external_hits: list[dict], k: int) -> list[dict]:
     return out
 
 
+def leg_memory_native(query: str, k: int) -> list[dict]:
+    """FIRST-PARTY memory leg: reads the native memory index directly (SQLite
+    FTS5 + dense cosine) instead of waiting for the agent to paste memory_search
+    hits in via --external-hits.
+
+    WHY IT EXISTS: memory_external only fires when the agent ALREADY ran the
+    native tool, so when memory_search degrades (measured 2026-10-19: timeout
+    after 15s on an embedding/provider error) the memory half of the fusion goes
+    dark and the rest answers from docs/sessions/graph alone. This leg reads the
+    SAME index and keeps working. FAIL-SOFT: [] when the index or TEI is down, so
+    a broken box costs one leg, never the whole recall."""
+    try:
+        sys.path.insert(0, str(TOOLS))
+        from _memory_native import search as _mn_search  # type: ignore
+
+        hits = _mn_search(query, k, workspace=WS)
+    except Exception:
+        return []
+    return [{"leg": "memory_native", "content": h.get("content", ""),
+             "score": h.get("score", 0.0),
+             "uri": f"{h.get('path','?')}#L{h.get('line','?')}"} for h in hits]
+
+
 LEG_FN = {
     "docs_search": leg_docs_search,
     "session_search": leg_session_search,
     "graph_search": leg_graph_search,
     "code_query": leg_code_query,
     "memory_external": leg_memory_external,
+    "memory_native": leg_memory_native,
 }
 
 
