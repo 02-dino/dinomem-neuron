@@ -24,6 +24,7 @@ LINK_MIN <= sim <= LINK_MAX cross-file edges.
 """
 
 import argparse
+import builtins
 import fcntl
 import json
 import os
@@ -100,6 +101,14 @@ GRAPH_JSON = _WS / "kb/memory_neuron/l2_graph/memory_graph.json"
 # scanned by no indexer → no feedback loop. Design docs stay in proposals/.
 OUT_DIR = _WS / "kb/memory_neuron/l3_synthesis"
 
+# Timestamped stdout. These lines land in logs/memory_synthesis.log via cron,
+# and until 2026-10-19 they carried NO time at all -- which made 84 recorded
+# "graph not found" failures impossible to date during an incident review.
+# Shadowing print() keeps every existing call site unchanged.
+def print(*args, **kwargs):  # noqa: A001 - deliberate module-local shadow
+    builtins.print(f"[{datetime.now():%Y-%m-%d %H:%M:%S}]", *args, **kwargs)
+
+
 LINK_MIN = 0.45   # below this = too weak to be a real relation
 LINK_MAX = 0.82   # at/above this = near-duplicate (dedup territory, not insight)
 MIN_CLUSTER = 3   # need >=3 memories to claim a cross-cutting pattern
@@ -112,6 +121,9 @@ SYNTH_FILE = OUT_DIR / "SYNTHESIS.md"        # single living snapshot (overwritt
 HISTORY_FILE = OUT_DIR / "insight_history.jsonl"  # append-only first-seen log
 CURRENT_INSIGHTS_FILE = OUT_DIR / "current_insights.json"  # structured handoff → L4 promoter
 MIN_INTERVAL_HOURS = 12   # L3 is heavy + insights move slowly → throttle
+# Ordering guard: how old an L2 graph may be before L3 refuses to consume it.
+# 26h (not 24h) so a normal daily cadence that drifts by an hour never trips it.
+MAX_GRAPH_AGE_HOURS = 26
 SAME_INSIGHT_RATIO = 0.5  # difflib ratio above which two patterns = "same insight"
 WEAK_PENALTY = 0.5  # confidence multiplier for uncertain/unverifiable (not refuted) insights
 
@@ -201,6 +213,39 @@ def memory_signature():
     con.close()
     blob = "\n".join(f"{p}:{h}" for p, h in rows)
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
+def graph_staleness(max_age_hours):
+    """Is the L2 graph too old to synthesize from? -> (stale: bool, why: str).
+
+    WHY (measured 2026-10-19): L3 consumes the graph L2 writes, but nothing
+    ENFORCED that order -- they sit in different flock classes and were merely
+    scheduled 30 min apart. A stagger bug put L3 BEFORE L2 on 4 of 11 agents,
+    and the failure was silent: the first runs died with "graph not found"
+    (23-31 times per agent), then once any graph existed L3 quietly synthesized
+    from YESTERDAY's graph, every day, forever. Ordering should be verified at
+    run time, not assumed from crontab arithmetic.
+
+    The age test alone would be wrong: L2 SKIPS rebuilding when memory is
+    unchanged ("graph is current"), leaving an old mtime on a perfectly valid
+    graph -- observed on one agent with a 24h-old but current graph. So the
+    signature L2 stamps beside the graph wins over mtime: matching sig means
+    the graph reflects today's corpus no matter how old the file is.
+    """
+    sig_file = GRAPH_JSON.parent / ".sig"
+    try:
+        if sig_file.exists() and sig_file.read_text(encoding="utf-8").strip() == memory_signature():
+            return False, ""            # graph matches live corpus -> current
+    except Exception:
+        pass                            # unreadable sig -> fall through to age
+
+    try:
+        age_h = (datetime.now().timestamp() - GRAPH_JSON.stat().st_mtime) / 3600
+    except OSError:
+        return False, ""                # cannot stat -> don't block the run
+    if age_h > max_age_hours:
+        return True, f"L2 graph is {age_h:.1f}h old (limit {max_age_hours}h) and its signature does not match current memory"
+    return False, ""
 
 
 def load_graph():
@@ -644,6 +689,11 @@ def main():
                          "run (dirty-skip is on by default and cuts LLM cost at scale).")
     ap.add_argument("--force", action="store_true", help="ignore change-gate + throttle")
     ap.add_argument("--min-interval-hours", type=float, default=MIN_INTERVAL_HOURS)
+    ap.add_argument("--max-graph-age-hours", type=float, default=MAX_GRAPH_AGE_HOURS,
+                    help="refuse to synthesize from an L2 graph older than this whose "
+                         "signature no longer matches current memory (ordering guard)")
+    ap.add_argument("--allow-stale-graph", action="store_true",
+                    help="bypass the L2-freshness guard (debug / manual reruns)")
     ap.add_argument("--cluster-method", choices=["ego", "louvain"], default="ego",
                     help="ego = per-node neighborhoods (legacy); louvain = community detection on mutual-kNN graph")
     ap.add_argument("--verifier-models", default="",
@@ -689,6 +739,11 @@ def main():
                 return
         except Exception:
             pass  # malformed state → proceed and rewrite it
+
+    stale, why = graph_staleness(args.max_graph_age_hours)
+    if stale and not args.allow_stale_graph:
+        print(f"⏭️  {why} — skipping (run memory_graph.py first, or pass --allow-stale-graph)")
+        return
 
     graph = load_graph()
     global NODE_BY_IDX

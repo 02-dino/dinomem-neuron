@@ -1451,13 +1451,33 @@ if [ "$DO_CRON" = 1 ]; then
   }
   _SMIN=$(_stagger 60)   # 0..59 — per-agent minute offset for the daily/weekly lanes
   ok "cron stagger: agent '${AGENT_ID:-default}' -> neuron daily lanes shifted +${_SMIN}m within their hour"
-  # Base minutes for each lane + per-agent offset (%60 keeps it inside the hour band).
-  _L2_MIN=$(( (0  + _SMIN) % 60 ))   # L2 graph      (base :00, hour 3)
-  _L3_MIN=$(( (30 + _SMIN) % 60 ))   # L3 synthesis  (base :30, hour 3)
-  _L4_MIN=$(( (0  + _SMIN) % 60 ))   # L4 promote    (base :00, hour 4, Sun)
-  _RAG_MIN=$(( (0 + _SMIN) % 60 ))   # RAG ingest    (base :00, hour 4)
-  _CG_MIN=$(( (10 + _SMIN) % 60 ))   # code_graph    (base :10, hour 4)
-  _RL_MIN=$(( (15 + _SMIN) % 60 ))   # rlog rollup   (base :15, hour 4)
+  # Per-lane schedule = base wall-clock time + the per-agent offset, CARRIED
+  # INTO THE HOUR.
+  #
+  # BUG THIS REPLACES (measured 2026-10-19): the old form was
+  #   _L2_MIN=$(( (0  + _SMIN) % 60 ))   # hour pinned to 3
+  #   _L3_MIN=$(( (30 + _SMIN) % 60 ))   # hour pinned to 3
+  # With _SMIN >= 30 the %60 wrapped L3 back to an EARLIER minute of the SAME
+  # hour, so L3 synthesis ran BEFORE the L2 graph it consumes -- a coin flip,
+  # 30 of 60 offsets. On an 11-agent box 4 agents were inverted, and the
+  # failure is silent: memory_synthesis.py hard-exits with "graph not found"
+  # on a first run, but once a graph exists it quietly synthesizes from
+  # YESTERDAY's graph forever (observed: 23-31 such exits per agent, then
+  # 24h-stale input). L2 -> L3 -> L4 is a real data dependency: L2 writes
+  # kb/memory_neuron/l2_graph/memory_graph.json and L3 reads exactly that file.
+  #
+  # Carrying into the hour keeps the ORDER invariant for every offset, which is
+  # what the pipeline actually requires; spreading load is secondary.
+  _lane() {   # $1 = base hour, $2 = base minute -> echoes "MIN HOUR"
+    local _t=$(( $1 * 60 + $2 + _SMIN ))
+    printf '%s %s\n' $(( _t % 60 )) $(( (_t / 60) % 24 ))
+  }
+  read -r _L2_MIN  _L2_HR  <<<"$(_lane 3 0)"    # L2 graph      (base 03:00)
+  read -r _L3_MIN  _L3_HR  <<<"$(_lane 3 30)"   # L3 synthesis  (base 03:30)
+  read -r _L4_MIN  _L4_HR  <<<"$(_lane 4 0)"    # L4 promote    (base 04:00, Sun)
+  read -r _RAG_MIN _RAG_HR <<<"$(_lane 4 0)"    # RAG ingest    (base 04:00)
+  read -r _CG_MIN  _CG_HR  <<<"$(_lane 4 10)"   # code_graph    (base 04:10)
+  read -r _RL_MIN  _RL_HR  <<<"$(_lane 4 15)"   # rlog rollup   (base 04:15)
 
   # memory_graph — daily ~03:xx UTC (L2, no LLM — pure graph linking), staggered
   # MULTI-AGENT SERIALIZATION: heavy-embed class (embedding/CPU-heavy, no LLM)
@@ -1466,8 +1486,8 @@ if [ "$DO_CRON" = 1 ]; then
   # Sits ABOVE the 5400s flock wait (DINOMEM_LOCK_TIMEOUT_SECS) so a legitimately-
   # queued embed job is never killed while waiting its turn — pure infinite-hang
   # guard so a stuck run can't hold the heavy-embed lock forever. Daily = no overlap.
-  GRAPH_CRON="$_L2_MIN 3 * * * DINOMEM_AGENT_ID=$AGENT_ID timeout 7200 bash $WS/scripts/dinomem_run.sh heavy-embed $WS python3 procedures/memory_graph.py >> logs/memory_graph.log 2>&1"
-  upsert_cron "memory_graph.py" "dinomem-neuron: L2 graph linking" "$GRAPH_CRON" "memory_graph cron (daily 03:${_L2_MIN} UTC, staggered)"
+  GRAPH_CRON="$_L2_MIN $_L2_HR * * * DINOMEM_AGENT_ID=$AGENT_ID timeout 7200 bash $WS/scripts/dinomem_run.sh heavy-embed $WS python3 procedures/memory_graph.py >> logs/memory_graph.log 2>&1"
+  upsert_cron "memory_graph.py" "dinomem-neuron: L2 graph linking" "$GRAPH_CRON" "memory_graph cron (daily ${_L2_HR}:${_L2_MIN} UTC, staggered)"
 
   # memory_synthesis + contradiction_check — daily at 3:30 UTC (L3, reasoning=True)
   # confidence_engine (P1 #1, no-LLM calibration) runs AFTER synthesis writes
@@ -1482,21 +1502,21 @@ if [ "$DO_CRON" = 1 ]; then
   # RUNAWAY BACKSTOP: `timeout 7200` over the whole chained pipeline (above the 5400s
   # flock wait). Guards the heavy-llm lock against an infinite provider hang; the
   # three chained scripts share one lock, so one outer bound covers all of them.
-  SYNTH_CRON="$_L3_MIN 3 * * * DINOMEM_AGENT_ID=$AGENT_ID timeout 7200 bash $WS/scripts/dinomem_run.sh heavy-llm $WS bash -c \"$SYNTH_CHAIN\""
-  upsert_cron "memory_synthesis.py" "dinomem-neuron: L3 synthesis + contradiction check + calibration" "$SYNTH_CRON" "memory_synthesis + contradiction_check + confidence_engine cron (daily 3:30 UTC)"
+  SYNTH_CRON="$_L3_MIN $_L3_HR * * * DINOMEM_AGENT_ID=$AGENT_ID timeout 7200 bash $WS/scripts/dinomem_run.sh heavy-llm $WS bash -c \"$SYNTH_CHAIN\""
+  upsert_cron "memory_synthesis.py" "dinomem-neuron: L3 synthesis + contradiction check + calibration" "$SYNTH_CRON" "memory_synthesis + contradiction_check + confidence_engine cron (daily ${_L3_HR}:${_L3_MIN} UTC, after L2)"
 
   # memory_promote (no LLM) + generate_topic_index (cheap LLM) — weekly Sun 4:00 UTC (L4)
   # MULTI-AGENT SERIALIZATION: heavy-llm class (generate_topic_index calls LLM).
   PROMOTE_CHAIN="python3 procedures/memory_promote.py >> logs/memory_promote.log 2>&1 && ${CHEAP_ENV}python3 procedures/generate_topic_index.py >> logs/topic_index.log 2>&1"
   # RUNAWAY BACKSTOP: `timeout 7200` — same rationale as the L3 synth pipeline.
-  PROMOTE_CRON="$_L4_MIN 4 * * 0 DINOMEM_AGENT_ID=$AGENT_ID timeout 7200 bash $WS/scripts/dinomem_run.sh heavy-llm $WS bash -c \"$PROMOTE_CHAIN\""
-  upsert_cron "memory_promote.py" "dinomem-neuron: L4 promotion + topic index (weekly)" "$PROMOTE_CRON" "memory_promote + generate_topic_index cron (weekly Sunday 04:${_L4_MIN} UTC, staggered)"
+  PROMOTE_CRON="$_L4_MIN $_L4_HR * * 0 DINOMEM_AGENT_ID=$AGENT_ID timeout 7200 bash $WS/scripts/dinomem_run.sh heavy-llm $WS bash -c \"$PROMOTE_CHAIN\""
+  upsert_cron "memory_promote.py" "dinomem-neuron: L4 promotion + topic index (weekly)" "$PROMOTE_CRON" "memory_promote + generate_topic_index cron (weekly Sunday ${_L4_HR}:${_L4_MIN} UTC, staggered)"
 
   # docs_ingest — daily at 4:00 UTC (RAG long docs, no-reasoning)
   # MULTI-AGENT SERIALIZATION: heavy-embed class (embedding-heavy, no LLM).
   # RUNAWAY BACKSTOP: `timeout 7200` — same rationale as memory_graph (heavy-embed lock).
-  DOCS_CRON="$_RAG_MIN 4 * * * DINOMEM_AGENT_ID=$AGENT_ID timeout 7200 bash $WS/scripts/dinomem_run.sh heavy-embed $WS ${CHEAP_ENV}python3 procedures/docs_ingest.py >> logs/docs_ingest.log 2>&1"
-  upsert_cron "docs_ingest.py" "dinomem-neuron: RAG docs re-ingest (daily)" "$DOCS_CRON" "docs_ingest cron (daily 04:${_RAG_MIN} UTC, staggered)"
+  DOCS_CRON="$_RAG_MIN $_RAG_HR * * * DINOMEM_AGENT_ID=$AGENT_ID timeout 7200 bash $WS/scripts/dinomem_run.sh heavy-embed $WS ${CHEAP_ENV}python3 procedures/docs_ingest.py >> logs/docs_ingest.log 2>&1"
+  upsert_cron "docs_ingest.py" "dinomem-neuron: RAG docs re-ingest (daily)" "$DOCS_CRON" "docs_ingest cron (daily ${_RAG_HR}:${_RAG_MIN} UTC, staggered)"
   # session_ingest is triggered automatically by auto_session_reset.py (every 15 min)
   # No separate cron needed.
 
@@ -1525,7 +1545,7 @@ if [ "$DO_CRON" = 1 ]; then
   # waiting its turn — same rationale as the L2/L3 lanes. Inner per-step `timeout 1740`
   # is kept as the per-script bound.
   CODEGRAPH_CHAIN="timeout 1740 python3 procedures/code_graph.py --path $WS >> logs/code_graph_refresh.log 2>&1 && timeout 1740 python3 procedures/code_anchors.py --path $WS >> logs/code_graph_refresh.log 2>&1"
-  CODEGRAPH_CRON="$_CG_MIN 4 * * * cd $WS && DINOMEM_AGENT_ID=$AGENT_ID timeout 7200 bash $WS/scripts/dinomem_run.sh heavy-embed $WS bash -c \"$CODEGRAPH_CHAIN\""
+  CODEGRAPH_CRON="$_CG_MIN $_CG_HR * * * cd $WS && DINOMEM_AGENT_ID=$AGENT_ID timeout 7200 bash $WS/scripts/dinomem_run.sh heavy-embed $WS bash -c \"$CODEGRAPH_CHAIN\""
   upsert_cron "code_graph.py --path" "dinomem-neuron: code-structure graph + prompt-anchor refresh (daily)" "$CODEGRAPH_CRON" "code_graph_refresh cron (daily 04:${_CG_MIN} UTC, staggered)"
 
   # retrieval_log rollup — daily at 4:15 UTC (no LLM, pure stdlib): compresses
@@ -1534,7 +1554,7 @@ if [ "$DO_CRON" = 1 ]; then
   # RUNAWAY BACKSTOP: `timeout 600` — pure-stdlib no-LLM rollup, realistically <1min;
   # a 10min bound is a generous guard against a pathological log tree. No flock (not
   # a heavy class), so no wait to sit above.
-  RLOG_CRON="$_RL_MIN 4 * * * cd $WS && timeout 600 python3 procedures/_retrieval_log.py --workspace $WS --rollup >> logs/retrieval_log_rollup.log 2>&1"
+  RLOG_CRON="$_RL_MIN $_RL_HR * * * cd $WS && timeout 600 python3 procedures/_retrieval_log.py --workspace $WS --rollup >> logs/retrieval_log_rollup.log 2>&1"
   upsert_cron "_retrieval_log.py --rollup" "dinomem-neuron: retrieval-log rollup + health snapshot (daily)" "$RLOG_CRON" "retrieval_log rollup cron (daily 04:${_RL_MIN} UTC, staggered)"
 
   # ── shared investigate-first principle (DRY: one source, referenced by the
