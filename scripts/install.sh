@@ -31,6 +31,12 @@ if [ -f "$SKILL_DIR/lib/discover_instances.sh" ]; then
   # shellcheck source=/dev/null
   . "$SKILL_DIR/lib/discover_instances.sh"
 fi
+# Hand-edit guard for managed blocks (see lib/block_guard.sh). Same file ships in
+# dinotrust + dinomem base — one contract, one implementation. Absent lib -> off.
+if [ -f "$SKILL_DIR/lib/block_guard.sh" ]; then
+  # shellcheck source=/dev/null
+  . "$SKILL_DIR/lib/block_guard.sh"
+fi
 WS="${OPENCLAW_WORKSPACE:-$HOME/.openclaw/workspace}"
 AGENT_ID=""
 INSTANCE_ID=""   # --instance <agent-id>: scripted single-instance target (skips prompt)
@@ -127,6 +133,18 @@ plan() { printf '  \033[36m[plan]\033[0m %s\n' "$*"; }
 wire_managed_block() {
   local _file="$1" _begin="$2" _end="$3" _block="$4" _label="$5"
   touch "$_file"
+  # HAND-EDIT GUARD (2026-10-19). This upsert is UNCONDITIONAL — right for the
+  # installer's OWN stale output, destructive for a human's edit inside the same
+  # markers. Measured: analyst's dinotrust block was hand-hardened to DENY a read
+  # path the stock preset allows; a blind re-inject would reopen it with no diff
+  # and no error. Fails OPEN when no checksum was recorded, so legacy installs
+  # arm the guard rather than block.
+  if declare -f block_guard_check >/dev/null 2>&1 \
+     && ! block_guard_check "$_file" "$_begin" "$_end" "dinomem-neuron" "${FORCE:-0}"; then
+    warn "$_label managed block was MODIFIED BY HAND since install — NOT overwriting."
+    warn "  Merge your edits into the new block manually, or re-run with --force."
+    return 0
+  fi
   # Fire the strip path if EITHER marker is present (orphan BEGIN-without-END or
   # END-without-BEGIN both need cleaning, not just a complete span).
   if grep -qF "$_begin" "$_file" 2>/dev/null || grep -qF "$_end" "$_file" 2>/dev/null; then
@@ -152,6 +170,9 @@ wire_managed_block() {
     printf '\n%s\n' "$_block" >> "$_file"
     ok "$_label wired"
   fi
+  # Arm/re-arm the hand-edit guard against what we JUST wrote.
+  declare -f block_guard_record >/dev/null 2>&1 \
+    && block_guard_record "$_file" "$_begin" "$_end" "dinomem-neuron"
 }
 # _apply_subst FILE — apply ALL neuron placeholder substitutions in place (sed).
 # One place, so copy + content-compare stay identical.
