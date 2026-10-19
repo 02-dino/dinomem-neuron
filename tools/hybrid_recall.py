@@ -684,7 +684,7 @@ def log_call(tool: str, query: str, k: int, cands: list[dict]) -> None:
         from _retrieval_log import log_retrieval  # type: ignore
         log_retrieval(WS, tool, query, k=k,
                       result_uris=[c["uri"] for c in cands],
-                      result_scores=[c.get("score", 0.0) for c in cands])
+                      top_scores=[c.get("score", 0.0) for c in cands])
     except Exception:
         pass  # logging is best-effort, never blocks recall
 
