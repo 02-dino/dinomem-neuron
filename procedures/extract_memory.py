@@ -18,6 +18,7 @@ import os
 import re
 import glob as _glob
 import shutil as _shutil
+import signal
 import subprocess
 import sys
 import fcntl
@@ -87,6 +88,36 @@ def _source_id_from_archive(filename):
     return None
 from pathlib import Path
 from datetime import datetime, timedelta
+
+# --- orphan-free subprocess (added 2026-10-19) ------------------------------
+# WHY: subprocess.run(timeout=N) kills ONLY the direct child. The openclaw CLI
+# spawns its own `openclaw-infer` worker (400-550MB); killing just the CLI left
+# that worker running, reparented to init, with no caller left to read its
+# output. Measured across 11 agents: ~2.3 orphans/min, 22 alive at once (~8GB),
+# box load 81 on 8 cores. Running the child in its OWN process group and
+# killing the GROUP on timeout takes the whole tree down with it.
+def _run_in_process_group(cmd, timeout=None, capture_output=False,
+                          text=False, env=None, **kw):
+    """Drop-in for subprocess.run() that cannot leak grandchildren."""
+    if capture_output:
+        kw.setdefault("stdout", subprocess.PIPE)
+        kw.setdefault("stderr", subprocess.PIPE)
+    proc = subprocess.Popen(cmd, start_new_session=True, text=text,
+                            env=env, **kw)
+    try:
+        out, err = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        except (ProcessLookupError, PermissionError, OSError):
+            proc.kill()          # fall back to direct-child kill
+        try:
+            proc.communicate(timeout=10)
+        except Exception:
+            pass
+        raise                    # callers already handle TimeoutExpired
+    return subprocess.CompletedProcess(cmd, proc.returncode, out, err)
+
 
 # OpenClaw's CLI needs Node >= this. Cron PATH may resolve `node` to an old
 # version (multiple installs on host) -> CLI hard-exits -> LLM calls fail ->
@@ -621,6 +652,17 @@ def call_llm(prompt, max_tokens=None, reasoning=False, model=None):
     # Route model by task type (opt-in, default = no change):
     #   reasoning=True  -> OpenClaw default model + thinking level (quality path)
     #   reasoning=False -> explicit model arg, else DINOMEM_CHEAP_MODEL, else OpenClaw default
+    # ARG_MAX guard: full_prompt rides as a CLI *argument*, so an oversized
+    # prompt makes exec() fail with E2BIG -- or worse, return an empty reply the
+    # caller silently reads as "0 items extracted". Neuron's provider-direct leg
+    # is HTTP (immune), but it only runs when `not reasoning and
+    # _no_reason_model`; a reasoning call, an unset cheap model, or a
+    # provider-direct miss all fall through to this CLI. 96KB is well under a
+    # typical 2MB ARG_MAX yet leaves room for env + the rest of argv.
+    _ARG_SAFE_BYTES = 96 * 1024
+    _prompt_too_big = len(full_prompt.encode("utf-8", "ignore")) > _ARG_SAFE_BYTES
+    if _prompt_too_big:
+        log(f"   ⚠️  Prompt {len(full_prompt)} chars > ARG_MAX-safe {_ARG_SAFE_BYTES}B — skipping gateway CLI (arg limit), using HTTP fallback")
     _gw_cmd = ["capability", "model", "run",
                "--prompt", full_prompt, "--gateway", "--json"]
     _no_reason_model = model or CHEAP_MODEL
@@ -663,8 +705,10 @@ def call_llm(prompt, max_tokens=None, reasoning=False, model=None):
         except Exception as _e:
             log(f"   \u26a0\ufe0f  Provider-direct error ({_e}); trying gateway...")
 
-    # Try OpenClaw gateway first
+    # Try OpenClaw gateway first (unless the prompt is too big to be a CLI arg)
     try:
+        if _prompt_too_big:
+            raise RuntimeError("prompt exceeds ARG_MAX-safe size; routed to HTTP fallback")
         log(f"   🔄 Calling OpenClaw gateway ({_route})...")
         _oc = _shutil.which("openclaw") or "/home/linuxbrew/.linuxbrew/bin/openclaw"
         _env = dict(os.environ)
@@ -673,7 +717,7 @@ def call_llm(prompt, max_tokens=None, reasoning=False, model=None):
             _env["PATH"] = _node_dir + ":" + _env.get("PATH", "")
         else:
             log("   ⚠️  No Node >=%d.%d found for openclaw CLI; gateway may fail" % _NODE_MIN)
-        result = subprocess.run(
+        result = _run_in_process_group(
             [_oc] + _gw_cmd,
             capture_output=True, text=True, timeout=120, env=_env
         )
