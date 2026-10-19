@@ -21,6 +21,11 @@ _INTERNAL_*
 # Local file-backup safety copies — never commit / ship
 .backups/
 *.bak
+# Timestamped backups too: `*.bak` does NOT match `foo.py.bak-fix-20261019`.
+# Measured 2026-10-19: a procedures/*.py.bak-orphanfix-<ts> showed up as
+# untracked during a release and had to be moved out by hand. Base already
+# carries this pattern; neuron only had the scripts/install.sh special case.
+*.bak-*
 
 # Zero-LLM gate re-fire guard state (runtime, per-host, never commit)
 scripts/.check_*.last_run
