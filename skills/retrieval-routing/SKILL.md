@@ -41,6 +41,37 @@ required. The tool dedups by content across legs, counts
 cross-leg corroboration, and reranks by normalized-sim + evidence + recency −
 redundancy. Every call logs to `kb/retrieval_log/`.
 
+**Cross-encoder rerank (memory_native leg only).** That leg's dense scores come
+back nearly FLAT — measured on a 5.3k-chunk corpus: 10 hits spanning cosine
+0.856–0.864, i.e. a spread of 0.007–0.011. `_normalize_within_leg` then min-max
+stretches that 0.008 of noise across a full 0–1 axis, so the ordering it handed
+fusion was noise wearing a score. A cross-encoder scores (query, passage)
+JOINTLY instead of comparing two independently-embedded vectors, and on the SAME
+candidates measured spread 0.31–0.68. So the leg now reranks its own `score`
+through `tools/_rerank.py` (TEI `/rerank`, the same container `semantic_search`
+already uses) before handing candidates to fusion. Other legs are deliberately
+untouched — they already report usable spread.
+- **Precision, not recall.** Ground-truth probe (3 queries): correct doc at raw
+  #3 → #1 after rerank ✅ ; #3 → #3 neutral ; and one where the leg never
+  retrieved the right doc at all → rerank could not help. A reranker reorders
+  what retrieval found; it can never surface a passage the leg missed. If recall
+  is the problem, fix the leg, not the ranking.
+- **Cost is superlinear in BOTH dimensions**, which is why both are capped:
+  8 texts × 400 chars = 1.75–3.2 s, but 20 × 2000 = 19–24 s. Bolted on
+  uncapped it would add ~20 s to a 1.2 s warm recall. Defaults: top-8,
+  400-char truncation, 6 s budget.
+- **FAIL-OPEN by contract.** `rerank_scores()` returns scores aligned to the
+  input list, or `None`. `None` means "no opinion" and the original order is
+  kept — reranker down, slow, malformed, or signal-collapsed all cost nothing.
+  Disable explicitly with `DINOMEM_RERANK=0` (the leg's cache key encodes this,
+  so an A/B flip can't silently replay the other mode's cached ordering).
+- **LANGUAGE CAVEAT — ms-marco-MiniLM is an ENGLISH model.** Controlled decoy
+  test: EN query → EN doc scored 0.4263 (correct order); ID query → ID doc
+  0.1919 (order still correct); but EN query → ID corpus collapsed to 0.0002
+  spread, i.e. signal gone. Cross-language querying is where this degrades —
+  and fail-open means it degrades to the old heuristic ordering, not to garbage.
+  Self-test the whole contract with `python3 tools/_rerank.py --selftest`.
+
 **When to still reach a single leg DIRECTLY** (skip the fusion): you already know
 the exact leg and want its raw output — e.g. `graph_search --trajectory` to see a
 node's score-path, `session_search --list` to enumerate indexed sessions,

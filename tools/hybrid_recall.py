@@ -258,9 +258,32 @@ def leg_memory_native(query: str, k: int) -> list[dict]:
         hits = _mn_search(query, k, workspace=WS)
     except Exception:
         return []
-    return [{"leg": "memory_native", "content": h.get("content", ""),
-             "score": h.get("score", 0.0),
-             "uri": f"{h.get('path','?')}#L{h.get('line','?')}"} for h in hits]
+    out = [{"leg": "memory_native", "content": h.get("content", ""),
+            "score": h.get("score", 0.0),
+            "uri": f"{h.get('path','?')}#L{h.get('line','?')}"} for h in hits]
+
+    # CROSS-ENCODER RERANK — this leg ONLY, and only for its own `score`.
+    # WHY HERE AND NOWHERE ELSE: this leg's two sub-scores are a near-flat dense
+    # cosine band (measured 2026-10-20: spread 0.0070-0.0113 across 10 hits) and
+    # a bm25 number on a totally different scale. _normalize_within_leg then
+    # min-maxes whatever lands here, so without this the leg hands fusion an
+    # ordering built from ~0.008 of noise. A cross-encoder on the SAME
+    # candidates measured 0.31-0.68 spread. Other legs already report usable
+    # spread, so they are deliberately untouched.
+    # FAIL-OPEN: rerank_scores() returns None on down/slow/collapsed-signal and
+    # we keep the original order — a degraded reranker must cost nothing.
+    try:
+        from _rerank import rerank_scores  # type: ignore
+
+        ce = rerank_scores(query, [c["content"] for c in out])
+        if ce:
+            for c, s in zip(out, ce):
+                c["score"] = s
+                c["reranked"] = True
+            out.sort(key=lambda c: c["score"], reverse=True)
+    except Exception:
+        pass
+    return out
 
 
 LEG_FN = {
@@ -296,6 +319,11 @@ def _cached_leg(leg: str, query: str, k: int, as_of: str | None = None,
     collides with an unfiltered one for the same query."""
     # only the graph leg consumes as_of/scope; keep the key stable (no None noise) for others.
     ckey = (leg, query, k) if leg != "graph_search" else (leg, query, k, as_of or "", scope or "")
+    # memory_native caches POST-rerank rows, so the rerank setting is part of what
+    # the entry represents. Without this, flipping DINOMEM_RERANK replays the old
+    # cached ordering and any A/B measurement silently compares a run to itself.
+    if leg == "memory_native":
+        ckey = ckey + ("ce" if _os.environ.get("DINOMEM_RERANK", "1") != "0" else "raw",)
     if _CACHE_OK:
         hit = _cache_get("hybrid_recall", *ckey, ttl_seconds=LEG_CACHE_TTL)
         if hit is not None:
