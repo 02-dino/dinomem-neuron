@@ -64,10 +64,13 @@ for f in "$MEM"/_note_*.md; do
   if [ -n "$claimed_by" ] && [ -n "$claimed_at" ]; then
     if claim_epoch=$(date -u -d "$claimed_at" +%s 2>/dev/null); then
       age=$(( now_epoch - claim_epoch ))
-      case "$claimed_by" in
-        live-session*) window=7200 ;;   # 120 min (2h) live-session grace
-        *)             window=1800 ;;    # 30 min other-claimant grace
-      esac
+      # window from gate_lib.sh so every gate + claim_note.sh agree (was a local
+      # 7200 that drifted from claim_note.sh's 1800 -> 90-min dead zone).
+      if declare -F gate__claim_window >/dev/null 2>&1; then
+        window=$(gate__claim_window "$claimed_by")
+      else
+        window=1800
+      fi
       # fresh claim → another job owns it now → not our work this run
       [ "$age" -lt "$window" ] && continue
     fi

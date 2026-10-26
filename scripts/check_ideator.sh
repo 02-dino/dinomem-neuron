@@ -40,6 +40,9 @@ MEM="$WS/memory"
 SCRIPTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=_gate_refire_guard.sh
 source "$SCRIPTS_DIR/_gate_refire_guard.sh"
+# gate_lib.sh direct-source: the shim does not re-export gate__claim_window.
+# Guarded + fail-open so a legacy lib never breaks this gate.
+[ -f "$SCRIPTS_DIR/lib/gate_lib.sh" ] && source "$SCRIPTS_DIR/lib/gate_lib.sh" 2>/dev/null || true
 STATE_FILE="$SCRIPTS_DIR/.check_ideator.last_run"
 MIN_INTERVAL_SECS=$(( 24 * 3600 ))  # daily floor
 
@@ -58,10 +61,13 @@ for f in "$MEM"/_note_*.md; do
   if [ -n "$claimed_by" ] && [ -n "$claimed_at" ]; then
     if claim_epoch=$(date -u -d "$claimed_at" +%s 2>/dev/null); then
       age=$(( now_epoch - claim_epoch ))
-      case "$claimed_by" in
-        live-session*) window=7200 ;;   # 120 min (2h) live-session grace
-        *)             window=1800 ;;    # 30 min other-claimant grace
-      esac
+      # window from gate_lib.sh so every gate + claim_note.sh agree (was a local
+      # 7200 that drifted from claim_note.sh's 1800 -> 90-min dead zone).
+      if declare -F gate__claim_window >/dev/null 2>&1; then
+        window=$(gate__claim_window "$claimed_by")
+      else
+        window=1800
+      fi
       [ "$age" -lt "$window" ] && continue
     fi
   fi
