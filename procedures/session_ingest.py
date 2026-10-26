@@ -25,6 +25,35 @@ import argparse
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
 
+# ── Post-restart quiet window ─────────────────────────────────────────────────
+# A gateway restart is followed by a burst of CPU-heavy embedding work. The
+# stamp is written box-wide on gateway start (systemd ExecStartPost +
+# recover-main-gateway-boot.sh); scripts/gateway-heavy-embed-quiet.sh owns it.
+# session_ingest is the heaviest dinomem lane, so it defers until the window
+# closes rather than competing with a booting gateway. Absent stamp = no defer,
+# so this is inert on boxes that never installed the quiet lib.
+GATEWAY_HEAVY_EMBED_QUIET_STAMP = "/tmp/openclaw-gateway-heavy-embed-quiet.stamp"
+GATEWAY_HEAVY_EMBED_QUIET_SEC = 600
+
+
+def _gateway_heavy_embed_quiet_defer() -> bool:
+    """Defer session_ingest briefly after main gateway restart."""
+    import time
+    p = Path(GATEWAY_HEAVY_EMBED_QUIET_STAMP)
+    if not p.exists():
+        return False
+    try:
+        ts = int(p.read_text().strip())
+        age = time.time() - ts
+        if 0 <= age < GATEWAY_HEAVY_EMBED_QUIET_SEC:
+            remaining = int(GATEWAY_HEAVY_EMBED_QUIET_SEC - age)
+            print(f"[session_ingest] DEFER: gateway restart quiet window ({remaining}s left)", file=sys.stderr)
+            return True
+    except Exception:
+        pass
+    return False
+
+
 from langchain_chroma import Chroma
 from langchain_core.documents import Document
 
@@ -263,6 +292,8 @@ def ingest_session(jsonl_path: Path, db: Chroma,
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 def main():
+    if _gateway_heavy_embed_quiet_defer():
+        return 0
     parser = argparse.ArgumentParser(description='Ingest archived sessions into vector DB')
     parser.add_argument('--dry-run', action='store_true', help='Show what would change, write nothing')
     parser.add_argument('--cleanup', action='store_true', help='Remove expired entries only, no ingestion')
