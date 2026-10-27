@@ -39,3 +39,15 @@ scripts/trace_release.sh
 
 # installer backups (local only)
 scripts/install.sh.bak-*
+
+# Workspace root files are NEVER part of this product. The installer writes its
+# own managed block into the USER's $WS/TOOLS.md (TOOLS_BODY heredoc in
+# scripts/install.sh) and never reads a TOOLS.md from this repo -- so a copy
+# here is dead weight that only ever leaks the operator's own tool catalog.
+# Measured 2026-10-27: a stray TOOLS.md shipped 13 analyst-private tool entries
+# into 248 buyer ZIPs across 19 buyers before anyone noticed.
+TOOLS.md
+AGENTS.md
+SOUL.md
+IDENTITY.md
+MEMORY.md
