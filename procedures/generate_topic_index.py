@@ -366,23 +366,41 @@ def _fallback_topic_extraction(documents_summary: str) -> str:
                 except ValueError:
                     age = "persist"
 
-                # Determine domain from content signals
-                content_lower = line.lower()
-                # NOTE: this is the NON-LLM fallback path (used when the LLM call
-                # fails), so it can only keyword-match. Keep every keyword list
-                # VERTICAL-NEUTRAL: a crypto/market word list here silently
-                # mislabels every non-market agent on the box (measured 2026-10-29:
-                # 'price'/'trade'/'consensus' tagged 50/50 konsultan rows as MARKET).
-                # DOMAIN is the deliberate catch-all, so an unmatched line lands in
-                # a correct generic bucket instead of a borrowed one.
-                if any(w in content_lower for w in ['workflow', 'process', 'step', 'classify', 'filter']):
-                    domain = "WORKFLOW"
-                elif any(w in content_lower for w in ['preference', 'user', 'communication', 'style']):
+                # Determine domain. This is the NON-LLM fallback path (used when
+                # the LLM call fails), so it can only pattern-match.
+                #
+                # TWO RULES, both learned the hard way on 2026-10-29:
+                #
+                # 1. STAY VERTICAL-NEUTRAL. A crypto/market word list here
+                #    silently mislabels every non-market agent on the box:
+                #    'price'/'trade'/'consensus' tagged 50/50 of a consulting
+                #    agent's rows as MARKET.
+                #
+                # 2. NEVER MATCH THE WHOLE SUMMARY LINE. Each line is
+                #    "File: x.md | Source: daily | Age: .. | Size: .. | Preview: ..",
+                #    so generic words collide with the METADATA, not the content:
+                #    'source' hit 461/853 lines and 'user' 171, which collapsed an
+                #    entire index into one bucket. Match the FILENAME and the
+                #    PREVIEW only.
+                #
+                # The filename is the strongest signal available: dinomem encodes
+                # the memory TYPE as <date>_<type>_<slug>.md, which is structural
+                # and domain-independent -- far safer than guessing from prose.
+                preview = line.split('Preview', 1)[1].lower() if 'Preview' in line else ''
+                fname_l = filename.lower()
+                if '_preference_' in fname_l:
                     domain = "PREFERENCE"
-                elif any(w in content_lower for w in ['project', 'build', 'milestone', 'deliverable', 'roadmap']):
-                    domain = "PROJECT"
-                elif any(w in content_lower for w in ['source', 'reference', 'doc', 'link', 'spec']):
+                elif '_source_score_' in fname_l:
                     domain = "REFERENCE"
+                elif 'project' in fname_l:
+                    domain = "PROJECT"
+                elif any(w in preview for w in ['workflow', 'sop', 'procedure', 'checklist']):
+                    domain = "WORKFLOW"
+                elif any(w in preview for w in ['prefers ', 'preference', 'communication style', 'tone of voice']):
+                    domain = "PREFERENCE"
+                # else -> DOMAIN (initialised above): the subject-matter catch-all,
+                # so an unmatched line lands in a correct generic bucket rather
+                # than a borrowed one.
 
                 # Extract tagged content for keywords
                 tags = []
@@ -563,14 +581,19 @@ def build_documents_summary() -> str:
         return ""
 
 
-# Bump when the GENERATED OUTPUT's taxonomy/prompt changes, so an upgraded
+# Bump when the GENERATED OUTPUT's taxonomy/classifier changes, so an upgraded
 # installer forces one regeneration even on a box whose memory/*.md are byte
-# identical. v2 = the 2026-10-29 de-verticalization (MARKET -> DOMAIN, the
-# crypto keyword branch removed). WHY THIS IS LOAD-BEARING: the skip-if-unchanged
-# gate below hashes memory CONTENT only, so without this key an existing install
-# that upgrades the generator keeps its stale [MARKET] index FOREVER -- the inputs
-# never changed, so the generator never reruns, so the old labels never get fixed.
-INDEX_SCHEMA_VERSION = "2"
+# identical. WHY THIS IS LOAD-BEARING: the skip-if-unchanged gate below hashes
+# memory CONTENT only, so without this key an existing install that upgrades the
+# generator keeps its stale index FOREVER -- the inputs never changed, so the
+# generator never reruns, so the old labels never get fixed.
+#   v2 = 2026-10-29 de-verticalization (MARKET -> DOMAIN, crypto branch removed)
+#   v3 = 2026-10-29 classifier fix. v2 matched the WHOLE summary line, which
+#        includes metadata ("| Source: daily | Age: ..."), so the generic words
+#        'source' and 'user' hit 461/853 and 171/853 lines on a real workspace
+#        and collapsed an entire index into one bucket. v3 matches the filename
+#        and preview only. Anyone who installed v2 needs this regeneration.
+INDEX_SCHEMA_VERSION = "3"
 
 
 def _compute_file_hashes() -> dict:
