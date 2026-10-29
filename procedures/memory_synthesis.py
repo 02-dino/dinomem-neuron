@@ -386,6 +386,14 @@ Output ONLY valid JSON:
 }}"""
 
 
+# Ceiling on the evidence block handed to the verifier in one prompt.
+#
+# Sits under MAX_ARG_STRLEN (131072), leaving room for VERIFY_PROMPT's own ~2.1 KB
+# of instructions plus the pattern text. See the call site for why truncating is
+# safe on this path specifically.
+MAX_EVIDENCE_CHARS = 100_000
+
+
 def synthesize(cluster, texts):
     entries = []
     sources = []
@@ -861,9 +869,34 @@ def main():
             by_file.setdefault(Path(path).name, []).append(text.strip()[:400])
         verified, weak, rejected = [], [], []
         for k in kept:
-            evidence = "\n".join(
-                f"- ({fn}) {t}" for fn in k.get("sources", []) for t in by_file.get(fn, [])
-            )
+            # BOUNDED (2026-10-29): this join was unbounded. sources is capped at
+            # MAX_CLUSTER, but by_file[fn] holds EVERY node text from that file,
+            # so one dense file could alone produce >128 KB of evidence. The
+            # prompt goes to `openclaw ... model run --prompt <text>` as ONE argv
+            # entry, and Linux caps a single argv string at MAX_ARG_STRLEN =
+            # 131072 bytes, so an oversize prompt dies with errno 7 and the
+            # verification silently ABSTAINS -- which reads as "model declined",
+            # not "we never asked". Truncation is safe here (unlike the reviewer)
+            # because this value only informs a verdict; it is never written back
+            # over a memory file.
+            _ev_lines = [
+                f"- ({fn}) {t}"
+                for fn in k.get("sources", [])
+                for t in by_file.get(fn, [])
+            ]
+            evidence = ""
+            _used = 0
+            for _ln in _ev_lines:
+                if _used + len(_ln) + 1 > MAX_EVIDENCE_CHARS:
+                    break
+                evidence += ("\n" if evidence else "") + _ln
+                _used += len(_ln) + 1
+            if len(_ev_lines) and evidence.count("\n") + 1 < len(_ev_lines):
+                print(
+                    f"  evidence trimmed to {MAX_EVIDENCE_CHARS} chars "
+                    f"({evidence.count(chr(10)) + 1}/{len(_ev_lines)} lines) for: "
+                    f"{str(k.get('pattern', ''))[:60]}"
+                )
             status, verdicts = verify_insight(k, evidence, vmodels)
             k["verification"] = verdicts
             if status == "reject":

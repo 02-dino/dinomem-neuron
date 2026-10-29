@@ -246,9 +246,36 @@ def make_chunk_doc(chunk_text: str, section_title: str, section_level: int,
     return Document(page_content=enriched, metadata=meta)
 
 # ── LLM helpers (reuse extract_memory.py pattern) ───────────────────────────
+def _openclaw_config_path():
+    """Path of the openclaw.json THIS agent runs on.
+
+    BUG FIXED 2026-10-29: this read ~/.openclaw/openclaw.json and ignored
+    OPENCLAW_CONFIG_PATH, which every dinomem cron sets to
+    /root/.openclaw-<agent>/openclaw.json. On a multi-instance host that is the
+    WRONG instance, so the model lookup silently returned the wrong answer (or
+    None). Delegates to _cheap_model.config_path() so there is ONE precedence
+    ladder repo-wide, not a second copy that can drift.
+    """
+    try:
+        import importlib.util as _ilu
+        _hp = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_cheap_model.py")
+        _spec = _ilu.spec_from_file_location("_cheap_model", _hp)
+        _mod = _ilu.module_from_spec(_spec)
+        _spec.loader.exec_module(_mod)
+        if hasattr(_mod, "config_path"):
+            return Path(_mod.config_path())
+    except Exception:
+        pass
+    for _var in ("OPENCLAW_CONFIG_PATH", "OPENCLAW_CONFIG"):
+        _env = os.environ.get(_var, "").strip()
+        if _env:
+            return Path(_env)
+    return Path.home() / ".openclaw" / "openclaw.json"
+
+
 def _get_openclaw_model():
     """Read default model from openclaw.json."""
-    cfg = Path.home() / ".openclaw" / "openclaw.json"
+    cfg = _openclaw_config_path()
     if cfg.exists():
         try:
             with open(cfg) as f:

@@ -126,9 +126,56 @@ def log(message):
         f.write(log_message + "\n")
 
 
+def _load_cheap_model_module():
+    """Import procedures/_cheap_model.py by path. None if unavailable.
+
+    By path (not `import`) because procedures/ is not a package on an installed
+    workspace. Shared by the two readers below so there is ONE loader.
+    """
+    try:
+        import importlib.util as _ilu
+        _hp = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_cheap_model.py")
+        _spec = _ilu.spec_from_file_location("_cheap_model", _hp)
+        _mod = _ilu.module_from_spec(_spec)
+        _spec.loader.exec_module(_mod)
+        return _mod
+    except Exception:
+        return None
+
+
+def _openclaw_config_path() -> Path:
+    """Path of the openclaw.json THIS agent runs on.
+
+    BUG FIXED 2026-10-29: this read ~/.openclaw/openclaw.json unconditionally and
+    ignored OPENCLAW_CONFIG_PATH. Every dinomem cron is launched with
+    OPENCLAW_CONFIG_PATH=/root/.openclaw-<agent>/openclaw.json, so on a
+    multi-instance host this read the WRONG instance -- one whose providers carry
+    no apiKey. get_openclaw_config() then returned (model, None, None), the
+    direct-API fallback was skipped, and the run silently degraded to keyword
+    extraction. Measured on a 12-agent box: the read file exposed providers
+    ['tei-embed'] while the agent's real config had the LLM keys.
+
+    Delegates to _cheap_model.config_path() -- the resolver that already fixed
+    this exact class of bug on 2026-10-04 -- so there is ONE precedence ladder,
+    not a second copy that can drift. Inline fallback keeps this working if the
+    helper is ever missing.
+    """
+    _cm = _load_cheap_model_module()
+    if _cm is not None and hasattr(_cm, "config_path"):
+        try:
+            return Path(_cm.config_path())
+        except Exception:
+            pass
+    for _var in ("OPENCLAW_CONFIG_PATH", "OPENCLAW_CONFIG"):
+        _env = os.environ.get(_var, "").strip()
+        if _env:
+            return Path(_env)
+    return Path.home() / ".openclaw" / "openclaw.json"
+
+
 def get_openclaw_config():
     """Get model and API config from OpenClaw."""
-    openclaw_config = Path.home() / ".openclaw" / "openclaw.json"
+    openclaw_config = _openclaw_config_path()
     if not openclaw_config.exists():
         return None, None, None
 
@@ -136,26 +183,55 @@ def get_openclaw_config():
         with open(openclaw_config, 'r') as f:
             config = json.load(f)
 
-        model = config.get('agents', {}).get('defaults', {}).get('model', {}).get('primary')
         providers = config.get('models', {}).get('providers', {})
 
-        # Find provider for this model
+        # Prefer the CHEAP model: this is a no-reasoning summarization task, and
+        # the cheap tier is what the gateway path already uses. Falling straight
+        # to primary made the fallback try an expensive reasoning model it often
+        # had no key for.
+        model = NO_REASONING_MODEL or (
+            config.get('agents', {}).get('defaults', {}).get('model', {}).get('primary')
+        )
+
         api_key = None
         api_base = None
 
+        # Resolve the provider GENERICALLY from the "<provider>/<model>" prefix.
+        #
+        # BUG FIXED 2026-10-29: this used a hardcoded if/elif over kimi/google/
+        # openrouter, and its last branch claimed ANY id containing "/" for
+        # openrouter. So "anthropic/claude-sonnet-5" resolved to the openrouter
+        # provider, which does not exist on this host -> apiKey None -> the
+        # direct-API fallback was skipped entirely. Measured: the agent's real
+        # providers were ['tei-embed','google','ninerouter-<agent>'], none of
+        # which the old ladder could ever reach. A provider id is data, not a
+        # fixed list, so match it as data and keep the legacy aliases only as a
+        # fallback for configs that predate explicit prefixes.
         if model:
-            if model.startswith("kimi") or "/kimi" in model:
-                provider = providers.get('kimi-coding', providers.get('kimi-code', {}))
+            prefix = model.split('/', 1)[0] if '/' in model else ''
+            provider = providers.get(prefix) if prefix else None
+            if not provider:
+                for _alias, _ids in (
+                    (('kimi',), ('kimi-coding', 'kimi-code')),
+                    (('gemini', 'google'), ('google',)),
+                    (('openrouter',), ('openrouter',)),
+                ):
+                    if any(a in model for a in _alias):
+                        for _pid in _ids:
+                            if providers.get(_pid):
+                                provider = providers[_pid]
+                                break
+                    if provider:
+                        break
+            if provider:
                 api_key = provider.get('apiKey')
                 api_base = provider.get('baseUrl')
-            elif model.startswith("gemini") or "/gemini" in model or model.startswith("google"):
-                provider = providers.get('google', {})
-                api_key = provider.get('apiKey')
-                api_base = provider.get('baseUrl')
-            elif model.startswith("openrouter") or "/" in model:
-                provider = providers.get('openrouter', {})
-                api_key = provider.get('apiKey')
-                api_base = provider.get('baseUrl')
+
+        # A provider with a key but no baseUrl cannot be called over plain HTTP
+        # here; report it as unusable rather than returning a half-config the
+        # caller would fail on later.
+        if not api_base:
+            api_key = None
 
         return model, api_key, api_base
 
@@ -491,6 +567,47 @@ def prune_archive(archived: List[Dict]) -> List[Dict]:
     return filtered
 
 
+# Hard ceiling on the summary we hand to the LLM.
+#
+# WHY A CEILING AT ALL (measured 2026-10-29, not theoretical): the prompt goes to
+# `openclaw infer model run --prompt <text>` as ONE argv entry, and Linux caps a
+# single argv string at MAX_ARG_STRLEN = 32 pages = 131072 bytes. That is a
+# SEPARATE limit from total ARG_MAX (2 MB on the reference box), so no box tuning
+# avoids it. A real workspace produced a 510,672 char summary -- 3.9x over -- so
+# every run died with errno 7 and silently fell back to keyword extraction:
+# 14 of 16 runs on one agent, 16 of 20 on another, going back weeks. The
+# "fallback" was effectively the PRIMARY path.
+#
+# Checked upstream too: OpenClaw 2026.7.1 AND the latest 2026.10.8 both declare
+# requiredOption("--prompt <text>") with no stdin / --prompt-file alternative, so
+# upgrading does NOT fix this. Bounding the input is the half we control.
+#
+# 100_000 leaves ~31 KB of headroom under the ceiling for the surrounding
+# instruction text, far more than that text can plausibly grow. Trimming also
+# cuts cost directly: 510 KB is ~127k tokens per run, per agent, every week.
+MAX_SUMMARY_CHARS = 100_000
+
+
+def _budget_summary(parts: list, limit: int = MAX_SUMMARY_CHARS) -> list:
+    """Trim summary lines to `limit` chars, dropping the OLDEST first.
+
+    Order matters: `parts` arrives sorted by filename, and dinomem names memory
+    <date>_<type>_<slug>.md, so filename order is chronological. Keeping the
+    TAIL keeps the most recent memory, which is what the index is for. Returns
+    the kept lines in their original order.
+    """
+    kept: list = []
+    used = 0
+    for line in reversed(parts):
+        cost = len(line) + 1  # +1 for the newline the join adds
+        if used + cost > limit:
+            break
+        kept.append(line)
+        used += cost
+    kept.reverse()
+    return kept
+
+
 def build_documents_summary() -> str:
     """Build a text summary of all documents in the memory/ directory."""
     try:
@@ -571,7 +688,16 @@ def build_documents_summary() -> str:
                 log(f"Error reading {md_file.name}: {e}")
                 continue
 
-        log(f"Built summary from {len(summary_parts)} memory file(s)")
+        total_files = len(summary_parts)
+        summary_parts = _budget_summary(summary_parts)
+        if len(summary_parts) < total_files:
+            log(
+                f"Built summary from {len(summary_parts)} of {total_files} memory "
+                f"file(s) — trimmed to the {MAX_SUMMARY_CHARS} char prompt budget "
+                f"(oldest dropped first)"
+            )
+        else:
+            log(f"Built summary from {total_files} memory file(s)")
         return '\n'.join(summary_parts)
 
     except Exception as e:

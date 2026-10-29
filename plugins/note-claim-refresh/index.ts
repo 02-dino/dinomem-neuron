@@ -57,6 +57,45 @@ function agentIdFromSessionKey(sk: unknown): string | undefined {
   return m ? m[1] : undefined;
 }
 
+// Is this sessionKey an AUTOMATED (non-human) session?
+//
+// DEADLOCK FIXED 2026-10-29. This plugin stamps claimant =
+// `live-session-<agentId>`, and agentIdFromSessionKey() reads only the SECOND
+// segment -- so `agent:x:cron:...` and `agent:x:telegram:...` collapse to the
+// SAME claimant string. A cron session was therefore indistinguishable from a
+// human one, and the Project Advancer cron refreshed, via its own tool calls,
+// the very claims it was about to evaluate. Its 30-minute staleness window
+// could never elapse, because the reader was also the bumper.
+//
+// Measured on a 12-agent box: 12 of 12 project notes pinned to
+// live-session-analyst with claimed_at advancing in real time while ZERO live
+// sessions existed; 8 of those notes carried no claim at all in git HEAD, so
+// the stamps were written by this loop. Net effect: ~7 weeks of zero project
+// advancement -- and silent, because the Advancer just logs "nothing to
+// advance", which reads like a quiet day rather than a stuck system.
+//
+// The fix is deliberately NARROW: suppress the refresh only for automated
+// sessions. Genuine live-session protection (the reason this plugin exists: a
+// human working an hour in the same workspace without editing the note) is
+// untouched, because a human session is never keyed `:cron:`.
+//
+// SCOPE IS DELIBERATELY ONE VALUE. "isolated" was almost added here on the
+// reasoning that isolated cron agentTurns are also non-human -- then measured:
+// across every agent log on a 12-agent box the third segment is one of
+// explicit / cron / main / telegram / whatsapp / openai / boot / subagent, and
+// "isolated" appears ZERO times (cron appears 32,268 times). isolated is a cron
+// sessionTarget, not a session-key segment; those runs are still keyed `:cron:`
+// and are already covered. Adding it would have been dead code defending an
+// input that cannot occur.
+const AUTOMATED_SESSION_SEGMENTS = new Set(["cron"]);
+
+function isAutomatedSessionKey(sk: unknown): boolean {
+  if (typeof sk !== "string") return false;
+  // `agent:<id>:<surface>:...` -> inspect <surface>
+  const seg = sk.split(":")[2];
+  return seg !== undefined && AUTOMATED_SESSION_SEGMENTS.has(seg.toLowerCase());
+}
+
 // Refresh at most this often per session. Well under the 120-min live-session
 // window, so a claim can never lapse while the session keeps working.
 const REFRESH_EVERY_MS = 5 * 60 * 1000; // 5 minutes
@@ -213,6 +252,12 @@ export default definePluginEntry({
           // 1) claimant = live-session-<agentId> (agentId from sessionKey or ctx)
           const sessionKey =
             ctx?.sessionKey ?? event?.sessionKey ?? ctx?.session ?? event?.session;
+
+          // A cron/isolated run is NOT a live session. Without this guard the
+          // Advancer cron refreshes the claims it is about to read, and can
+          // never advance anything. See isAutomatedSessionKey() above.
+          if (isAutomatedSessionKey(sessionKey)) return;
+
           const agentId =
             agentIdFromSessionKey(sessionKey) ??
             (typeof ctx?.agentId === "string" ? ctx.agentId : undefined);
