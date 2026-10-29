@@ -147,9 +147,9 @@ The discriminators below describe **what `hybrid_recall` routes to under the hoo
 epub/md/txt) · "save/remember this doc" · content `>2000 chars`.
 
 **Action:**
-- **Uploaded file:** `python3 /root/.openclaw/workspace-analyst/procedures/docs_ingest.py --file <media path>` → confirm.
+- **Uploaded file:** `python3 DINOMEM_WORKSPACE_PLACEHOLDER/procedures/docs_ingest.py --file <media path>` → confirm.
   The script self-extracts pdf/docx/etc → `docs/<slug>.md`.
-- **Pasted text:** save `docs/<slug>.md` → `python3 /root/.openclaw/workspace-analyst/procedures/docs_ingest.py --file docs/<slug>.md` → confirm.
+- **Pasted text:** save `docs/<slug>.md` → `python3 DINOMEM_WORKSPACE_PLACEHOLDER/procedures/docs_ingest.py --file docs/<slug>.md` → confirm.
 
 **Media path:** inbound uploads land at `~/.openclaw/media/inbound/<uuid>` (from the
 `<media:...>` placeholder); pass that path straight to `--file`.
@@ -172,7 +172,7 @@ query in a workspace · after you've edited source and want callers/callee edges
 current · whenever `code_query` prints a `[stale]` flag (built_at_sha ≠ HEAD) or
 returns empty. It's cheap + git-incremental (re-parses only changed files), so
 refreshing is near-free.
-- `python3 /root/.openclaw/workspace-analyst/procedures/code_graph.py --path <root>`
+- `python3 DINOMEM_WORKSPACE_PLACEHOLDER/procedures/code_graph.py --path <root>`
   (AST, no LLM; `--full` forces a from-scratch rebuild). Default root ladder:
   `--path` arg > `DINOMEM_CODE_ROOTS` env > agent workspace > `~/.openclaw`.
 
@@ -180,7 +180,7 @@ refreshing is near-free.
 hierarchy / where is <fn> defined / how does A reach B" over source — INSTEAD of
 grep+read. Reflex: a code-structure question about this repo's own code → `code_query`
 FIRST, grep only as fallback.
-- `python3 /root/.openclaw/workspace-analyst/tools/code_query.py explain <symbol>`
+- `python3 DINOMEM_WORKSPACE_PLACEHOLDER/tools/code_query.py explain <symbol>`
   (neighborhood: contains/calls/called-by/imports/inherits, each `file:line` +
   EXTRACTED/INFERRED provenance).
 - `... code_query.py path <A> <B>` (shortest edge path A→B).
@@ -247,8 +247,8 @@ registered exact data (csv/json/parquet; any structured/semi-structured dataset)
 
 **Action:**
 - **Query:** read `kb/data_store/catalog.json` → pick table(s) by keywords+columns →
-  `python3 /root/.openclaw/workspace-analyst/tools/data_query.py --sql "SELECT ... FROM <table> WHERE ..."` (SELECT-only).
-- **Register:** `python3 /root/.openclaw/workspace-analyst/procedures/data_register.py --file <path.csv|json|parquet> --name <table> --desc "..." [--keywords a,b,c]`.
+  `python3 DINOMEM_WORKSPACE_PLACEHOLDER/tools/data_query.py --sql "SELECT ... FROM <table> WHERE ..."` (SELECT-only).
+- **Register:** `python3 DINOMEM_WORKSPACE_PLACEHOLDER/procedures/data_register.py --file <path.csv|json|parquet> --name <table> --desc "..." [--keywords a,b,c]`.
 
 **Notes:** store = `kb/data_store/` (one duckdb, one table per dataset — NOT a
 category column, NOT a db-per-category); handles structured + semi-structured

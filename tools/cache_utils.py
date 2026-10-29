@@ -3,15 +3,15 @@
 Usage:
     from tools.cache_utils import cached, get, set
 
-    @cached("exchange_data", ttl_seconds=30)
-    def fetch_price(symbol: str):
+    @cached("some_api", ttl_seconds=30)
+    def fetch_record(record_id: str):
         ...
 
     # Or manual:
-    result = get("exchange_data", "price", "BTC", ttl_seconds=30)
+    result = get("some_api", "record", "abc123", ttl_seconds=30)
     if result is None:
         result = api_call()
-        set("exchange_data", "price", "BTC", result=result)
+        set("some_api", "record", "abc123", result=result)
 """
 
 import json

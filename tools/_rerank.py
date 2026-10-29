@@ -158,8 +158,8 @@ def _selftest() -> int:
 
     q = "what is the rule about owner language and reply style"
     docs = ["Owner prefers Indonesian, concise replies under 2000 characters.",
-            "Bitcoin funding rate turned negative on Binance perpetuals.",
-            "Run rugcheck before calling a microcap clean."]
+            "The vendor contract renews in March at the old rate.",
+            "Run the staging smoke test before promoting a release."]
     s = rerank_scores(q, docs)
     if s is None:
         print("FAIL: live reranker but no scores for an unambiguous query")

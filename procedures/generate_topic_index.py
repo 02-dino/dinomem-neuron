@@ -281,23 +281,28 @@ single turn. Never pad toward 50. If only 25 entries clear the transferability b
 OUTPUT FORMAT (one entry per line, flat — no nesting, no bullets):
 [DOMAIN] [AGE] TOPIC_NAME | tag1, tag2, tag3, tag4 | brief-description
 
-DOMAIN must be one of: WORKFLOW | MARKET | PROJECT | PREFERENCE | REFERENCE
+DOMAIN must be one of: WORKFLOW | DOMAIN | PROJECT | PREFERENCE | REFERENCE
+  (DOMAIN = this agent's own subject matter, whatever that is — sales pipeline,
+   support cases, events, markets, content. Infer it from the memory itself; do
+   NOT assume any particular industry.)
 AGE: use "[Xd]" for days ago, "[persist]" for behavioral rules
 TOPIC_NAME: 3-5 words, specific — not vague
-TAGS: 4-6 comma-separated keywords including tickers, project names, exact terms the user might use
+TAGS: 4-6 comma-separated keywords including proper nouns, identifiers, project names, exact terms the user might use
 BRIEF-DESCRIPTION: max 10 words, only if the tags don't make it obvious
 
 RULES:
 1. FLAT LIST — one entry per line. NO indentation, NO subtopics, NO hierarchy
 2. KEYWORD-DENSE — every word in tags should be something a user might search for
-3. TICKERS FIRST — if a topic mentions BTC, ETH, PLUME, SPK, include the ticker as a tag
+3. IDENTIFIERS FIRST — if a topic names a specific entity (a person, client, product,
+   project, account, ticker, case id), include that identifier verbatim as a tag
 4. NO FLUFF — no "discussions about", no "various topics", no "general insights"
 5. DISPLAY ORDER — newest first (largest Xd first), then [persist]. This is ORDERING only,
    NOT how you choose what to drop — see SELECTION below.
 6. MAX 50 entries (this is a CEILING, not a quota — only fill a slot if the entry is genuinely
    transferable; do not pad to 50). When more than 50 exist, drop by SELECTION — never drop purely by age.
 7. GROUP BY DOMAIN only if it helps scanning; otherwise sort by recency
-8. For market content: include specific tickers, catalysts, patterns, trade signals
+8. For domain content: include the specific identifiers, triggers, patterns and
+   decision signals that this agent's work actually turns on
 
 SELECTION — which entries earn one of the 50 slots. Importance = TRANSFERABILITY (is there a
 reusable lesson here?), NOT outcome (win/lose) and NOT recency:
@@ -345,7 +350,9 @@ def _fallback_topic_extraction(documents_summary: str) -> str:
 
         # Extract date from filename for age
         age = "recent"
-        domain = "REFERENCE"
+        # DOMAIN = subject-matter catch-all (see the classifier note below). An
+        # unmatched line is domain content by default, not a stray REFERENCE.
+        domain = "DOMAIN"
         filename = ""
         if 'File:' in line:
             parts = line.split('File:')
@@ -361,14 +368,21 @@ def _fallback_topic_extraction(documents_summary: str) -> str:
 
                 # Determine domain from content signals
                 content_lower = line.lower()
+                # NOTE: this is the NON-LLM fallback path (used when the LLM call
+                # fails), so it can only keyword-match. Keep every keyword list
+                # VERTICAL-NEUTRAL: a crypto/market word list here silently
+                # mislabels every non-market agent on the box (measured 2026-10-29:
+                # 'price'/'trade'/'consensus' tagged 50/50 konsultan rows as MARKET).
+                # DOMAIN is the deliberate catch-all, so an unmatched line lands in
+                # a correct generic bucket instead of a borrowed one.
                 if any(w in content_lower for w in ['workflow', 'process', 'step', 'classify', 'filter']):
                     domain = "WORKFLOW"
-                elif any(w in content_lower for w in ['btc', 'eth', 'price', 'trade', 'pump', 'buyback', 'consensus']):
-                    domain = "MARKET"
                 elif any(w in content_lower for w in ['preference', 'user', 'communication', 'style']):
                     domain = "PREFERENCE"
-                elif any(w in content_lower for w in ['project', 'protocol', 'token', 'tvl', 'rwa']):
+                elif any(w in content_lower for w in ['project', 'build', 'milestone', 'deliverable', 'roadmap']):
                     domain = "PROJECT"
+                elif any(w in content_lower for w in ['source', 'reference', 'doc', 'link', 'spec']):
+                    domain = "REFERENCE"
 
                 # Extract tagged content for keywords
                 tags = []
@@ -549,10 +563,24 @@ def build_documents_summary() -> str:
         return ""
 
 
+# Bump when the GENERATED OUTPUT's taxonomy/prompt changes, so an upgraded
+# installer forces one regeneration even on a box whose memory/*.md are byte
+# identical. v2 = the 2026-10-29 de-verticalization (MARKET -> DOMAIN, the
+# crypto keyword branch removed). WHY THIS IS LOAD-BEARING: the skip-if-unchanged
+# gate below hashes memory CONTENT only, so without this key an existing install
+# that upgrades the generator keeps its stale [MARKET] index FOREVER -- the inputs
+# never changed, so the generator never reruns, so the old labels never get fixed.
+INDEX_SCHEMA_VERSION = "2"
+
+
 def _compute_file_hashes() -> dict:
-    """Compute SHA-256 hashes of all memory/*.md files for change detection."""
+    """Compute SHA-256 hashes of all memory/*.md files for change detection.
+
+    Also carries INDEX_SCHEMA_VERSION so a generator upgrade invalidates the
+    cache the same way a memory edit does (see the constant's note above).
+    """
     import hashlib
-    hashes = {}
+    hashes = {"__schema__": INDEX_SCHEMA_VERSION}
     if not MEMORY_DIR.exists():
         return hashes
     for md_file in sorted(MEMORY_DIR.glob("*.md")):

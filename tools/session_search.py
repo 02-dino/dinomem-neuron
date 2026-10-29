@@ -13,7 +13,7 @@ Trigger (agent-side):
 
 Usage (CLI):
   python3 tools/session_search.py "what did we decide about X"
-  python3 tools/session_search.py "funding rate discussion" --k 5
+  python3 tools/session_search.py "the pricing discussion with the vendor" --k 5
   python3 tools/session_search.py --list
 
 Usage (import):

@@ -566,8 +566,8 @@ def format_cluster_drill_text(result):
 # peers_graph.json is a SEPARATE graph from memory_graph.json. Its edges use
 # string endpoints {subject, verb, object} where subject is `peer:<platform>:<id>`.
 # ISOLATION RULE (OQ6): a peer's edges may surface ONLY when --peer matches that
-# subject (active-speaker). Cross-peer aggregation (--all-peers, e.g. "who trades
-# ETH") is OWNER-ONLY and MUST be gated by --owner. Fail-open on any error.
+# subject (active-speaker). Cross-peer aggregation (--all-peers, e.g. "who works
+# on the migration") is OWNER-ONLY and MUST be gated by --owner. Fail-open on any error.
 PEERS_GRAPH_PATH = _REPO_ROOT / "memory" / "peers" / "peers_graph.json"
 
 def load_peers_graph(path: Path) -> dict:
@@ -686,7 +686,7 @@ def main():
                         help="Peer-scoped mode. Value = active speaker as platform:id, platform_id, "
                              "or peer:platform:id. Returns ONLY that peer's edges from peers_graph.json.")
     parser.add_argument("--all-peers", action="store_true", dest="all_peers",
-                        help="OWNER-ONLY cross-peer aggregation (e.g. 'who trades ETH'). Requires --owner.")
+                        help="OWNER-ONLY cross-peer aggregation (e.g. 'who works on the migration'). Requires --owner.")
     parser.add_argument("--owner", action="store_true", dest="owner",
                         help="Assert the caller is the owner. REQUIRED for --all-peers.")
     parser.add_argument("--peers-graph", type=Path, default=PEERS_GRAPH_PATH, dest="peers_graph",
