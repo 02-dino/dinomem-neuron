@@ -46,7 +46,11 @@ except ImportError:  # pragma: no cover
 # Schema adapter: resolves OpenClaw memory-index table/column names at runtime so
 # neuron survives OpenClaw schema drift (files/chunks vs memory_index_chunks).
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _schema_adapter import resolve as _resolve_schema_raw, SchemaUnsupported  # noqa: E402
+from _schema_adapter import (  # noqa: E402
+    resolve as _resolve_schema_raw,
+    decode_embedding as _decode_embedding,
+    SchemaUnsupported,
+)
 
 # Optional valid-time layer (#2) — supplies valid_at/invalid_at for P0-b fact edges by
 # reading source-memory frontmatter. Fail-open: absent -> edges are simply not time-bounded.
@@ -162,16 +166,23 @@ def load_chunks(db_path):
     con.close()
     chunks = []
     firewalled = 0
+    undecodable = 0
+    dims_seen = defaultdict(int)
     for cid, path, s, e, text, emb in rows:
         if Path(path).name in FIREWALL_FILES or (text and FIREWALL_MARKER in text):
             firewalled += 1
             continue  # feedback-loop firewall: never re-ingest promoted insights
-        try:
-            vec = json.loads(emb)
-        except (json.JSONDecodeError, TypeError):
+        # Encoding-agnostic: OpenClaw stores this as a JSON TEXT array on
+        # 2026.7.x and as a raw float32 BLOB on 2026.9.x. Decoding lives in
+        # _schema_adapter so the "how do I read this index" rule has ONE home
+        # alongside the table/column resolution. A bare json.loads() here used
+        # to die with UnicodeDecodeError (byte 0xc5) on the BLOB form -- which
+        # looked like DB corruption but was just the other valid format.
+        vec = _decode_embedding(emb)
+        if vec is None:
+            undecodable += 1
             continue
-        if not isinstance(vec, list) or not vec:
-            continue
+        dims_seen[len(vec)] += 1
         chunks.append(
             {
                 "id": cid,
@@ -184,6 +195,22 @@ def load_chunks(db_path):
         )
     if firewalled:
         print(f"  🔥 firewall: skipped {firewalled} L4-promoted chunk(s) (no feedback loop)")
+    if undecodable:
+        # Loud, but NOT fatal: one junk row must not kill a rebuild. The caller
+        # already treats "zero usable chunks" as fatal, which is the different
+        # (and correct) question.
+        print(f"  ⚠️  {undecodable} chunk(s) had an unreadable embedding (skipped)")
+    if len(dims_seen) > 1:
+        # MIXED DIMENSIONS = vectors from two different embedding models living
+        # in one index (e.g. a 384-dim 2026.7 index partially re-indexed by a
+        # 1536-dim 2026.9 build). Cosine similarity across them is meaningless,
+        # so say so instead of silently emitting a garbage graph.
+        _dims = ", ".join(f"{d}d×{n}" for d, n in sorted(dims_seen.items()))
+        print(
+            f"  ⚠️  MIXED embedding dimensions in one index ({_dims}). "
+            "These came from different embedding models and are NOT comparable "
+            "— re-index before trusting this graph (scripts/reindex_all.sh)."
+        )
     return chunks
 
 

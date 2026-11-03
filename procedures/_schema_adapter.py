@@ -21,9 +21,81 @@ the live DB before any query is built.
 
 It does NOT invent data. If the index has no per-chunk embeddings, callers that
 need vectors get an explicit, actionable error rather than silent garbage.
+
+Encoding drift (not just naming drift)
+--------------------------------------
+The column NAME is only half the contract. OpenClaw also changed how the vector
+is STORED. Measured 2026-11-02 across two hosts:
+
+  OpenClaw 2026.7.1-2 : embedding = TEXT, a JSON array,  384 floats
+  OpenClaw 2026.9.9   : embedding = BLOB, raw float32,  1536 floats (6144 bytes)
+
+A caller that assumes one encoding explodes on the other. `json.loads()` on a
+raw float32 blob dies with UnicodeDecodeError on whatever byte happens to be
+invalid UTF-8 (reported in the wild as "byte 0xc5"), which reads like a corrupt
+DB rather than what it is: a different, perfectly valid storage format.
+
+So decoding lives HERE, next to the name resolution, instead of at each call
+site. One door for "how do I read this index", not two half-doors that drift
+apart. See decode_embedding().
 """
 
+import json
 import sqlite3
+import struct
+
+
+# float32 is what every OpenClaw build observed so far writes into the BLOB
+# form. Kept as a named constant so a future float64 variant is a one-line
+# change with a visible name, not a magic 4 buried in a division.
+_F32_BYTES = 4
+
+
+def decode_embedding(raw):
+    """Decode one stored embedding into list[float]; return None if unusable.
+
+    Accepts BOTH storage forms OpenClaw has shipped (see module docstring):
+      * bytes/memoryview -> raw float32 buffer (2026.9.x)
+      * str              -> JSON array        (2026.7.x and earlier)
+
+    Returns None (never raises, never fabricates) when the value is absent or
+    malformed, so a single bad row cannot take down a whole graph rebuild. The
+    CALLER decides whether "no usable vectors at all" is fatal -- that check is
+    a different question from "this one row is junk" and must not be conflated.
+    """
+    if raw is None:
+        return None
+
+    # --- BLOB form: raw little-endian float32 (OpenClaw 2026.9.x) -----------
+    if isinstance(raw, (bytes, bytearray, memoryview)):
+        buf = bytes(raw)
+        if not buf or len(buf) % _F32_BYTES:
+            # A length that is not a whole number of float32s is not a vector
+            # we understand. Refuse rather than silently truncating.
+            return None
+        n = len(buf) // _F32_BYTES
+        try:
+            # struct is stdlib: this module must stay importable on a host
+            # where numpy is missing. Callers that want numpy can convert.
+            vec = list(struct.unpack(f"<{n}f", buf))
+        except struct.error:
+            return None
+        return vec or None
+
+    # --- TEXT form: JSON array (OpenClaw 2026.7.x and earlier) -------------
+    if isinstance(raw, str):
+        try:
+            vec = json.loads(raw)
+        except (json.JSONDecodeError, ValueError):
+            return None
+        if not isinstance(vec, list) or not vec:
+            return None
+        try:
+            return [float(x) for x in vec]
+        except (TypeError, ValueError):
+            return None
+
+    return None
 
 
 class SchemaUnsupported(RuntimeError):

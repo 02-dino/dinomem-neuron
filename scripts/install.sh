@@ -120,6 +120,98 @@ warn() { printf '  \033[33m[warn]\033[0m %s\n' "$*"; }
 fail() { printf '  \033[31m[fail]\033[0m %s\n' "$*"; exit 1; }
 hr()   { printf '\033[1m== %s ==\033[0m\n' "$*"; }
 plan() { printf '  \033[36m[plan]\033[0m %s\n' "$*"; }
+
+# ── OpenClaw version compat gate ────────────────────────────────────
+# WHY THIS EXISTS: every bug in the 2026-11-02 user report traces back to this
+# installer ASSUMING an OpenClaw version instead of checking one. It hardcoded
+# "2026.6.6+" expectations, ran happily on 2026.9.9, reported success, and the
+# damage only surfaced later — a dead 3am cron, a config the gateway rejected,
+# an embedding index it could not read. An installer that cannot say which
+# versions it was tested against should not silently claim to support all of
+# them.
+#
+# POLICY: STOP by default on an untested major, because the failure mode we are
+# guarding against is EXACTLY "it looked like it worked". The message names the
+# detected version and the override, so an informed user is never stuck:
+#   --skip-version-check   (or DINOMEM_SKIP_VERSION_CHECK=1)
+# An unreadable version is NOT treated as unsupported — missing evidence is not
+# evidence of incompatibility, so that path warns and proceeds.
+#
+# MAINTENANCE: this list is the single source of truth. Add a major only after
+# an install has actually been exercised on it.
+DINOMEM_SUPPORTED_OC_MAJORS="${DINOMEM_SUPPORTED_OC_MAJORS:-2026.6 2026.7}"
+SKIP_VERSION_CHECK="${DINOMEM_SKIP_VERSION_CHECK:-0}"
+_oc_version_gate() {
+  [ "$SKIP_VERSION_CHECK" = 1 ] && { skip "OpenClaw version gate (--skip-version-check)"; return 0; }
+  command -v openclaw >/dev/null 2>&1 || { warn "openclaw CLI not found — skipping version gate"; return 0; }
+  local _raw _ver _major
+  _raw="$(timeout 60 openclaw --version 2>/dev/null | head -1)" || _raw=""
+  # Accept any "<year>.<minor>" token, so a future numbering scheme degrades to
+  # "cannot parse" (warn) rather than a false "unsupported" (stop).
+  _ver="$(printf '%s' "$_raw" | grep -oE '[0-9]{4}\.[0-9]+(\.[0-9]+)?(-[0-9]+)?' | head -1)"
+  if [ -z "$_ver" ]; then
+    warn "could not read the OpenClaw version — proceeding unchecked (reported: ${_raw:-<nothing>})"
+    return 0
+  fi
+  _major="$(printf '%s' "$_ver" | cut -d. -f1-2)"
+  case " $DINOMEM_SUPPORTED_OC_MAJORS " in
+    *" $_major "*) ok "OpenClaw $_ver — supported (tested majors: $DINOMEM_SUPPORTED_OC_MAJORS)"; return 0 ;;
+  esac
+  printf '\n'
+  warn "OpenClaw $_ver is NOT a tested version for this installer."
+  warn "  Tested majors: $DINOMEM_SUPPORTED_OC_MAJORS"
+  warn "  Installing anyway can appear to succeed while leaving things broken:"
+  warn "    - config keys this OpenClaw no longer accepts (gateway refuses to start)"
+  warn "    - an embedding index this build stores in a format the graph cannot read"
+  warn "  Nothing has been changed. To proceed anyway, re-run with:"
+  warn "    --skip-version-check     (or DINOMEM_SKIP_VERSION_CHECK=1)"
+  printf '\n'
+  exit 1
+}
+
+# ── OpenClaw capability probe: plugins.bundledDiscovery (memoized) ──────────
+# WHY THIS EXISTS (user report, OpenClaw 2026.9.9, 2026-11-02): this installer
+# used to write plugins.bundledDiscovery UNCONDITIONALLY. That key is
+# VERSION-COUPLED, not universal:
+#   * OpenClaw 2026.6.x-2026.7.x : REQUIRED companion to plugins.allow. Omit it
+#     and the schema rejects the WHOLE config -> gateway refuses to start.
+#   * OpenClaw 2026.9.x          : key no longer exists. Writing it makes the
+#     config INVALID until a human removes it by hand.
+# So the same line that RESCUES one version BREAKS the other. The only correct
+# move is to ASK the installed OpenClaw instead of assuming either way.
+#
+# Verified on the reference box (2026.7.1-2): `openclaw config schema` emits the
+# literal "bundledDiscovery" exactly once, so presence/absence in the schema is
+# a sound detector.
+#
+# COST: measured 38s for `config schema` (and 27s for `config validate`) on the
+# reference box. That is why this is memoized AND exported: ONE probe per
+# install run, inherited by every python3 config-editing block through the
+# environment. Probing at each of the call sites would add minutes of pure wait.
+#
+# Values: yes = schema knows it | no = schema does not | unknown = cannot tell.
+OC_BD_SUPPORTED=""
+_oc_probe_bundled_discovery() {
+  [ -n "$OC_BD_SUPPORTED" ] && return 0      # memoized: probe at most once
+  if ! command -v openclaw >/dev/null 2>&1; then
+    OC_BD_SUPPORTED="unknown"; export OC_BD_SUPPORTED; return 0
+  fi
+  local _schema=""
+  _schema="$(timeout "${DINOMEM_SCHEMA_PROBE_TIMEOUT_S:-120}" openclaw config schema 2>/dev/null)" || _schema=""
+  if [ -z "$_schema" ]; then
+    OC_BD_SUPPORTED="unknown"
+  elif printf '%s' "$_schema" | grep -q '"bundledDiscovery"'; then
+    OC_BD_SUPPORTED="yes"
+  else
+    OC_BD_SUPPORTED="no"
+  fi
+  export OC_BD_SUPPORTED
+  case "$OC_BD_SUPPORTED" in
+    yes) ok   "OpenClaw schema knows plugins.bundledDiscovery — will keep it set" ;;
+    no)  ok   "OpenClaw schema does NOT know plugins.bundledDiscovery — will strip it if present" ;;
+    *)   warn "could not read the OpenClaw config schema — leaving plugins.bundledDiscovery as-is (no add, no remove)" ;;
+  esac
+}
 # wire_managed_block FILE BEGIN END BLOCK LABEL — idempotent UNCONDITIONAL upsert of
 # one managed marker span. WHY it exists: AGENTS.md and TOOLS.md both carry a neuron
 # managed block; the old skip-unless-force wiring meant an upgrade SILENTLY kept a
@@ -684,6 +776,10 @@ hr "dinomem-neuron -> $WS (agent: $AGENT_ID)"
 
 # ── Pre-flight compatibility checks ─────────────────────────────────────────
 hr "Pre-flight checks"
+# FIRST check of the whole install: refuse an untested OpenClaw BEFORE anything
+# is written. Placed here deliberately — a gate that fires after files/config
+# have already been touched is not a gate, it is a post-mortem.
+_oc_version_gate
 # Python version check
 if ! command -v python3 &>/dev/null; then
   warn "python3 not found — attempting install..."
@@ -1104,17 +1200,58 @@ if [ -n "$KB_DEPS_MISSING" ]; then
   skip "embedding-model prewarm (langchain/sentence-transformers not installed — fix KB deps above first)"
 else
   _EMBED_MODEL="${DINOMEM_EMBED_MODEL:-intfloat/multilingual-e5-small}"
-  # snapshot-present check: a non-empty snapshots/ dir means the model is cached.
+  # Cache-VALIDITY check (not merely cache-presence).
   # (Cache-dir name derivation lives in Python below — the single source of truth
   # for HF's models--<org>--<repo> convention; no fragile shell string-munging.)
+  #
+  # WHY THIS IS NOT JUST "snapshots/ is non-empty" (measured 2026-11-02 from a
+  # user report on OpenClaw 2026.9.9): when the HF repo is cloned with git but
+  # git-lfs is NOT installed, every weight file lands as a ~134-byte TEXT
+  # POINTER that merely NAMES the real blob. The directory exists, the file
+  # exists, the old check said "cached — no download", and the breakage only
+  # surfaced much later as docs_ingest dying with "header too large".
+  # Reference: a real multilingual-e5-small model.safetensors is ~470 MB.
+  #
+  # So: find the weight file and reject it if it is a git-lfs pointer or is
+  # implausibly small. A cache we cannot USE must report MISS so _embed_fetch
+  # runs and repairs it. A false miss costs one download; a false hit costs a
+  # silently broken install that only fails at ingest time.
   _embed_cached() {
     "$PY" - "$_EMBED_MODEL" <<'PYEOF' 2>/dev/null
 import os, pathlib, sys
+
+# A genuine weights file is tens-to-hundreds of MB. 1 MiB sits far below any
+# real model yet far above the ~134-byte pointer, so it separates the two
+# cases without hard-coding one model's expected size.
+MIN_WEIGHT_BYTES = 1 << 20
+LFS_MAGIC = b"version https://git-lfs"
+WEIGHT_NAMES = ("model.safetensors", "pytorch_model.bin", "model.onnx", "tf_model.h5")
+
 mid = sys.argv[1]
 root = pathlib.Path(os.environ.get("HF_HOME") or (pathlib.Path.home()/".cache"/"huggingface"))
 snaps = root/"hub"/("models--"+mid.replace("/","--"))/"snapshots"
-ok = snaps.exists() and any(p.is_dir() and any(p.iterdir()) for p in snaps.iterdir())
-sys.exit(0 if ok else 1)
+if not snaps.exists():
+    sys.exit(1)
+
+def usable(snap):
+    # stat() follows symlinks on purpose: HF keeps the real bytes in blobs/ and
+    # symlinks them into snapshots/, so the link must be resolved to see size.
+    for name in WEIGHT_NAMES:
+        f = snap/name
+        if not f.exists():
+            continue
+        try:
+            if f.stat().st_size < MIN_WEIGHT_BYTES:
+                continue          # git-lfs pointer, or a truncated download
+            with open(f, "rb") as fh:
+                if fh.read(len(LFS_MAGIC)) == LFS_MAGIC:
+                    continue      # big enough by luck, still only a pointer
+        except OSError:
+            continue              # dangling symlink / unreadable -> not usable
+        return True
+    return False
+
+sys.exit(0 if any(p.is_dir() and usable(p) for p in snaps.iterdir()) else 1)
 PYEOF
   }
   # download via sentence-transformers; honors HF_ENDPOINT env if the caller set one.
@@ -1537,7 +1674,21 @@ if [ "$DO_CRON" = 1 ]; then
   # Chained pipeline runs inside the lock: synthesis -> contradiction_check -> confidence_engine.
   # dinomem_run.sh wraps all three; they share one lock acquisition (flock is held for the
   # duration of the subshell, not re-acquired per-script — safe for a chained pipeline).
-  SYNTH_CHAIN="${REASON_ENV}python3 procedures/memory_synthesis.py >> logs/memory_synthesis.log 2>&1 && ${REASON_ENV}python3 procedures/contradiction_check.py >> logs/contradiction_check.log 2>&1 && python3 procedures/confidence_engine.py >> logs/confidence_engine.log 2>&1"
+  #
+  # TWO THINGS HERE ARE LET-ME-NOT-REGRESS, both measured 2026-11-02 against a user
+  # report (neuron v1.27.2 on OpenClaw 2026.9.9) and reproduced first-party:
+  #
+  #  1. `--report` IS REQUIRED on contradiction_check.py. That script is a PER-CANDIDATE
+  #     guard (--check/--candidate), not a batch pass. Invoked bare it prints argparse
+  #     help and exits 1. `--report` is its only no-argument batch mode (exit 0).
+  #  2. SEPARATOR IS `;`, NEVER `&&`. With `&&`, the bare-invocation exit 1 above killed
+  #     the rest of the chain, so confidence_engine.py NEVER RAN and its log file was
+  #     never even created — a silent, permanent hole in L3 calibration that looked like
+  #     "the feature was never installed". These three stages are independent bookkeeping
+  #     passes: synthesis having nothing to write is a normal no-op, not a reason to skip
+  #     calibration. Each stage redirects its own stdout+stderr to its own log, so a real
+  #     failure is still visible per-stage; the chain must not swallow the next stage.
+  SYNTH_CHAIN="${REASON_ENV}python3 procedures/memory_synthesis.py >> logs/memory_synthesis.log 2>&1 ; ${REASON_ENV}python3 procedures/contradiction_check.py --report >> logs/contradiction_check.log 2>&1 ; python3 procedures/confidence_engine.py >> logs/confidence_engine.log 2>&1"
   # RUNAWAY BACKSTOP: `timeout 7200` over the whole chained pipeline (above the 5400s
   # flock wait). Guards the heavy-llm lock against an infinite provider hang; the
   # three chained scripts share one lock, so one outer bound covers all of them.
@@ -3989,6 +4140,10 @@ fi
 # never blocks a tool. Workspace is resolved dynamically at runtime; we ALSO pin it in
 # plugin config here for robustness on multi-workspace hosts.
 hr "Note-claim-refresh hook plugin"
+# Probe ONCE here, before the first config-editing block. Memoized + exported,
+# so the two later plugin-wiring blocks inherit the answer for free instead of
+# paying the ~38s schema read again.
+_oc_probe_bundled_discovery
 PLUGIN_SRC="$SKILL_DIR/plugins/note-claim-refresh"
 # Install into the PERSISTENT global extensions dir, NOT the workspace. Plugin
 # registration in openclaw.json is global; a workspace-relative load.paths entry
@@ -4026,14 +4181,31 @@ if PID not in allow:
     allow.append(PID)
     changed.append(f"plugins.allow += {PID}")
 
-# 1b) bundledDiscovery — REQUIRED companion to plugins.allow on OpenClaw
-#     2026.6.x+. Setting plugins.allow WITHOUT bundledDiscovery makes the new
-#     schema reject the whole config ("plugins: Invalid input") and the gateway
-#     refuses to start — total bot silence. "compat" preserves legacy bundled
-#     provider/channel discovery (safest: won't disable existing chat channels).
-if plugins.get("bundledDiscovery") not in ("compat", "allowlist"):
-    plugins["bundledDiscovery"] = "compat"
-    changed.append('plugins.bundledDiscovery -> "compat"')
+# 1b) bundledDiscovery — VERSION-COUPLED, so NEVER written blind.
+#     On OpenClaw 2026.6.x-2026.7.x this key is a REQUIRED companion to
+#     plugins.allow: without it the schema rejects the whole config
+#     ("plugins: Invalid input") and the gateway refuses to start.
+#     On OpenClaw 2026.9.x the key does not exist, and writing it makes the
+#     config invalid in exactly the same fatal way. Same line, opposite effect.
+#     The verdict comes from ONE memoized probe of the live schema
+#     (_oc_probe_bundled_discovery, top of this installer), inherited here via
+#     the environment:
+#       yes     -> set it ("compat" preserves legacy bundled provider/channel
+#                  discovery, so existing chat channels keep working)
+#       no      -> REMOVE it. This is the REINSTALL path: an older installer
+#                  may have written the key, and reinstalling does not drop it
+#                  by itself, so the config stays invalid until someone strips
+#                  it by hand. That hand-repair is what the user had to do.
+#       unknown -> touch nothing. Never guess on a boot-critical key.
+_bd = os.environ.get("OC_BD_SUPPORTED", "unknown")
+if _bd == "yes":
+    if plugins.get("bundledDiscovery") not in ("compat", "allowlist"):
+        plugins["bundledDiscovery"] = "compat"
+        changed.append('plugins.bundledDiscovery -> "compat"')
+elif _bd == "no":
+    if "bundledDiscovery" in plugins:
+        plugins.pop("bundledDiscovery", None)
+        changed.append("plugins.bundledDiscovery REMOVED (not in this OpenClaw's schema)")
 
 # 2) load.paths -> abs plugin dir (dedup) + PRUNE stale workspace-relative paths.
 #    Older installer builds registered $WS/plugins/note-claim-refresh, which
@@ -4154,12 +4326,18 @@ if PID not in allow:
     allow.append(PID)
     changed.append(f"plugins.allow += {PID}")
 
-# 1b) bundledDiscovery — REQUIRED companion to plugins.allow on OpenClaw 2026.6.x+.
-#     Without it the new schema rejects the whole config and the gateway refuses
-#     to start. "compat" preserves legacy bundled provider/channel discovery.
-if plugins.get("bundledDiscovery") not in ("compat", "allowlist"):
-    plugins["bundledDiscovery"] = "compat"
-    changed.append('plugins.bundledDiscovery -> "compat"')
+# 1b) bundledDiscovery — VERSION-COUPLED; set when this OpenClaw's schema knows
+#     it, REMOVED when it does not (the reinstall path), untouched when the
+#     probe failed. Full reasoning at the first occurrence of this block above.
+_bd = os.environ.get("OC_BD_SUPPORTED", "unknown")
+if _bd == "yes":
+    if plugins.get("bundledDiscovery") not in ("compat", "allowlist"):
+        plugins["bundledDiscovery"] = "compat"
+        changed.append('plugins.bundledDiscovery -> "compat"')
+elif _bd == "no":
+    if "bundledDiscovery" in plugins:
+        plugins.pop("bundledDiscovery", None)
+        changed.append("plugins.bundledDiscovery REMOVED (not in this OpenClaw's schema)")
 
 # 2) load.paths -> abs plugin dir (dedup) + PRUNE stale workspace-relative paths.
 load = plugins.setdefault("load", {})
@@ -4261,7 +4439,7 @@ import json, os
 path = os.environ["DINOMEM_OPENCLAW_JSON"]
 plugin_dst = os.environ["DINOMEM_PLUGIN_DST"]
 ws = os.environ["DINOMEM_WS"]
-PID = "dinomem-recall-gate"
+PID = "dinomem-recall-gate"  # noqa: anchor — keeps this block textually unique
 with open(path) as f:
     cfg = json.load(f)
 
@@ -4277,10 +4455,18 @@ if PID not in allow:
     allow.append(PID)
     changed.append(f"plugins.allow += {PID}")
 
-# 1b) bundledDiscovery — REQUIRED companion to plugins.allow on OpenClaw 2026.6.x+.
-if plugins.get("bundledDiscovery") not in ("compat", "allowlist"):
-    plugins["bundledDiscovery"] = "compat"
-    changed.append('plugins.bundledDiscovery -> "compat"')
+# 1b) bundledDiscovery — VERSION-COUPLED; set when this OpenClaw's schema knows
+#     it, REMOVED when it does not (the reinstall path), untouched when the
+#     probe failed. Full reasoning at the first occurrence of this block above.
+_bd = os.environ.get("OC_BD_SUPPORTED", "unknown")
+if _bd == "yes":
+    if plugins.get("bundledDiscovery") not in ("compat", "allowlist"):
+        plugins["bundledDiscovery"] = "compat"
+        changed.append('plugins.bundledDiscovery -> "compat"')
+elif _bd == "no":
+    if "bundledDiscovery" in plugins:
+        plugins.pop("bundledDiscovery", None)
+        changed.append("plugins.bundledDiscovery REMOVED (not in this OpenClaw's schema)")
 
 # 2) load.paths -> abs plugin dir (dedup) + PRUNE stale workspace-relative paths.
 load = plugins.setdefault("load", {})
