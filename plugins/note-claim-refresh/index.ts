@@ -109,6 +109,45 @@ const GRACE_NO_PATH_MS = 30 * 60 * 1000; // 30 minutes
 // Keyed by sessionKey (not agentId) so concurrent sessions don't share buckets.
 const lastRefreshBySession = new Map<string, number>();
 
+// Notes THIS session has actually touched (module-scoped, keyed by sessionKey).
+//
+// WHY THIS EXISTS (bugfix 2026-11-05 — blanket-refresh starvation):
+//   The claimant string is `live-session-<agentId>`, which is per-AGENT, not
+//   per-SESSION. So notesClaimedBy() cannot tell a claim made by THIS live
+//   session from a leftover claim written by a session that died days ago —
+//   they are byte-identical. Tier 1 then refreshed EVERY note in that set on
+//   any tool call touching the workspace.
+//   MEASURED 2026-11-05 (analyst workspace): the session touched 1 note, yet
+//   all 12 project notes carried claimed_at of the SAME second, and
+//   claim_note.sh returned exit 3 (BUSY) for a note nobody was working on.
+//   Net effect: every live session resurrected every stale claim, the 30-min
+//   window could never elapse, and the Advancer skipped all notes forever.
+//   Git shows claims frozen on some notes since 2026-09-07.
+//
+// THE RULE: refresh only what this session has DEMONSTRABLY touched. A claim
+// this session never took is not ours to keep warm — let it age out so the
+// Advancer (or another session) can take it. This mirrors the same targeted-
+// not-blanket fix already applied to the dinomem-open-notes bootstrap hook.
+//
+// Process-lifetime memo, same as lastRefreshBySession: on restart the set is
+// empty, so nothing is refreshed until this session touches a note again —
+// fail-OPEN toward releasing claims, which is the safe direction here.
+const notesTouchedBySession = new Map<string, Set<string>>();
+
+function recordTouchedNotes(sessionBucket: string, pathArgs: string[]): void {
+  const notes = pathArgs.filter((p) => {
+    const base = path.basename(p);
+    return base.startsWith("_note_") && base.endsWith(".md");
+  });
+  if (notes.length === 0) return;
+  let set = notesTouchedBySession.get(sessionBucket);
+  if (!set) {
+    set = new Set<string>();
+    notesTouchedBySession.set(sessionBucket, set);
+  }
+  for (const n of notes) set.add(path.resolve(n));
+}
+
 // First candidate whose scripts/claim_note.sh and memory/ both exist on disk.
 function resolveWorkspace(
   candidates: Array<string | undefined>,
@@ -303,8 +342,25 @@ export default definePluginEntry({
           const pathArgs = extractPathArgs(event);
           const hasWorkspacePath = toolCallTouchesWorkspace(pathArgs, ws);
 
+          // OWNERSHIP FILTER (see notesTouchedBySession): the claimant string is
+          // per-agent, so `held` also contains stale claims from DEAD sessions.
+          // Refreshing those is what starved the Advancer. Keep warm only notes
+          // this session actually touched.
+          recordTouchedNotes(throttleKey, pathArgs);
+          const touched = notesTouchedBySession.get(throttleKey);
+          const ours = held.filter(
+            (h) => touched?.has(path.resolve(h.notePath)) ?? false,
+          );
+
+          if (ours.length === 0) {
+            // Every held claim belongs to some earlier/other session. Do NOT
+            // resurrect them — stamp the throttle and let them age out.
+            lastRefreshBySession.set(throttleKey, now);
+            return;
+          }
+
           const toRefresh: string[] = [];
-          for (const { notePath, claimedAt } of held) {
+          for (const { notePath, claimedAt } of ours) {
             if (hasWorkspacePath) {
               // Tier 1: strong signal — always refresh
               toRefresh.push(notePath);
