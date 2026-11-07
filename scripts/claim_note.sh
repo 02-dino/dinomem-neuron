@@ -96,11 +96,28 @@ claim_state() {
   echo held
 }
 
+# Temp-file hygiene. WHY: mktemp'd "<note>.claim.XXXXXX" files used to be left behind
+# whenever the process died between mktemp and mv (measured 2026-11-07: 71 orphans in
+# memory/, Oct 6 -> Nov 6, which also made Daily Note Review see phantom notes).
+# EXIT trap removes ours (rm is a no-op once mv consumed it); the sweep reaps orphans
+# from SIGKILLed runs, where no trap can fire. 60min >> any live write (ms), so an
+# in-flight sibling is never touched.
+_TMPS=()
+_cleanup_tmps() { [ "${#_TMPS[@]}" -gt 0 ] && rm -f "${_TMPS[@]}" 2>/dev/null; return 0; }
+trap _cleanup_tmps EXIT
+# Sets global TMP_NEW instead of echoing: callers must NOT use $(mk_tmp) -- command
+# substitution runs in a subshell, so the _TMPS append would be lost and the EXIT trap
+# would have nothing to remove (caught by the failure-path test, 2026-11-07).
+mk_tmp() { TMP_NEW="$(mktemp "${note}.claim.XXXXXX")" || return 1; _TMPS+=("$TMP_NEW"); }
+sweep_stale_tmps() {
+  find "$(dirname "$note")" -maxdepth 1 -type f -name "$(basename "$note").claim.??????" -mmin +60 -delete 2>/dev/null || true
+}
+
 # Rewrite frontmatter with new claimed_by/claimed_at (or strip them when by="").
 # Ensures a --- frontmatter block exists; injects one if absent.
 write_claim() {
   local by="$1" at="$2"
-  local tmp; tmp="$(mktemp "${note}.claim.XXXXXX")"
+  local tmp; mk_tmp; tmp="$TMP_NEW"
   if head -1 "$note" | grep -qx -- '---'; then
     # Format 1 (YAML fenced): drop prior claim lines, re-insert before closing ---.
     awk -v by="$by" -v at="$at" '
@@ -198,6 +215,7 @@ run_locked() {
     exec 9>"$lockfile"
     flock 9
   fi
+  sweep_stale_tmps
   "$@"
 }
 
@@ -236,7 +254,7 @@ do_refresh() {
 # untouched.
 strip_empty_frontmatter() {
   if [ "$(sed -n '1p' "$note")" = "---" ] && [ "$(sed -n '2p' "$note")" = "---" ]; then
-    local tmp; tmp="$(mktemp "${note}.claim.XXXXXX")"
+    local tmp; mk_tmp; tmp="$TMP_NEW"
     # drop lines 1-2 (the empty block) and a single following blank line if present
     awk 'NR<=2{next} NR==3 && $0==""{next} {print}' "$note" > "$tmp"
     mv -f "$tmp" "$note"

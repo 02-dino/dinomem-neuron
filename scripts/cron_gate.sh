@@ -113,9 +113,14 @@ if [ -n "$DAILY_NOTE_REVIEW_ID" ] && [ -f "$SCRIPTS/check_daily_notes.sh" ]; the
   fi
 fi
 
-if [ "${#triggered[@]}" -eq 0 ]; then
-  echo "NO_REPLY"
-else
-  echo "cron_gate: triggered ${triggered[*]}"
+# stdout is ALWAYS exactly NO_REPLY. WHY: a trigger tick used to print
+# "cron_gate: triggered advancer" -- plain text that the delivery layer treats as a
+# message. If the live gate's delivery ever drifts from none to announce (measured
+# 2026-11-07: spammed a Telegram topic every 15min), delivery:none was the ONLY thing
+# holding that text back. Trigger info goes to the log so safety no longer depends on it.
+if [ "${#triggered[@]}" -gt 0 ]; then
+  mkdir -p "$WS/logs" 2>/dev/null || true
+  echo "$(date -u +%FT%TZ) cron_gate: triggered ${triggered[*]}" >> "$WS/logs/cron_gate.log" 2>/dev/null || true
 fi
+echo "NO_REPLY"
 exit 0

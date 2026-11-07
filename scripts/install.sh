@@ -3206,6 +3206,11 @@ if existing_gate:
     args = ['openclaw', 'cron', 'edit', existing_gate]
     for k, v in env.items():
         args += ['--command-env', f'{k}={v}']
+    # Re-pin delivery:none on EVERY re-run. WHY: this branch used to only merge env, so a
+    # gate whose delivery drifted to announce (measured 2026-11-07: spammed a Telegram topic
+    # every 15min) stayed drifted through reinstalls. The gate is a zero-LLM dispatcher; it
+    # has nothing to announce, workers report through their own message tool.
+    args += ['--no-deliver']
     subprocess.run(args, capture_output=True, text=True, timeout=_CLI_T)
     subprocess.run(['openclaw', 'cron', 'enable', existing_gate], capture_output=True, text=True, timeout=_CLI_T)
     print("  \033[32m[ok]\033[0m   Note Cron Gate found — merged Advancer/Improver/Deleter + Daily lanes into its env (single gate, zero double-dispatch)")
@@ -4642,6 +4647,27 @@ elif command -v openclaw >/dev/null 2>&1; then
     fi
   done
   IFS="$_IFS_SAVE"
+  # Note Cron Gate must be delivery:none. WHY: it is a zero-LLM dispatcher with nothing
+  # to announce; measured 2026-11-07 a gate drifted to announce and posted into a
+  # Telegram topic every 15min. WARN only here -- the re-install path re-pins it.
+  _GATE_DELIV="$(python3 -c '
+import json,sys
+raw=sys.stdin.read()
+try:
+    i=min(x for x in (raw.find("{"),raw.find("[")) if x>=0); d=json.loads(raw[i:])
+    d=d.get("jobs",d) if isinstance(d,dict) else d
+    m=[(j.get("delivery") or {}).get("mode","none") for j in d if j.get("name")=="Note Cron Gate"]
+    print(",".join(m))
+except Exception:
+    print("")
+' <<< "$_CRON_LIST" 2>/dev/null)"
+  if [ -z "$_GATE_DELIV" ]; then
+    :  # gate absent -> already reported by the required-lane loop above
+  elif [ "$_GATE_DELIV" = "none" ] || [ "$_GATE_DELIV" = "none,none" ]; then
+    sc_pass "Note Cron Gate delivery.mode=none (silent dispatcher)"
+  else
+    sc_warn "Note Cron Gate delivery.mode=$_GATE_DELIV (expected none) -- it will post into chat. Fix: openclaw cron edit <gate-id> --no-deliver"
+  fi
   # recommended (non-blocking)
   if grep -qiF "Daily Note Review" <<< "$_CRON_LIST"; then
     sc_pass "cron present: Daily Note Review"
