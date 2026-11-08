@@ -1662,7 +1662,7 @@ if [ "$DO_CRON" = 1 ]; then
   # Sits ABOVE the 5400s flock wait (DINOMEM_LOCK_TIMEOUT_SECS) so a legitimately-
   # queued embed job is never killed while waiting its turn — pure infinite-hang
   # guard so a stuck run can't hold the heavy-embed lock forever. Daily = no overlap.
-  GRAPH_CRON="$_L2_MIN $_L2_HR * * * DINOMEM_AGENT_ID=$AGENT_ID timeout 7200 bash $WS/scripts/dinomem_run.sh heavy-embed $WS python3 procedures/memory_graph.py >> logs/memory_graph.log 2>&1"
+  GRAPH_CRON="$_L2_MIN $_L2_HR * * * DINOMEM_AGENT_ID=$AGENT_ID timeout 7200 bash $WS/scripts/dinomem_run.sh heavy-embed $WS python3 procedures/memory_graph.py >> $WS/logs/memory_graph.log 2>&1"
   upsert_cron "memory_graph.py" "dinomem-neuron: L2 graph linking" "$GRAPH_CRON" "memory_graph cron (daily ${_L2_HR}:${_L2_MIN} UTC, staggered)"
 
   # memory_synthesis + contradiction_check — daily at 3:30 UTC (L3, reasoning=True)
@@ -1705,7 +1705,7 @@ if [ "$DO_CRON" = 1 ]; then
   # docs_ingest — daily at 4:00 UTC (RAG long docs, no-reasoning)
   # MULTI-AGENT SERIALIZATION: heavy-embed class (embedding-heavy, no LLM).
   # RUNAWAY BACKSTOP: `timeout 7200` — same rationale as memory_graph (heavy-embed lock).
-  DOCS_CRON="$_RAG_MIN $_RAG_HR * * * DINOMEM_AGENT_ID=$AGENT_ID timeout 7200 bash $WS/scripts/dinomem_run.sh heavy-embed $WS ${CHEAP_ENV}python3 procedures/docs_ingest.py >> logs/docs_ingest.log 2>&1"
+  DOCS_CRON="$_RAG_MIN $_RAG_HR * * * DINOMEM_AGENT_ID=$AGENT_ID timeout 7200 bash $WS/scripts/dinomem_run.sh heavy-embed $WS ${CHEAP_ENV}python3 procedures/docs_ingest.py >> $WS/logs/docs_ingest.log 2>&1"
   upsert_cron "docs_ingest.py" "dinomem-neuron: RAG docs re-ingest (daily)" "$DOCS_CRON" "docs_ingest cron (daily ${_RAG_HR}:${_RAG_MIN} UTC, staggered)"
   # session_ingest is triggered automatically by auto_session_reset.py (every 15 min)
   # No separate cron needed.
