@@ -72,6 +72,7 @@ while [ $# -gt 0 ]; do
     --force)          FORCE=1; shift ;;
     --agree)          LICENSE_AGREED=1; shift ;;
     --no-auto-base)   NO_AUTO_BASE=1; shift ;;
+    --restart-tei)    export TEI_RESTART=force; shift ;;
     --no-git-snapshot) NO_GIT_SNAPSHOT=1; shift ;;
     --git-snapshot)   NO_GIT_SNAPSHOT=0; shift ;;
     --dry-run)        DRY_RUN=1; shift ;;
@@ -1510,6 +1511,14 @@ fi  # end REPAIR-CRON FAST PATH (heavy phases)
 if [ "$REPAIR_CRON" = 1 ]; then
   hr "repair-cron mode"
   ok "skipping base/pip/TEI/copy/config phases — re-registering crons only"
+  # Exception: TEI zero-swap reconcile. Repair skips the base installer, so
+  # without this an old box only converges on a full reinstall. Same lib the
+  # base uses (one copy, synced by the base clone); restart only if swapped.
+  _trlib="$OPENCLAW_DIR/dinomem/scripts/lib/tei_reconcile.sh"
+  if [ -f "$_trlib" ]; then
+    # shellcheck source=/dev/null
+    . "$_trlib"; tei_reconcile "${TEI_RESTART:-auto}"
+  fi
 fi
 
 # ── 3) Register cron jobs ─────────────────────────────────────────────────────
