@@ -73,13 +73,15 @@ untouched — they already report usable spread.
   mixed-language recall silently fail-opened. The spread guard stays either way.
   Cost: bge is ~568M params vs ~22M; on CPU it takes **minutes** to warm up, and
   during that window `/health` is down and the leg fail-opens.
-- **FALLBACK LADDER:** TEI → *(opt-in)* LLM listwise rerank on the agent's
-  **primary** model (`agents.defaults.model.primary` in openclaw.json) → `None`.
-  Enable with `DINOMEM_RERANK_LLM_FALLBACK=1`; pin a model with
-  `DINOMEM_RERANK_LLM_MODEL`. Off by default because a gateway round-trip
-  measured ~35 s on a loaded box — fine as a bridge while bge warms up, wrong as
-  a tax on every recall. Primary not cheap tier: ordering passages is judgement,
-  the cheap tier is for throwaway generation (HyDE, extraction).
+- **FALLBACK LADDER:** TEI → LLM listwise rerank → `None`. **On by default**
+  (`DINOMEM_RERANK_LLM_FALLBACK=0` disables): the contract is "a recall is
+  reranked", so TEI down should mean a slow recall, not a silently unreranked
+  one. Model: `DINOMEM_RERANK_LLM_MODEL` → **cheap tier** (the compaction anchor
+  via `procedures/_cheap_model`) → `agents.defaults.model.primary`. Cheap first
+  because ordering 8 × 400-char passages is not reasoning, and a default-on
+  fallback across every workspace + cron must not leak primary spend. It is a
+  BRIDGE: a gateway round-trip measured ~35 s on a loaded box — if it fires on
+  every recall, fix the container, not the flag.
   Self-test the whole contract with `python3 tools/_rerank.py --selftest`.
 
 **When to still reach a single leg DIRECTLY** (skip the fusion): you already know

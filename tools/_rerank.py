@@ -29,17 +29,20 @@ THE NON-OBVIOUS GOTCHA — two guards that exist because of measurements:
      indistinguishable from "all equally irrelevant", so MIN_SPREAD returns
      None there rather than committing to a confident random permutation.
 
-FALLBACK LADDER (2026-11-11): TEI cross-encoder -> LLM listwise rerank on the
-agent's PRIMARY model (agents.defaults.model.primary in openclaw.json) -> None.
-The LLM leg is OPT-IN (DINOMEM_RERANK_LLM_FALLBACK=1). WHY opt-in: bge-v2-m3
-takes minutes to warm up on CPU, and a default-on fallback would spend a ~35s
-primary-model call (measured) on EVERY recall during that window for what is
-otherwise a 2s operation. WHY the primary and not the cheap/compaction tier: ordering
-passages against a query is a judgement task; the cheap tier exists for
-throwaway generation (HyDE, extraction).
+FALLBACK LADDER (2026-11-11): TEI cross-encoder -> LLM listwise rerank -> None.
+The LLM leg is ON by default (DINOMEM_RERANK_LLM_FALLBACK=0 disables): the
+contract is "a recall is reranked", so TEI being down (bge-v2-m3 takes minutes
+to warm on CPU) should be a slow recall, not a silently unreranked one. It is a
+BRIDGE: a gateway round-trip measured ~35s on a loaded box, so if this fires on
+every recall the fix is the container, not the flag.
+MODEL: DINOMEM_RERANK_LLM_MODEL -> cheap tier (procedures/_cheap_model, the
+compaction anchor) -> agents.defaults.model.primary -> none. Cheap first because
+ordering 8 x 400-char passages is not a reasoning task, and a default-on
+fallback across every workspace + cron must not leak primary-model spend while
+TEI is down; primary only when no cheap model is configured.
 
 OPTIONAL INFRA: the TEI reranker (docker-compose.tei-rerank.yml in dinomem base)
-may simply not be running. Without the LLM fallback that is a no-op, not an error.
+may simply not be running. With the LLM leg disabled that is a no-op, not an error.
 """
 
 from __future__ import annotations
@@ -67,14 +70,14 @@ HEALTH_TIMEOUT = float(os.environ.get("DINOMEM_RERANK_HEALTH_TIMEOUT", "1.5"))
 # Below this top-to-bottom gap the model has no opinion (see gotcha 2).
 MIN_SPREAD = float(os.environ.get("DINOMEM_RERANK_MIN_SPREAD", "0.01"))
 
-# LLM listwise fallback. Off by default (see FALLBACK LADDER in the header).
-LLM_FALLBACK = os.environ.get("DINOMEM_RERANK_LLM_FALLBACK", "0") == "1"
+# LLM listwise fallback. ON by default (see FALLBACK LADDER in the header).
+LLM_FALLBACK = os.environ.get("DINOMEM_RERANK_LLM_FALLBACK", "1") != "0"
 # MEASURED 2026-11-11 (load ~14 on 8 cores): a trivial `openclaw infer model
 # run --gateway` round-trip is 34s wall, 21s of it the Node CLI booting. A 30s
 # default sat INSIDE that band and the selftest failed -- same trap as the TEI
 # TIMEOUT above. Must clear the slowest measured call with headroom.
 LLM_TIMEOUT = float(os.environ.get("DINOMEM_RERANK_LLM_TIMEOUT", "60"))
-# DINOMEM_RERANK_LLM_MODEL pins a model; empty -> openclaw.json primary.
+# DINOMEM_RERANK_LLM_MODEL pins a model; empty -> cheap tier -> primary.
 _LLM_MODEL_ENV = "DINOMEM_RERANK_LLM_MODEL"
 
 _health: bool | None = None  # per-process memo; a down container stays down
@@ -106,10 +109,11 @@ def available() -> bool:
     return _health
 
 
-def _primary_model() -> str:
-    """agents.defaults.model.primary from the openclaw.json THIS agent runs on.
-    Path comes from procedures/_cheap_model.config_path() so the multi-instance
-    OPENCLAW_CONFIG_PATH fix lives in exactly one place (see that module)."""
+def _llm_model() -> str:
+    """Env pin -> cheap tier -> agents.defaults.model.primary -> "".
+    Both the cheap resolver and the config path come from
+    procedures/_cheap_model, so the compaction anchor and the multi-instance
+    OPENCLAW_CONFIG_PATH fix live in exactly one place (see that module)."""
     env = os.environ.get(_LLM_MODEL_ENV, "").strip()
     if env:
         return env
@@ -120,6 +124,9 @@ def _primary_model() -> str:
         spec = _ilu.spec_from_file_location("_cheap_model", hp)
         mod = _ilu.module_from_spec(spec)
         spec.loader.exec_module(mod)
+        cheap = (mod.cheap_model() or "").strip()
+        if cheap:
+            return cheap
         with open(mod.config_path()) as f:
             cfg = json.load(f)
         m = cfg.get("agents", {}).get("defaults", {}).get("model", {})
@@ -146,7 +153,7 @@ def llm_rerank_scores(query: str, texts: list[str]) -> list[float] | None:
     never a half-trusted permutation."""
     if not texts or not query:
         return None
-    model = _primary_model()
+    model = _llm_model()
     if not model:
         return None
     n = len(texts)
@@ -184,7 +191,7 @@ def rerank_scores(query: str, texts: list[str]) -> list[float] | None:
     its own ordering for the tail, which is why alignment — not a sorted list —
     is the return contract.
 
-    Ladder: TEI -> (opt-in) LLM listwise on the primary model -> None.
+    Ladder: TEI -> LLM listwise (default on; cheap tier, else primary) -> None.
     """
     if not texts or not query:
         return None
@@ -257,7 +264,7 @@ def _selftest() -> int:
     print(f"reranker url={_base()} enabled={enabled()} available={available()}")
     print(f"caps: max_texts={MAX_TEXTS} max_chars={MAX_CHARS} "
           f"timeout={TIMEOUT}s min_spread={MIN_SPREAD} "
-          f"llm_fallback={LLM_FALLBACK} llm_model={_primary_model() or '-'}")
+          f"llm_fallback={LLM_FALLBACK} llm_model={_llm_model() or '-'}")
     q = "what is the rule about owner language and reply style"
     docs = ["Owner prefers Indonesian, concise replies under 2000 characters.",
             "The vendor contract renews in March at the old rate.",
