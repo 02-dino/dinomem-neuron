@@ -65,11 +65,21 @@ untouched — they already report usable spread.
   kept — reranker down, slow, malformed, or signal-collapsed all cost nothing.
   Disable explicitly with `DINOMEM_RERANK=0` (the leg's cache key encodes this,
   so an A/B flip can't silently replay the other mode's cached ordering).
-- **LANGUAGE CAVEAT — ms-marco-MiniLM is an ENGLISH model.** Controlled decoy
-  test: EN query → EN doc scored 0.4263 (correct order); ID query → ID doc
-  0.1919 (order still correct); but EN query → ID corpus collapsed to 0.0002
-  spread, i.e. signal gone. Cross-language querying is where this degrades —
-  and fail-open means it degrades to the old heuristic ordering, not to garbage.
+- **MODEL — `BAAI/bge-reranker-v2-m3` (multilingual) since 2026-11-11,** shipped
+  by dinomem base `docker/docker-compose.tei-rerank.yml`. It replaced
+  `cross-encoder/ms-marco-MiniLM-L-6-v2`, which is ENGLISH-ONLY: controlled decoy
+  test EN query → EN doc 0.4263 (correct order); ID → ID 0.1919 (still correct);
+  EN query → ID corpus collapsed to 0.0002 spread, i.e. signal gone — so every
+  mixed-language recall silently fail-opened. The spread guard stays either way.
+  Cost: bge is ~568M params vs ~22M; on CPU it takes **minutes** to warm up, and
+  during that window `/health` is down and the leg fail-opens.
+- **FALLBACK LADDER:** TEI → *(opt-in)* LLM listwise rerank on the agent's
+  **primary** model (`agents.defaults.model.primary` in openclaw.json) → `None`.
+  Enable with `DINOMEM_RERANK_LLM_FALLBACK=1`; pin a model with
+  `DINOMEM_RERANK_LLM_MODEL`. Off by default because a gateway round-trip
+  measured ~35 s on a loaded box — fine as a bridge while bge warms up, wrong as
+  a tax on every recall. Primary not cheap tier: ordering passages is judgement,
+  the cheap tier is for throwaway generation (HyDE, extraction).
   Self-test the whole contract with `python3 tools/_rerank.py --selftest`.
 
 **When to still reach a single leg DIRECTLY** (skip the fusion): you already know
