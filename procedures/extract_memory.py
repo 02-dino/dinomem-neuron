@@ -89,6 +89,17 @@ def _source_id_from_archive(filename):
 from pathlib import Path
 from datetime import datetime, timedelta
 
+# Two-tier semantic git-commit subjects (same fail-open import as memory_promote.py /
+# valid_time.py). It was CALLED in the cross-head dedup branch but never imported, so the
+# first world-fact that hit that branch raised NameError and killed the whole extraction
+# run (15 crashes on a live box, 2026-11-12..14). commit_reason.py ships with base
+# dinomem, not neuron -> the fallback is a no-op when base is absent.
+try:
+    from commit_reason import drop as _drop_commit_reason  # base procedures/
+except Exception:
+    def _drop_commit_reason(_reason):  # noqa: E704 - cosmetic no-op fallback
+        return False
+
 # --- orphan-free subprocess (added 2026-10-19) ------------------------------
 # WHY: subprocess.run(timeout=N) kills ONLY the direct child. The openclaw CLI
 # spawns its own `openclaw-infer` worker (400-550MB); killing just the CLI left
