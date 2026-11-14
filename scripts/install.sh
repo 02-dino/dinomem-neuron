@@ -1099,6 +1099,14 @@ py_can_import yaml && skip "pyyaml (installed)" || (
   pip_install tree-sitter-language-pack && ok "tree-sitter-language-pack — code-graph layer ON" \
     || warn "tree-sitter install failed — code_graph / code_query OFFLINE (rest of neuron unaffected). Fix: $PY -m pip install tree-sitter-language-pack  (add --break-system-packages if PEP-668)"
 )
+# ── networkx (brain visualization) — fail-soft, mirrors tree-sitter ──────────
+# procedures/brain_viz.py renders memory_graph.json as one self-contained HTML
+# (Louvain clusters + layout need networkx). OPTIONAL: missing -> only brain_viz
+# is offline; it exits with this same fix hint. Nothing else imports networkx.
+py_can_import networkx && skip "networkx (installed) — brain_viz ON" || (
+  pip_install networkx && ok "networkx — brain_viz ON" \
+    || warn "networkx install failed — brain_viz OFFLINE (rest of neuron unaffected). Fix: $PY -m pip install networkx  (add --break-system-packages if PEP-668)"
+)
 py_can_import googleapiclient && skip "google-api-python-client (installed)" || (
   pip_install google-api-python-client google-auth google-auth-oauthlib google-auth-httplib2 && ok "google-api-python-client" || warn "google-api-python-client install failed"
 )

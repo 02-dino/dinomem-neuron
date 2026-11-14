@@ -396,6 +396,15 @@ That `card` verb is the fastest way to orient in an unfamiliar file — still **
 
 **On par with docs.** Just like `docs_ingest` refreshes long docs daily, a daily git-incremental cron (`code_graph_refresh`) keeps the graph current — no manual rebuild. And `hybrid_recall` gains a **CODE leg**: ask *"what does `memory_promote` do **and** why does it exist?"* and it fuses the code hits (structure, `file:line`) with the memory/graph "why" (the design decision behind it) in one answer — something neither plain code-search nor plain memory can do alone. Optional dependency: if tree-sitter isn't installed the code graph simply goes offline (fail-soft) and the rest of neuron is unaffected.
 
+### See your agent's brain
+
+```bash
+python3 procedures/brain_viz.py            # -> kb/memory_neuron/brain.html (full node text)
+python3 procedures/brain_viz.py --redact   # every word becomes a bar -- safe to screenshot/share
+```
+
+One self-contained HTML file, opened in any browser — no server, no npm, no port. It draws the **real** memory graph built nightly by `memory_graph.py`: node size = real degree, colour = real Louvain cluster, and the travelling signals only move along real edges (only their timing is random). Tap a node for its kind, synapse count and text; drag, pinch / scroll to zoom. Layout is computed offline (seconds, zero LLM) so ~2,400 nodes stay smooth on a phone. `--redact` strips the text **before** writing, so it is absent from the file, not hidden by CSS. Needs `networkx` (installed by the installer as an optional extra; if missing, only this command is offline).
+
 ### Automatic note creation
 
 Base note creation is user-driven ("remember to X"). Neuron makes it automatic on three triggers:
@@ -591,6 +600,7 @@ python3 benchmark/run_all.py --source . \
 │   ├── generate_topic_index.py # L4 — topic index + MEMORY.md enrichment
 │   ├── docs_ingest.py          # RAG — ingest long docs
 │   ├── code_graph.py           # Code-structure graph — ZERO-LLM AST indexer (tree-sitter, git-incremental)
+│   ├── brain_viz.py            # Brain visualization — memory graph -> one self-contained HTML (--redact for shareable)
 │   ├── data_register.py        # Structured data — register csv/json/parquet into the DuckDB store + catalog
 │   ├── skill_extract.py        # Behavior Promotion — distill patterns from projects/L3/PERSISTENT.md; route to skill (auto) / hook / cron (staged)
 │   └── run_log.py              # Per-run audit trail — append-only JSONL log for all cron scripts
