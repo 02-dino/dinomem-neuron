@@ -3642,6 +3642,29 @@ job = {
     "delivery": {"mode": "none"}
 }
 upsert_gated(job, "daily_note_review", "daily_note_review", "$WS/.cron_ids", "GATE_DAILY_NOTE_REVIEW_ID")
+
+# ── Stall Rescuer — gate-driven agentTurn (lane 5 of Note Cron Gate) ─────────────
+# Restarts spawned subagents that DIED unnoticed (check_stalls.sh -> stall_watch.py
+# decides $0; this LLM turn only runs on a genuine, not-yet-handled stall). The
+# prompt lives in templates/ (one source for install AND live sync), placeholder
+# baked here. Missing template -> skip the lane, never abort the heredoc.
+_rp = "$SKILL_DIR/templates/stall_rescuer_prompt.md"
+if os.path.isfile(_rp):
+    job = {
+        "name": "Stall Rescuer",
+        "schedule": {"kind": "cron", "expr": "*/15 * * * *", "tz": "UTC"},
+        "payload": {
+            "kind": "agentTurn",
+            "message": open(_rp).read().replace("DINOMEM_WORKSPACE_PLACEHOLDER", "$WS"),
+            "lightContext": True,
+            "timeoutSeconds": 600
+        },
+        "sessionTarget": "isolated",
+        "delivery": {"mode": "none"}
+    }
+    upsert_gated(job, "stall_rescuer", "stall_rescuer", "$WS/.cron_ids", "GATE_STALL_RESCUER_ID")
+else:
+    print("  \033[33m[warn]\033[0m templates/stall_rescuer_prompt.md missing — Stall Rescuer lane not registered")
 PYEOF
 fi  # end DO_CRON guard (hoisted from after project_advancer; --no-cron now skips ALL cron installs, INVESTIGATE_FIRST stays in scope)
 

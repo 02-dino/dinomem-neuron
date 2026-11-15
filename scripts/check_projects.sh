@@ -41,6 +41,13 @@ fi
 # on its own terms; each note's floor elapses independently. Falls back to the
 # aggregate guard if the per-note primitive is absent (old base lib).
 # Same v2 pattern as check_daily_notes.sh / check_ideator.sh.
+# KNOWN BLIND SPOT, BY DESIGN (2026-11-16): a note frozen because its spawned
+# `worker:` subagent DIED looks identical to an intentional pause here (measured:
+# a ~6h overnight stall). That case is NOT fixed in this guard on purpose -- it is
+# owned by the Stall Rescuer lane (check_stalls.sh -> stall_watch.py), which reads
+# the session store, releases the dead claim and respawns ONE worker with the
+# lesson. Waking the Advancer on the same note as well would put two workers on
+# one note (the exact clobber the one-worker-one-note rule forbids).
 SCRIPTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=_gate_refire_guard.sh
 source "$SCRIPTS_DIR/_gate_refire_guard.sh"

@@ -614,6 +614,8 @@ python3 benchmark/run_all.py --source . \
 │   ├── check_projects.sh       # zero-LLM pre-gate for Project Advancer (any in_progress project?)
 │   ├── check_improvable.sh     # zero-LLM pre-gate for Project Improver (any done-unverified project?)
 │   ├── check_deletable.sh      # zero-LLM pre-gate for Verified Note Deleter (any verified:true note?)
+│   ├── check_stalls.sh         # zero-LLM pre-gate for Stall Rescuer (a spawned subagent died and nobody picked it up?)
+│   ├── stall_watch.py          # stall engine: sessions.json scan, resolved-vs-genuine rules, fire-once ledger, selftest
 │   └── resolve_done_notes.py   # deterministic verified-note deleter (snapshot + promote + claim-aware lock)
 ├── topics/
 │   ├── INDEX.md                # Auto-generated topic tree (do not edit)

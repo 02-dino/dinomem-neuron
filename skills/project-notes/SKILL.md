@@ -114,6 +114,10 @@ only as durable as the note the worker writes to.
   `release` a claim left by the dead worker (it otherwise blocks for the full
   live-session window), (3) re-spawn with the note path and "resume from
   `current_step`", not a restated from-scratch brief.
+  The **Stall Rescuer** cron (lane 5 of Note Cron Gate, `scripts/check_stalls.sh`)
+  does this automatically ~40 min after an unresolved death (max 2 restarts per
+  job per day, then it tells you). Keep `worker: <subagent session key>` on the
+  note and put the note path FIRST in the brief, so the rescuer links them.
 - **Concurrent workers on one codebase:** give each an explicit file-ownership
   list in its note (`rulings:`); a finding in the other worker's files is
   PROPOSED in the report, not edited. Only one worker builds/restarts a shared

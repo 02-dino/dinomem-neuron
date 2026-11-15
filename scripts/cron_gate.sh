@@ -46,6 +46,7 @@ IMPROVER_ID="${GATE_IMPROVER_ID:-}"
 DELETER_ID="${GATE_DELETER_ID:-}"
 IDEATOR_ID="${GATE_IDEATOR_ID:-}"
 DAILY_NOTE_REVIEW_ID="${GATE_DAILY_NOTE_REVIEW_ID:-}"
+STALL_RESCUER_ID="${GATE_STALL_RESCUER_ID:-}"
 
 # Locate the openclaw CLI (cron command jobs run with the Gateway's PATH, but be safe).
 OPENCLAW_BIN="${OPENCLAW_BIN:-$(command -v openclaw || true)}"
@@ -110,6 +111,18 @@ fi
 if [ -n "$DAILY_NOTE_REVIEW_ID" ] && [ -f "$SCRIPTS/check_daily_notes.sh" ]; then
   if bash "$SCRIPTS/check_daily_notes.sh"; then
     trigger "daily-note-review" "$DAILY_NOTE_REVIEW_ID"
+  fi
+fi
+
+# Lane 5 — Stall Rescuer: a spawned subagent DIED (failed/timeout/ghost) and
+# nothing resolved it. SESSION-driven, unlike lane 1: a dead worker's frozen note
+# looks exactly like an intentional pause to check_projects.sh, and some dead
+# workers have no note at all. check_stalls.sh records each stall in its ledger
+# (fires once); stdout is the JSON list, discarded here because this dispatcher
+# must only ever print NO_REPLY — the rescuer re-reads it via `stall_watch.py pending`.
+if [ -n "$STALL_RESCUER_ID" ] && [ -f "$SCRIPTS/check_stalls.sh" ]; then
+  if bash "$SCRIPTS/check_stalls.sh" >/dev/null; then
+    trigger "stall-rescuer" "$STALL_RESCUER_ID"
   fi
 fi
 
