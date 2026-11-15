@@ -400,9 +400,43 @@ def extract_entity_nodes(memory_dir):
     # Fail-open: if the resolver import fails, fall back to raw surface forms (old behavior).
     try:
         from entity_resolver import resolve_entities  # noqa: E402
-        return resolve_entities(raw)
+        resolved = resolve_entities(raw)
     except Exception:
-        return raw
+        resolved = raw
+    # PEERS (2026-11-15): memory/peers/<platform>_<id>.md never carries [entity] lines (schema =
+    # frontmatter + ## FACTS/## BEAT), so the loop above saw 0 of them and people were absent
+    # from the entity layer. One peer file = one `person` entity keyed by the composite
+    # platform:id (bare ids collide across platforms). Appended AFTER the resolver on purpose:
+    # composite keys are already canonical, and resolve_entities() rebuilds each dict from a
+    # fixed key set, which would drop `match_terms`. No peers dir -> no-op.
+    return resolved + _peer_entities(Path(memory_dir) / "peers")
+
+
+def _peer_entities(peers_dir):
+    """One `person` entity per memory/peers/*.md, read from its frontmatter. Fail-soft."""
+    out = []
+    for f in sorted(Path(peers_dir).glob("*.md")):
+        try:
+            head = f.read_text(encoding="utf-8").split("\n---", 1)[0]
+        except Exception:
+            continue
+        meta = {}
+        for line in head.splitlines():
+            m = re.match(r'^(platform|platform_id|type|handle):\s*"?([^"#\s]*)', line.strip())
+            if m:
+                meta[m.group(1)] = m.group(2)
+        plat, pid = meta.get("platform"), meta.get("platform_id")
+        if meta.get("type") != "peer" or not plat or not pid:
+            continue
+        # match_terms = what other memories actually write when they mention this person: the
+        # bare id and the @handle. Short terms are dropped: a 3-digit id substring-hits unrelated
+        # numbers (measured: a truncated `108` hit 179 chunks). Display names are NOT used -- too
+        # often a common word or "unknown".
+        terms = [t for t in (pid, meta.get("handle", "").lstrip("@"))
+                 if t and len(t.lstrip("+")) >= (6 if t.lstrip("+").isdigit() else 4)]
+        out.append({"name": f"{plat}:{pid}", "type": "person", "mentions": 1,
+                    "match_terms": terms, "source": "peers"})
+    return out
 
 
 def extract_relation_edges(memory_dir, nodes, entity_nodes=None):
@@ -1090,7 +1124,13 @@ def main():
         # entity_edges kept on the OLD ratio>=0.75 rule so that legacy consumer is unchanged.
         for ent in entity_nodes:
             name_lower = ent["name"].lower()
-            containing = [i for i, nt in enumerate(node_texts) if name_lower in nt]
+            if "match_terms" in ent:  # peer entity: word-bounded id match, never bare substring
+                _pats = [re.compile(r'(?<![0-9a-z])' + re.escape(t.lower()) + r'(?![0-9a-z])')
+                         for t in ent["match_terms"]]
+                containing = [i for i, nt in enumerate(node_texts)
+                              if _pats and any(p.search(nt) for p in _pats)]
+            else:
+                containing = [i for i, nt in enumerate(node_texts) if name_lower in nt]
             if containing:
                 # highest-degree containing chunk = most central representative
                 ent["node_idx"] = max(containing, key=lambda i: nodes[i].get("degree", 0))
