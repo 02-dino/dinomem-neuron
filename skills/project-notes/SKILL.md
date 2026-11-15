@@ -92,6 +92,32 @@ rulings:
   `resume_state`; it works in clean context; the parent waits for the completion event.
 - **resume:** a new session reads the note, jumps to `current_step`, and resumes
   from `resume_state` ONLY — no reliance on chat history.
+## Subagent delegation (parent + worker rules)
+A spawned worker can die mid-run (gateway restart, timeout, crash) and its chat
+context dies with it. The note is the ONLY thing that survives, so delegation is
+only as durable as the note the worker writes to.
+- **Note BEFORE spawn (parent):** any delegated build/audit that trips the
+  estimate gate gets its OWN project note written by the parent BEFORE
+  `sessions_spawn` — steps, `resume_state`, `rulings` (owner constraints go
+  here), plus `parent:` / `worker:` lines. The spawn brief names the note path.
+  A brief that only says "append a summary line at the end" is NOT a note:
+  a crash before the end loses everything.
+- **One worker, one note:** never point two concurrent workers at the same note
+  (the claim lock makes the second one fail with exit 3, or they clobber). A
+  worker must not claim a shared/umbrella note; the PARENT appends the summary
+  line to the umbrella note after the worker reports DONE.
+- **Worker checkpoints per step:** claim its note first (note-claim skill), then
+  after EVERY step: tick `[x]`, bump `current_step`, rewrite `resume_state` with
+  what is on disk + what is next. Release the claim when done.
+- **Dead worker (parent):** before re-spawning, (1) inspect what is actually on
+  disk (mtimes / git diff) — never assume, (2) `claim_note.sh check` and
+  `release` a claim left by the dead worker (it otherwise blocks for the full
+  live-session window), (3) re-spawn with the note path and "resume from
+  `current_step`", not a restated from-scratch brief.
+- **Concurrent workers on one codebase:** give each an explicit file-ownership
+  list in its note (`rulings:`); a finding in the other worker's files is
+  PROPOSED in the report, not edited. Only one worker builds/restarts a shared
+  service; the other verifies with static checks.
 
 **Mandatory:** after every step, rewrite `resume_state` so the note is
 self-sufficient. This is the reliability linchpin — the open-notes bootstrap hook

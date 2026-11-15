@@ -42,6 +42,15 @@ re-opens the clobber race).
   bash DINOMEM_WORKSPACE_PLACEHOLDER/scripts/claim_note.sh release <note>
   ```
 
+## Subagents (spawned workers)
+- A worker claims ONLY its own project note, with claimant `live-session-<taskName>`.
+  Never a shared/umbrella note — two workers on one note = exit 3 or clobber.
+- A worker that dies (gateway restart / timeout) leaves its claim behind, and it
+  blocks everyone for the full live-session window. The PARENT, before
+  re-spawning: `claim_note.sh check <note>` → if held by the dead worker,
+  `claim_note.sh release <note>`, then re-spawn pointing at the note.
+- Full parent/worker rules: project-notes skill → "Subagent delegation".
+
 ## Why it matters
 
 The claim lock is otherwise only honored cron-vs-cron. Without the live-session
