@@ -44,12 +44,16 @@ KINDS = ["memory", "decision", "insight", "relation", "entity", "source",
          "note", "operational", "preference", "pin", "correction", "user"]
 KIND_RE = re.compile(r"^(?:\d{4}-\d{2}-\d{2}(?:-\d+)?_)?_?([a-z]+)")
 TOK = re.compile(r"\S+")
+# Platforms whose peer files are memory/peers/<platform>_<id>.md (extract_user.composite_key).
+# ONE list drives both the "user" colour and the peer pull-in below.
+PEER_PLATFORMS = ("telegram", "discord", "whatsapp", "signal", "slack", "peer", "peers")
+PEER_FILE = re.compile(r"^(?:.*/)?(?:peers/)?(?:%s)_[^/_]+\.md$" % "|".join(PEER_PLATFORMS))
 
 
 def kind_of(fname: str) -> int:
     m = KIND_RE.match(fname or "")
     k = m.group(1) if m else ""
-    if k in ("telegram", "discord", "whatsapp", "peer", "peers"):
+    if k in PEER_PLATFORMS:
         k = "user"
     return KINDS.index(k) if k in KINDS else 0
 
@@ -69,9 +73,19 @@ def bars(text: str, max_words: int = 14) -> str:
     return " ".join(out) or "2"
 
 
-def pick_subgraph(nx, G, max_nodes: int) -> list:
+PEER_HOPS = 9  # peers sit 2-8 hops out of the hub core (measured on a live box: a 5-hop cap reached 3/17)
+
+
+def pick_subgraph(nx, G, max_nodes: int, byidx: dict | None = None) -> list:
     """Best-first growth from the biggest hub. A plain top-N-by-degree cut
-    shatters the graph into islands; growing along real edges keeps one brain."""
+    shatters the graph into islands; growing along real edges keeps one brain.
+
+    Then every PERSON (memory/peers/<platform>_<id>.md, the composite key
+    extract_user.py writes) is pulled in: ONE closest chunk per peer file plus
+    its shortest path to the kept set. Peer chunks are low-degree, so hub-first
+    growth alone never reaches them (0/68 measured). One chunk per person keeps
+    the frame from flooding. Detection = PEER_FILE on the node's file name, so
+    dated user_fact files (kind "user" too) are NOT mistaken for people."""
     comp = max(nx.connected_components(G), key=len)
     start = max(comp, key=G.degree)
     seen, heap, keep = {start}, [(-G.degree(start), start)], []
@@ -82,6 +96,24 @@ def pick_subgraph(nx, G, max_nodes: int) -> list:
             if m not in seen:
                 seen.add(m)
                 heapq.heappush(heap, (-G.degree(m), m))
+    keep_set = set(keep)
+    peers = [n for n in comp if n not in keep_set
+             and PEER_FILE.match(str((byidx or {}).get(n, {}).get("file") or ""))]
+    if peers:
+        dist, paths = nx.multi_source_dijkstra(G, keep_set)
+        best: dict = {}
+        for n in peers:
+            f = byidx[n]["file"]
+            if n in dist and (f not in best or dist[n] < dist[best[f]]):
+                best[f] = n
+        for n in sorted(best.values(), key=lambda n: dist[n]):
+            path = paths.get(n)
+            if not path or len(path) > PEER_HOPS:
+                continue
+            for m in path:
+                if m not in keep_set:
+                    keep_set.add(m)
+                    keep.append(m)
     return keep
 
 
@@ -143,11 +175,11 @@ def build(data: dict, max_nodes: int, max_edges: int, redact: bool) -> dict:
             G.add_edge(a, b, w=w)
     if G.number_of_nodes() == 0:
         raise ValueError("memory graph has no edges yet -- let memory_graph.py run first")
-    H = G.subgraph(pick_subgraph(nx, G, max_nodes)).copy()
+    byidx = {nd.get("idx", i): nd for i, nd in enumerate(nodes)}
+    H = G.subgraph(pick_subgraph(nx, G, max_nodes, byidx)).copy()
     xy, cid, ncomm = layout(nx, np, H)
     order = list(H.nodes)
     ix = {n: i for i, n in enumerate(order)}
-    byidx = {nd.get("idx", i): nd for i, nd in enumerate(nodes)}
     out_nodes = []
     for n in order:
         nd = byidx.get(n) or {}
