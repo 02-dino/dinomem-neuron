@@ -2832,6 +2832,14 @@ PYEOF
 # lanes); if so we MERGE our project-trio + Daily lanes into that SAME gate's env
 # rather than creating a second one. Never two gates -> never double-dispatch.
 #
+# SINGLE-OWNER FILE (neuron 1.34.1): scripts/cron_gate.sh itself is shipped ONLY by
+# dinomem base (installed before this point, see ORDERING INVARIANT). Neuron used to
+# ship its own copy and overwrite base's; the two drifted (ours lacked base's
+# Pending Reminder + Auto Improve lanes, so those gate env keys were dead on every
+# neuron box). Base's copy now carries every lane, env- and file-guarded. Same for
+# the Stall Rescuer files + cron. test/base_owned_files_test.sh fails if any of
+# them reappears in this repo.
+#
 # The trio jobs (Advancer/Improver/Deleter) + Daily Note Review are registered
 # DISABLED so they never self-fire. This one command-kind cron runs every 15 min
 # in the Gateway process at $0 LLM, runs each cheap check_*.sh, and force-runs
@@ -2980,8 +2988,10 @@ CANON = [
     "Daily Note Review",
     "Note Cron Gate",
 ]
+# --all: the trio + Daily are DISABLED (gate-driven) and a plain `cron list` hides
+# disabled jobs (measured 2026-11-16), so without it no worker dupe was ever seen.
 try:
-    r = subprocess.run(['openclaw','cron','list','--json'], capture_output=True, text=True, timeout=_CLI_T)
+    r = subprocess.run(['openclaw','cron','list','--all','--json'], capture_output=True, text=True, timeout=_CLI_T)
     data = json.loads(r.stdout) if r.returncode == 0 else []
     jl = data if isinstance(data, list) else (data.get('jobs') if isinstance(data.get('jobs'), list) else (data.get('jobs') or {}).get('jobs', []))
 except Exception:
@@ -3642,29 +3652,10 @@ job = {
     "delivery": {"mode": "none"}
 }
 upsert_gated(job, "daily_note_review", "daily_note_review", "$WS/.cron_ids", "GATE_DAILY_NOTE_REVIEW_ID")
-
-# ── Stall Rescuer — gate-driven agentTurn (lane 5 of Note Cron Gate) ─────────────
-# Restarts spawned subagents that DIED unnoticed (check_stalls.sh -> stall_watch.py
-# decides $0; this LLM turn only runs on a genuine, not-yet-handled stall). The
-# prompt lives in templates/ (one source for install AND live sync), placeholder
-# baked here. Missing template -> skip the lane, never abort the heredoc.
-_rp = "$SKILL_DIR/templates/stall_rescuer_prompt.md"
-if os.path.isfile(_rp):
-    job = {
-        "name": "Stall Rescuer",
-        "schedule": {"kind": "cron", "expr": "*/15 * * * *", "tz": "UTC"},
-        "payload": {
-            "kind": "agentTurn",
-            "message": open(_rp).read().replace("DINOMEM_WORKSPACE_PLACEHOLDER", "$WS"),
-            "lightContext": True,
-            "timeoutSeconds": 600
-        },
-        "sessionTarget": "isolated",
-        "delivery": {"mode": "none"}
-    }
-    upsert_gated(job, "stall_rescuer", "stall_rescuer", "$WS/.cron_ids", "GATE_STALL_RESCUER_ID")
-else:
-    print("  \033[33m[warn]\033[0m templates/stall_rescuer_prompt.md missing — Stall Rescuer lane not registered")
+# Stall Rescuer is NOT registered here: base owns it (files + cron + gate env key)
+# since base 1.34.0 / neuron 1.34.1. Base's installer runs first and upserts it by
+# name; the gate-env merge above keeps base's GATE_STALL_RESCUER_ID. Registering
+# it here too would be a second writer for one job (owner 2026-11-16: no doubles).
 PYEOF
 fi  # end DO_CRON guard (hoisted from after project_advancer; --no-cron now skips ALL cron installs, INVESTIGATE_FIRST stays in scope)
 

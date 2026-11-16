@@ -27,6 +27,16 @@ MEM="$WS/memory"
 # body changed (hash excludes claim lines) or a daily floor elapsed. A note that
 # genuinely gets fixed/re-attempted (body changes) still fires immediately.
 # Same v2 pattern as check_daily_notes.sh / check_ideator.sh / check_projects.sh.
+# KNOWN BLIND SPOT, BY DESIGN (2026-11-16): a note frozen because its spawned
+# `worker:` subagent DIED (e.g. it flipped status:done, then died before the
+# verification it promised) looks identical here to a finished note waiting for
+# Component 2. That case is NOT special-cased in this guard on purpose -- it is
+# owned by the Stall Rescuer lane (check_stalls.sh -> stall_watch.py, shipped by
+# dinomem base), which reads the session store, releases the dead claim and
+# respawns ONE worker with the lesson. The fresh-claim window above already keeps
+# the Improver off a note the rescued worker re-claims; adding dead-worker logic
+# here too would put the Improver and the respawned worker on one note (the exact
+# clobber the one-worker-one-note rule forbids). Comment only, no logic change.
 SCRIPTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=_gate_refire_guard.sh
 # _gate_refire_guard.sh is a thin shim over base's gate_lib.sh, so sensor_*/
