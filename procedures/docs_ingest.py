@@ -299,7 +299,7 @@ except Exception:
     _NO_REASONING_MODEL = (
         os.environ.get("DINOMEM_CHEAP_MODEL", "").strip()
         or os.environ.get("DINOMEM_NO_REASONING_MODEL", "").strip()
-        or "ninerouter/cc/claude-haiku-4-5-20251001"
+        or ""  # no hardcoded id (owner 2026-11-17): resolver lands on compaction or primary
     )
 
 def _call_llm(prompt: str, max_tokens: int = 1500, model: str = None) -> Tuple[bool, str]:

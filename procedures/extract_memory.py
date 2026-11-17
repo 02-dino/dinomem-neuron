@@ -484,7 +484,7 @@ def get_fallback_config():
                 config = json.load(f)
             or_key = config.get('models', {}).get('providers', {}).get('openrouter', {}).get('apiKey')
             if or_key:
-                return "google/gemini-2.5-flash", or_key, "https://openrouter.ai/api/v1"
+                pass  # was a hardcoded "google/gemini-2.5-flash" route; removed (owner 2026-11-17: no hardcoded ids)
         except Exception:
             pass
     # Nothing resolvable — caller skips fallback (gateway-only).
