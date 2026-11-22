@@ -81,36 +81,9 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-LICENSE_AGREED="${LICENSE_AGREED:-0}"
-
-# ── License agreement ───────────────────────────────────────────────────────────────
-if [ "$LICENSE_AGREED" != "1" ]; then
-  echo ""
-  echo "  ────────────────────────────────────────────────────────────"
-  echo "  LICENSE — dinomem-neuron"
-  echo "  ────────────────────────────────────────────────────────────"
-  echo ""
-  cat "$SKILL_DIR/LICENSE"
-  echo ""
-  echo "  ────────────────────────────────────────────────────────────"
-  # If stdin is not a TTY (piped / CI / AI-agent install), do not block on read.
-  # Fail fast with the exact flag to pass instead of hanging forever.
-  if [ ! -t 0 ]; then
-    echo "  License not accepted and no terminal to prompt on." >&2
-    echo "  ACTION[agent]: ask the OWNER to accept the dinomem-neuron license, then re-run with --agree (or set LICENSE_AGREED=1). License acceptance is the human's decision — do not auto-agree." >&2
-    exit 1
-  fi
-  echo "  This is a SINGLE-BUYER license. This copy is watermarked and traceable to you."
-  echo "  Redistribution or resale is prohibited and forfeits updates + support."
-  echo ""
-  read -p "  Type 'agree' to accept the license and continue: " USER_AGREE
-  if [ "$USER_AGREE" != "agree" ]; then
-    echo "  License not accepted. Exiting."
-    echo "  To skip this prompt (e.g. for AI agent installs): bash install.sh --agree --workspace ..."
-    exit 1
-  fi
-fi
-
+# License: MIT (same as dinomem base) — no acceptance prompt. --agree / LICENSE_AGREED
+# are still accepted as no-ops so existing install commands and docs keep working.
+LICENSE_AGREED="${LICENSE_AGREED:-1}"
 # ── License expiry check (time-limited builds only) ──────────────────────────
 if [ -f "$SKILL_DIR/scripts/license_check.sh" ]; then
   bash "$SKILL_DIR/scripts/license_check.sh" || exit 1

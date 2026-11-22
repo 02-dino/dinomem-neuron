@@ -134,7 +134,7 @@ bash dinomem-neuron/scripts/install.sh \
 openclaw gateway restart
 ```
 
-> `--agree` accepts the license non-interactively. Required when installing via AI agent or automation.
+> `--agree` is optional (kept for backward compatibility) — dinomem-neuron is MIT-licensed, there is no license prompt.
 
 **Step 3 — verify**
 ```bash
@@ -724,7 +724,7 @@ Optional flags:
 
 ## License
 
-Commercial — see [LICENSE](LICENSE)
+MIT — see [LICENSE](LICENSE)
 
 ---
 
