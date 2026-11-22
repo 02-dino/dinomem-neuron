@@ -506,7 +506,7 @@ REASONING_THINKING = os.environ.get("DINOMEM_REASONING_THINKING", "high").strip(
 # neuron: explicit cheap model for no-reasoning extraction calls.
 # Standard tag is DINOMEM_CHEAP_MODEL (matches the rest of dinomem); the legacy
 # DINOMEM_NO_REASONING_MODEL is kept as a back-compat fallback. Unset = OpenClaw
-# default (default-safe — no hardcoded gemini that 404s on buyers without it).
+# default (default-safe — no hardcoded gemini that 404s on users without it).
 def _resolve_no_reasoning_model():
     """Cheap model via the single compaction anchor (procedures/_cheap_model.py):
     DINOMEM_CHEAP_MODEL env -> agents.defaults.compaction.model -> legacy env.
@@ -812,7 +812,7 @@ def call_llm(prompt, max_tokens=None, reasoning=False, model=None):
     # WHY: the gateway CLI path (`capability model run`) COLD-BOOTS a ~600MB Node/
     # OpenClaw runtime PER CALL just to relay one request, and (on multi-agent
     # setups) LOGS under the default account rather than the caller. Posting
-    # DIRECTLY to the provider with the buyer's OWN configured key (the same
+    # DIRECTLY to the provider with the user's OWN configured key (the same
     # resolvers the gateway-unreachable fallback below already uses) skips the
     # cold-boot entirely and attributes correctly — zero new setup for the noob
     # installer, since it reuses the model/key dinomem already resolved. This is

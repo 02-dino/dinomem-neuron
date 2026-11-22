@@ -7,7 +7,7 @@
 # memory_review.py's prompt persona leaked a [MARKET] label into 7 non-analyst
 # workspaces (konsultan: 50/50 rows) and — worse — graded their memory for
 # DELETION against "is this useful to a market analyst". Both files are tracked
-# and ship in the buyer release, so the bias travelled with every copy.
+# and ship in the user release, so the bias travelled with every copy.
 #
 # The PR template already asks for "no hardcoded paths"; nothing enforced it.
 # This is the enforcement. It fails LOUD on the two bug classes that actually

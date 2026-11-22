@@ -13,7 +13,7 @@ Two optional aids ride alongside (neither regresses the exact path):
                to full structured rows. Opt-in per column; optional-dep guarded (exit 3 if the embedding
                stack is absent) so the exact-SQL path is never affected.
 
-SAFETY (mandatory, buyer-facing): READ-ONLY. Only a single SELECT/WITH statement is
+SAFETY (mandatory, user-facing): READ-ONLY. Only a single SELECT/WITH statement is
 allowed. Any INSERT/UPDATE/DELETE/DROP/ALTER/ATTACH/COPY/PRAGMA/INSTALL/LOAD/CREATE
 (and multi-statement) is rejected before execution, and the DB is opened read_only.
 

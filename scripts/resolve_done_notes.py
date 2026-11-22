@@ -13,7 +13,7 @@ Design (authoritative per project note _note_resolve-done-notes-hardened-closer)
   - Log every action.
 
 Portable: resolves workspace from $OPENCLAW_WORKSPACE so the same file works in
-the analyst home and in the neuron buyer copy.
+the analyst home and in the neuron user copy.
 
 Usage:
   resolve_done_notes.py            # execute deletions

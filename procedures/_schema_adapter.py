@@ -166,7 +166,7 @@ def _dump(con):
         cols = _columns(con, t)
         lines.append(f"  {t}({', '.join(cols)})")
     lines.append(
-        "Report this dump to the dinomem developer (t.me/dinotlgrm) so this "
+        "Report this dump at https://github.com/02-dino/dinomem-neuron/issues so this "
         "OpenClaw schema variant can be added to _schema_adapter.py."
     )
     return "\n".join(lines)

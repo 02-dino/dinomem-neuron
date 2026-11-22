@@ -244,7 +244,7 @@ def get_openclaw_config():
 # cheap tier via the standard DINOMEM_CHEAP_MODEL tag (matches the rest of
 # dinomem); legacy DINOMEM_NO_REASONING_MODEL kept as back-compat fallback.
 # Unset = OpenClaw default (default-safe — no hardcoded gemini that 404s on
-# buyers without that model).
+# users without that model).
 def _resolve_no_reasoning_model():
     """Cheap model via the single compaction anchor (procedures/_cheap_model.py):
     DINOMEM_CHEAP_MODEL env -> agents.defaults.compaction.model -> legacy env.

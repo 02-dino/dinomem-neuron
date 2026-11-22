@@ -61,7 +61,7 @@ cat > "$WORK/data/registered.json" <<'EOF'
 EOF
 
 OUT="$WORK/out.json"
-# exempt the data/ dir via env (buyer-style data_query dir); the src tree indexes.
+# exempt the data/ dir via env (user-style data_query dir); the src tree indexes.
 SRC="$WORK/src" DATA="$WORK/data" OUT="$OUT" DINOMEM_CODE_GRAPH_EXEMPT="$WORK/data" \
 python3 - "$CG" "$WORK" <<'PYEOF'
 import sys, os, json, importlib.util

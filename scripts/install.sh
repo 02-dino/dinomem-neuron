@@ -795,7 +795,7 @@ pip_install() {
   fi
   # Retries up to 3x with backoff — transient PyPI/index hiccups were causing
   # langchain-chroma (and other deps) to fail on first attempt, forcing manual
-  # re-runs during buyer installs. Second attempt of each pass adds
+  # re-runs during user installs. Second attempt of each pass adds
   # --break-system-packages for PEP 668 (externally-managed) environments.
   # P4 anti-hang: each attempt is wrapped in `timeout` so a stuck download (dead
   # mirror, hung TLS) can't freeze the whole install indefinitely (the old stall
@@ -1749,7 +1749,7 @@ def _dino_name_agent_match(j, name):
     jaid = (j.get('agentId') or '')
     jaid = jaid.strip().lower() if isinstance(jaid, str) else ''
     # single-agent / legacy fallback: if we don't know our agent id, or the
-    # stored job has no agentId, match by name only (preserves buyer path).
+    # stored job has no agentId, match by name only (preserves user path).
     if not _DINO_AID or not jaid:
         return True
     return jaid == _DINO_AID
@@ -2021,7 +2021,7 @@ def _dino_name_agent_match(j, name):
     jaid = (j.get('agentId') or '')
     jaid = jaid.strip().lower() if isinstance(jaid, str) else ''
     # single-agent / legacy fallback: if we don't know our agent id, or the
-    # stored job has no agentId, match by name only (preserves buyer path).
+    # stored job has no agentId, match by name only (preserves user path).
     if not _DINO_AID or not jaid:
         return True
     return jaid == _DINO_AID
@@ -2286,7 +2286,7 @@ def _dino_name_agent_match(j, name):
     jaid = (j.get('agentId') or '')
     jaid = jaid.strip().lower() if isinstance(jaid, str) else ''
     # single-agent / legacy fallback: if we don't know our agent id, or the
-    # stored job has no agentId, match by name only (preserves buyer path).
+    # stored job has no agentId, match by name only (preserves user path).
     if not _DINO_AID or not jaid:
         return True
     return jaid == _DINO_AID
@@ -2563,7 +2563,7 @@ def _dino_name_agent_match(j, name):
     jaid = (j.get('agentId') or '')
     jaid = jaid.strip().lower() if isinstance(jaid, str) else ''
     # single-agent / legacy fallback: if we don't know our agent id, or the
-    # stored job has no agentId, match by name only (preserves buyer path).
+    # stored job has no agentId, match by name only (preserves user path).
     if not _DINO_AID or not jaid:
         return True
     return jaid == _DINO_AID
@@ -2805,7 +2805,7 @@ PYEOF
 # (openclaw cron run) only the jobs whose check reports real work.
 #
 # Command crons need the Gateway to allow command-kind jobs (operator.admin). If a
-# buyer's gateway refuses them, we FALL BACK by re-enabling the agentTurn jobs on
+# user's gateway refuses them, we FALL BACK by re-enabling the agentTurn jobs on
 # their own schedules (pre-redesign behavior) so nothing breaks — with a LOUD
 # warning, because that fallback costs LLM on every idle tick.
 #
@@ -2850,7 +2850,7 @@ def _dino_name_agent_match(j, name):
     jaid = (j.get('agentId') or '')
     jaid = jaid.strip().lower() if isinstance(jaid, str) else ''
     # single-agent / legacy fallback: if we don't know our agent id, or the
-    # stored job has no agentId, match by name only (preserves buyer path).
+    # stored job has no agentId, match by name only (preserves user path).
     if not _DINO_AID or not jaid:
         return True
     return jaid == _DINO_AID
@@ -3296,7 +3296,7 @@ fi
 # Claim-aware: never touches a freshly-claimed note (live-session <120m / other
 # <30m). Deletions are snapshotted to backups/resolved_notes/ (recoverable).
 # Premium: neuron only. Without this, done task_bound + non-project done notes
-# would never auto-retire on a buyer install.
+# would never auto-retire on a user install.
 DINOMEM_AGENT_ID="$AGENT_ID" python3 - <<PYEOF
 import subprocess, json, os
 try:
@@ -3311,7 +3311,7 @@ def _dino_name_agent_match(j, name):
     jaid = (j.get('agentId') or '')
     jaid = jaid.strip().lower() if isinstance(jaid, str) else ''
     # single-agent / legacy fallback: if we don't know our agent id, or the
-    # stored job has no agentId, match by name only (preserves buyer path).
+    # stored job has no agentId, match by name only (preserves user path).
     if not _DINO_AID or not jaid:
         return True
     return jaid == _DINO_AID
@@ -4612,7 +4612,7 @@ fi
 # 1) OpenClaw crons present (by name) — REQUIRED-CRON GATE with auto-repair.
 # The 4 REQUIRED lanes below are what make the note lifecycle self-drive. If any
 # is missing after install, the old behavior only WARNed (buried in green output),
-# so buyers silently ran without them. Now: collect the gap, and if the gateway is
+# so users silently ran without them. Now: collect the gap, and if the gateway is
 # reachable, AUTO-REPAIR by re-running this installer with --repair-cron (idempotent,
 # cron-only). If we can't auto-repair, surface ONE copy-paste fix command and, on a
 # normal install (not already inside a repair run), exit NONZERO so the gap is loud.
@@ -4923,7 +4923,7 @@ echo "  ⚠️  First run takes time"
 echo "  memory_graph.py and memory_synthesis.py can take several minutes on first run"
 echo "  depending on how many memory files exist. This is normal."
 echo ""
-echo "  License: Proprietary — unauthorized redistribution prohibited. https://t.me/dinotlgrm"
+echo "  License: MIT — https://github.com/02-dino/dinomem-neuron/blob/main/LICENSE"
 echo "  Undo: bash $SKILL_DIR/scripts/uninstall.sh --workspace $WS --agent-id $AGENT_ID"
 
 # ── Placeholder-leftover safety net (self-healing) ───────────────────────────

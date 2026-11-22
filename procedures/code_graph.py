@@ -39,7 +39,7 @@ SCOPE DECISION (CAPPED — do NOT index the world)
   Coverage = big-six + agent-config: python/bash/json/markdown/JS/TS SHIPPED.
   40-language parity is Graphify's PRODUCT need, NOT ours. Go/Rust/Java/C#/C++ +
   niche langs (fortran/ocaml/pascal/zig/etc) are ADD-ON-DEMAND: add a
-  parse_<lang> + 2 lines (LANG_BY_EXT + PARSERS) ONLY when a real buyer file
+  parse_<lang> + 2 lines (LANG_BY_EXT + PARSERS) ONLY when a real user file
   exists. The scaffold makes that a ~2-line job — so there is no reason to
   pre-index languages nobody in the install actually ships. Do NOT index the
   world; a bloated grammar set is slower, heavier, and buys nothing without
@@ -142,7 +142,7 @@ SKIP_DIRS = {".git", "__pycache__", "node_modules", "venv", ".venv",
 #   (b) kb/               -> our own index store (never source code)
 #   (c) docs_ingest DOCS_DIR (rel) -> owned by docs_search (RAG)
 #   (d) data_register catalog source paths -> owned by data_query (SQL)
-# Buyers add their own RAG dirs via env DINOMEM_CODE_GRAPH_EXEMPT (colon-list).
+# Users add their own RAG dirs via env DINOMEM_CODE_GRAPH_EXEMPT (colon-list).
 # Fail-open everywhere: a missing catalog / unreadable file contributes nothing,
 # never crashes the walk. Prefixes are rel-to-root, normalized with trailing "/".
 _EXEMPT_HARD = ("memory/", "kb/")  # always owned by memory_search / index store
@@ -194,7 +194,7 @@ def derive_exempt_prefixes(root: str) -> set[str]:
     except Exception:
         pass
 
-    # env override (buyer-supplied colon-list of rel or abs dirs)
+    # env override (user-supplied colon-list of rel or abs dirs)
     env = os.environ.get("DINOMEM_CODE_GRAPH_EXEMPT", "").strip()
     if env:
         for raw in env.split(os.pathsep):

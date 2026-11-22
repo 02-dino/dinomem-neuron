@@ -100,7 +100,7 @@ The authority-scope gate is **inherited from base** — full mechanics, the peer
 
 ## Quick Start
 
-You have access to this repo. Here's how to get neuron running.
+Here's how to get neuron running.
 
 **Step 1 — dinomem must be installed first**
 ```bash
@@ -114,27 +114,15 @@ Verify: `memory/*.md` files exist in your workspace.
 
 **Step 2 — install dinomem-neuron**
 
-If you have repo access:
 ```bash
 git clone https://github.com/02-dino/dinomem-neuron
 bash dinomem-neuron/scripts/install.sh \
   --workspace ~/.openclaw/workspace-myagent \
-  --agent-id myagent \
-  --agree
+  --agent-id myagent
 openclaw gateway restart
 ```
 
-If you received a zip file:
-```bash
-unzip dinomem-neuron.zip
-bash dinomem-neuron/scripts/install.sh \
-  --workspace ~/.openclaw/workspace-myagent \
-  --agent-id myagent \
-  --agree
-openclaw gateway restart
-```
-
-> `--agree` is optional (kept for backward compatibility) — dinomem-neuron is MIT-licensed, there is no license prompt.
+> The neuron installer also installs/refreshes dinomem base, so Step 1 is optional — it's listed so you can verify base on its own first. `--agree` is accepted but does nothing (kept so older install commands still work).
 
 **Step 3 — verify**
 ```bash

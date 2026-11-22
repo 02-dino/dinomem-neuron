@@ -161,4 +161,4 @@ This means promoted insights are **always present** — they influence every res
 
 ---
 
-*For access to the implementation: [@dinotlgrm](https://t.me/dinotlgrm)*
+*Implementation: https://github.com/02-dino/dinomem-neuron (MIT)*

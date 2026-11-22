@@ -236,7 +236,7 @@ structure question over unknown AST-modelled source when the graph can answer it
 **python / bash / json / markdown / JS / TS** (JS/JSX/TS/TSX — with tsconfig `paths` alias + workspace-glob resolution, barrel re-export hop, module-scoped member calls, and cross-file named-call scoping (`import {foo}; foo()` → the real module def, not a global same-name); external pkgs + unscoped `this.`/`arr.` member calls dropped; `code_query explain` annotates a flattened barrel edge `(via barrel.ts)`) **plus go / rust / java / cpp / php / csharp / ruby / r / css / html / sql / yaml**. C-family + dynamic langs share one generic walker (per-lang node-type specs); css/html/sql/yaml are structural-only (selectors+@import / script|link src / table|view defs+FROM|JOIN refs / top-level keys). Same-name cross-file collision fixed (intra-file calls/inherits/references resolve same-file-first). Adding a language = extractor only; ingestion + code search are language-agnostic (traverse the graph, never re-parse), so a new lang works end-to-end automatically. 40-language parity is
 Graphify's PRODUCT need, NOT ours. Go/Rust/Java/C#/C++ + niche langs
 (fortran/ocaml/pascal/zig/etc) are **add-on-demand**: add a `parse_<lang>` + 2
-lines (`LANG_BY_EXT` + `PARSERS`) ONLY when a real buyer file exists — the
+lines (`LANG_BY_EXT` + `PARSERS`) ONLY when a real user file exists — the
 scaffold makes it a ~2-line job, so there's no reason to pre-index languages
 nobody ships. Bash/json/markdown now DO carry real edges (bash: function defs +
 `source`/call edges; json: nested-key nodes + path-value `references`; markdown:
@@ -245,7 +245,7 @@ weak" carve-out is now narrower: shell **is** modelled (function defs + `source`
 + local-fn calls), though external-binary calls are still dropped as noise.
 Extractors auto-honor the **path-scoped exemption** (memory/ · docs/ ·
 data_query source dirs excluded so nothing double-ingests; env
-`DINOMEM_CODE_GRAPH_EXEMPT` adds buyer RAG dirs). Behavioral logic buried in
+`DINOMEM_CODE_GRAPH_EXEMPT` adds user RAG dirs). Behavioral logic buried in
 `install.sh` heredoc prompts / cron payloads (which the AST sees as one opaque
 string) is covered by a grep-backed **prompt-anchor sidecar**:
 `procedures/code_anchors.py` → `code_query anchors "<query>"` returns the

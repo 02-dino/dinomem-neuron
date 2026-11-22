@@ -8,7 +8,7 @@ WHY
   fire-and-forget: nothing checks whether an existing pin/note already covers the
   same TOPIC before a new file is created. Slug-matching alone is useless —
   different slugs can describe the same thing (e.g. `notify-script-accountid-bug`
-  vs `buyer-delivery-dispatch`). Result over time: pin sprawl and, worse,
+  vs `user-delivery-dispatch`). Result over time: pin sprawl and, worse,
   CONTRADICTORY duplicates (a fresh pin that disagrees with an old one).
 
 WHAT
@@ -27,7 +27,7 @@ GENERALIZED (neuron-shipped, not analyst-specific)
   * Embeddings come from the neuron's single-source backend tools/_embed.py
     (multilingual e5, e5 query:/passage: prefixing, model-id stamping). No
     reinvented embedding, no second model.
-  * GRACEFUL DEGRADE: if the embedding stack isn't installed on this buyer's box
+  * GRACEFUL DEGRADE: if the embedding stack isn't installed on this user's box
     (semantic_available()==False), the script exits 0 with
     {"match": false, "skipped": "no-embed-backend"} so a memory write is NEVER
     blocked just because dedup can't run.
@@ -142,13 +142,13 @@ def get_embeddings():
 # FIX: score RELATIVE to the corpus's own baseline. We compute the mean+std of
 # candidate-vs-all-pins similarity, and flag a hit only when the top match is a
 # statistical OUTLIER above that baseline (z-score) AND clears a soft absolute
-# floor. This adapts per-corpus and per-buyer automatically — no magic number
+# floor. This adapts per-corpus and per-user automatically — no magic number
 # that only works on our workspace.
 # Measured separators (e5-small, our 16-pin corpus):
 #   unrelated (coffee):  best abs 0.830, z 1.67
 #   true duplicate:      best abs 0.867, z 2.41
 # So floor 0.85 + z>=2.0 cleanly passes the dup and rejects the unrelated one,
-# with margin on both. Both are env/flag tunable per buyer/corpus.
+# with margin on both. Both are env/flag tunable per user/corpus.
 DEFAULT_Z = float(os.environ.get("DINOMEM_DEDUP_Z", "2.0"))           # outlier strength
 ABS_FLOOR = float(os.environ.get("DINOMEM_DEDUP_ABS_FLOOR", "0.85"))  # soft sanity floor
 # Legacy absolute threshold still honored if caller passes --threshold explicitly.
@@ -307,7 +307,7 @@ def main():
     # ── Decision ────────────────────────────────────────────────────────────
     # Absolute mode: only if the caller explicitly passed --threshold (or the
     # env override is set). Otherwise use adaptive z-score scoring, which is the
-    # only thing that generalizes across e5 corpora / different buyers.
+    # only thing that generalizes across e5 corpora / different users.
     abs_threshold = args.threshold
     if abs_threshold is None and DEFAULT_THRESHOLD is not None:
         try:
