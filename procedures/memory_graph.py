@@ -1222,16 +1222,6 @@ def main():
 
 
 if __name__ == "__main__":
-    # ---- dinomem-neuron license guard ----
-    import os as _os, sys as _sys
-    _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
-    try:
-        from license_check import enforce_license as _enforce_license
-        _enforce_license(_os.path.basename(__file__))
-    except SystemExit:
-        raise
-    except Exception:
-        pass
     try:
         from run_log import RunLog as _RunLog
         with _RunLog("memory_graph") as _log:

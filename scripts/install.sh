@@ -84,10 +84,6 @@ done
 # License: MIT (same as dinomem base) — no acceptance prompt. --agree / LICENSE_AGREED
 # are still accepted as no-ops so existing install commands and docs keep working.
 LICENSE_AGREED="${LICENSE_AGREED:-1}"
-# ── License expiry check (time-limited builds only) ──────────────────────────
-if [ -f "$SKILL_DIR/scripts/license_check.sh" ]; then
-  bash "$SKILL_DIR/scripts/license_check.sh" || exit 1
-fi
 ok()   { printf '  \033[32m[ok]\033[0m   %s\n' "$*"; }
 skip() { printf '  \033[33m[skip]\033[0m %s\n' "$*"; }
 warn() { printf '  \033[33m[warn]\033[0m %s\n' "$*"; }
@@ -1377,16 +1373,6 @@ for _dir in procedures tools scripts; do
   done
 done
 
-# license_check.py -> workspace procedures/ (runtime guard import target)
-cp "$SKILL_DIR/lib/license_check.py" "$WS/procedures/license_check.py"
-sed -i "s|DINOMEM_WORKSPACE_PLACEHOLDER|$WS|g" "$WS/procedures/license_check.py"
-ok "procedures/license_check.py (runtime license guard)"
-
-# .license_expiry -> workspace root (time-limited builds only; perpetual builds omit it)
-if [ -f "$SKILL_DIR/.license_expiry" ]; then
-  cp "$SKILL_DIR/.license_expiry" "$WS/.license_expiry"
-  ok ".license_expiry (license term)"
-fi
 
 # ── Install open-notes hook (NEURON SUPERSET — overwrites base's) ────────────
 # Neuron's dinomem-open-notes hook adds the session_search cold-start recall line
